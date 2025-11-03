@@ -2,6 +2,7 @@ import logging
 import json
 import asyncio
 import os
+import sys
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 from telegram.error import BadRequest
@@ -101,8 +102,9 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await file.download_to_drive(DB_FILE)
         await update.message.reply_text("Database restored. Restarting the bot to apply changes...")
 
-        # This will trigger the systemd service to restart the bot
-        os._exit(0)
+        # Gracefully shut down the application
+        context.application.stop()
+
     except Exception as e:
         await update.message.reply_text(f"Failed to restore database: {e}")
     finally:
