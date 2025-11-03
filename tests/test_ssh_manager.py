@@ -6,21 +6,30 @@ from src.ssh_manager import SSHManager, SSHConnection
 def manager():
     """Fixture to create an SSHManager with a mock database."""
     servers = [
-        {"alias": "test_server", "hostname": "localhost", "user": "testuser", "key_path": "/path/to/key"}
+        {"alias": "key_server", "hostname": "localhost", "user": "testuser", "key_path": "/path/to/key"},
+        {"alias": "pw_server", "hostname": "localhost", "user": "testuser", "password": "password123"}
     ]
     with patch('src.ssh_manager.get_all_servers', MagicMock(return_value=servers)):
         manager = SSHManager()
     return manager
 
 @pytest.mark.asyncio
-async def test_get_connection(manager):
-    """Test successfully getting a connection."""
+async def test_get_connection_key_auth(manager):
+    """Test successfully getting a connection with key authentication."""
     with patch("asyncssh.connect", new_callable=AsyncMock) as mock_connect:
         mock_connect.return_value = "mock_connection"
-        conn = await manager.get_connection("test_server")
+        conn = await manager.get_connection("key_server")
         assert isinstance(conn, SSHConnection)
-        assert manager.connections["test_server"] == conn
-        mock_connect.assert_called_once()
+        mock_connect.assert_called_once_with("localhost", username="testuser", client_keys=["/path/to/key"])
+
+@pytest.mark.asyncio
+async def test_get_connection_password_auth(manager):
+    """Test successfully getting a connection with password authentication."""
+    with patch("asyncssh.connect", new_callable=AsyncMock) as mock_connect:
+        mock_connect.return_value = "mock_connection"
+        conn = await manager.get_connection("pw_server")
+        assert isinstance(conn, SSHConnection)
+        mock_connect.assert_called_once_with("localhost", username="testuser", password="password123")
 
 @pytest.mark.asyncio
 async def test_get_connection_not_found(manager):
@@ -46,7 +55,7 @@ async def test_run_command(manager):
         mock_connect.return_value = mock_ssh_conn
 
         results = []
-        async for line, stream in manager.run_command("test_server", "ls -l"):
+        async for line, stream in manager.run_command("key_server", "ls -l"):
             results.append((line.strip(), stream))
 
         assert ("line1", "stdout") in results

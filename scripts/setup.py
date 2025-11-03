@@ -1,7 +1,7 @@
 import json
 import os
-import sys
 import getpass
+import sys
 
 # Add the project root to the Python path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -63,12 +63,16 @@ def setup_database():
             alias = get_input("  Enter a short alias for the server (e.g., 'webserver')")
             hostname = get_input("  Enter the server's hostname or IP address")
             user = get_input("  Enter the SSH username")
-            key_path = get_input("  Enter the path to your SSH private key", f"/home/{getpass.getuser()}/.ssh/id_rsa")
-            try:
-                add_server(alias, hostname, user, key_path)
-                print("Server added successfully.")
-            except ValueError as e:
-                print(f"Error: {e}")
+
+            auth_method = get_input("  Choose authentication method: [k]ey or [p]assword", "k")
+            if auth_method.lower() == 'p':
+                password = getpass.getpass("  Enter SSH password: ")
+                add_server(alias, hostname, user, password=password)
+            else:
+                key_path = get_input("  Enter the path to your SSH private key", f"/home/{getpass.getuser()}/.ssh/id_rsa")
+                add_server(alias, hostname, user, key_path=key_path)
+
+            print("Server added successfully.")
         elif choice.lower() == 'r':
             try:
                 index = int(get_input("  Enter the number of the server to remove")) - 1

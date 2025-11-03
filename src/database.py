@@ -30,7 +30,8 @@ def initialize_database():
         alias TEXT NOT NULL UNIQUE,
         hostname TEXT NOT NULL,
         user TEXT NOT NULL,
-        key_path TEXT NOT NULL
+        password TEXT,
+        key_path TEXT
     )
     """)
     cursor.execute("""
@@ -41,13 +42,13 @@ def initialize_database():
     """)
     conn.commit()
 
-def add_server(alias, hostname, user, key_path):
+def add_server(alias, hostname, user, password=None, key_path=None):
     """Adds a new server to the database."""
     conn = get_db_connection()
     try:
         conn.execute(
-            "INSERT INTO servers (alias, hostname, user, key_path) VALUES (?, ?, ?, ?)",
-            (alias, hostname, user, key_path)
+            "INSERT INTO servers (alias, hostname, user, password, key_path) VALUES (?, ?, ?, ?, ?)",
+            (alias, hostname, user, password, key_path)
         )
         conn.commit()
     except sqlite3.IntegrityError:
