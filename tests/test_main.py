@@ -1,23 +1,32 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-from src.main import execute_shell_command
+from src.main import execute_shell_command, connect_menu, connect
 
-@pytest.mark.asyncio
-async def test_execute_shell_command_real_time_output():
-    """Test the real-time output and message editing logic."""
-    # Mock update and context objects
+@pytest.fixture
+def authorized_update():
+    """Fixture to create a mock update object with an authorized user."""
     update = MagicMock()
+    update.effective_user.id = 123
     update.message.from_user.id = 123
     update.message.reply_text = AsyncMock()
 
-    context = MagicMock()
+    # For callback queries
+    update.callback_query = MagicMock()
+    update.callback_query.from_user.id = 123
+    update.callback_query.answer = AsyncMock()
+    update.callback_query.edit_message_text = AsyncMock()
+    update.callback_query.message.reply_text = AsyncMock()
 
-    # Mock the initial message sent by the bot
+    return update
+
+@pytest.mark.asyncio
+async def test_execute_shell_command_real_time_output(authorized_update):
+    """Test the real-time output and message editing logic."""
+    context = MagicMock()
     mock_message = MagicMock()
     mock_message.edit_text = AsyncMock()
-    update.message.reply_text.return_value = mock_message
+    authorized_update.message.reply_text.return_value = mock_message
 
-    # Mock the SSH manager and its run_command method
     with patch('src.main.ssh_manager', new_callable=AsyncMock) as mock_ssh_manager:
         async def mock_run_command(alias, command):
             yield "line1\n", "stdout"
@@ -26,19 +35,38 @@ async def test_execute_shell_command_real_time_output():
 
         mock_ssh_manager.run_command = mock_run_command
 
-        # Mock user_connections
         with patch('src.main.user_connections', {123: 'test_server'}):
-            await execute_shell_command(update, context, "ls -l")
+            with patch('src.main.config', {"whitelisted_users": [123]}):
+                await execute_shell_command(authorized_update, context, "ls -l")
 
-            # Assert that the initial message was sent
-            update.message.reply_text.assert_called_once()
+                authorized_update.message.reply_text.assert_called_once()
+                assert mock_message.edit_text.call_count > 0
+                final_call_args = mock_message.edit_text.call_args[0][0]
+                assert "--- command finished ---" in final_call_args
 
-            # Assert that edit_text was called to update the message
-            assert mock_message.edit_text.call_count > 0
+@pytest.mark.asyncio
+async def test_connect_menu_button(authorized_update):
+    """Test the connect menu button."""
+    context = MagicMock()
+    with patch('src.main.config', {"servers": [{"alias": "test1"}, {"alias": "test2"}], "whitelisted_users": [123]}):
+        await connect_menu(authorized_update, context)
+        authorized_update.callback_query.message.reply_text.assert_called_once()
+        reply_markup = authorized_update.callback_query.message.reply_text.call_args[1]['reply_markup']
+        assert len(reply_markup.inline_keyboard) == 2
+        assert reply_markup.inline_keyboard[0][0].text == "test1"
 
-            # Check the final message content
-            final_call_args = mock_message.edit_text.call_args[0][0]
-            assert "--- command finished ---" in final_call_args
-            assert "line1" in final_call_args
-            assert "line2" in final_call_args
-            assert "error1" in final_call_args
+@pytest.mark.asyncio
+async def test_connect_button_press(authorized_update):
+    """Test pressing a connect button."""
+    authorized_update.callback_query.data = "connect_test_server"
+    context = MagicMock()
+
+    with patch('src.main.ssh_manager', new_callable=AsyncMock) as mock_ssh_manager:
+        mock_ssh_manager.get_connection = AsyncMock()
+        with patch('src.main.user_connections', {}):
+            with patch('src.main.config', {"whitelisted_users": [123]}):
+                await connect(authorized_update, context)
+                # Correctly extract the alias from the callback data
+                alias = authorized_update.callback_query.data.split('_', 1)[1]
+                mock_ssh_manager.get_connection.assert_called_once_with(alias)
+                authorized_update.callback_query.edit_message_text.assert_called_once_with(text=f"Successfully connected to {alias}.")

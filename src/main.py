@@ -1,10 +1,11 @@
 import logging
 import json
 import asyncio
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 from telegram.error import BadRequest
 from src.ssh_manager import SSHManager
+from src.updater import check_for_updates, apply_update
 from functools import wraps
 
 # Enable logging
@@ -23,7 +24,10 @@ def authorized(func):
     async def wrapped(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
         user_id = update.effective_user.id
         if user_id not in config.get('whitelisted_users', []):
-            await update.message.reply_text("You are not authorized to use this bot.")
+            if update.callback_query:
+                await update.callback_query.answer("You are not authorized.", show_alert=True)
+            else:
+                await update.message.reply_text("You are not authorized to use this bot.")
             return
         return await func(update, context, *args, **kwargs)
     return wrapped
@@ -31,23 +35,47 @@ def authorized(func):
 @authorized
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Sends a welcome message when the /start command is issued."""
-    await update.message.reply_text("Welcome to the Multi-Server Telegram Bot! Use /connect <server_alias> to get started.")
+    await menu(update, context)
+
+@authorized
+async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Displays the main menu."""
+    keyboard = [
+        [InlineKeyboardButton("Connect to Server", callback_data='connect_menu')],
+        [InlineKeyboardButton("Check for Updates", callback_data='check_updates')],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text('Please choose an option:', reply_markup=reply_markup)
+
+@authorized
+async def connect_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Displays a menu of servers to connect to."""
+    keyboard = []
+    for server in config.get('servers', []):
+        keyboard.append([InlineKeyboardButton(server['alias'], callback_data=f"connect_{server['alias']}")])
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    if update.callback_query:
+        await update.callback_query.message.reply_text('Select a server to connect to:', reply_markup=reply_markup)
+    else:
+        await update.message.reply_text('Select a server to connect to:', reply_markup=reply_markup)
+
 
 @authorized
 async def connect(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Connects to a server."""
-    user_id = update.message.from_user.id
-    if not context.args:
-        await update.message.reply_text("Usage: /connect <server_alias>")
-        return
+    query = update.callback_query
+    await query.answer()
 
-    alias = context.args[0]
+    alias = query.data.split('_', 1)[1]
+    user_id = query.from_user.id
+
     try:
-        await ssh_manager.connect(alias)
+        await ssh_manager.get_connection(alias)
         user_connections[user_id] = alias
-        await update.message.reply_text(f"Successfully connected to {alias}.")
+        await query.edit_message_text(text=f"Successfully connected to {alias}.")
     except (ValueError, ConnectionError) as e:
-        await update.message.reply_text(str(e))
+        await query.edit_message_text(text=str(e))
 
 @authorized
 async def disconnect(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -128,6 +156,35 @@ async def top(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     command = "top -b -n 1"
     await execute_shell_command(update, context, command)
 
+@authorized
+async def check_updates_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Checks for updates when the button is pressed."""
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("Checking for updates...")
+
+    update_status = check_for_updates()
+    if "An update is available!" in update_status:
+        keyboard = [[InlineKeyboardButton("Apply Update", callback_data='apply_update')]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text("Update available!", reply_markup=reply_markup)
+    else:
+        await query.edit_message_text(update_status)
+
+@authorized
+async def apply_update_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Applies updates when the button is pressed."""
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("Applying update...")
+
+    result = apply_update()
+    await query.edit_message_text(result)
+
+async def post_shutdown(application: Application):
+    await ssh_manager.disconnect_all()
+
+
 def main() -> None:
     """Start the bot."""
     global ssh_manager, config
@@ -142,11 +199,11 @@ def main() -> None:
         logger.error(f"Error in config.json: {e}")
         return
 
-    application = Application.builder().token(config["telegram_token"]).build()
+    application = Application.builder().token(config["telegram_token"]).post_shutdown(post_shutdown).build()
 
     # Core commands
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("connect", connect))
+    application.add_handler(CommandHandler("menu", menu))
     application.add_handler(CommandHandler("disconnect", disconnect))
     application.add_handler(CommandHandler("server", server))
 
@@ -154,6 +211,12 @@ def main() -> None:
     application.add_handler(CommandHandler("status", status))
     application.add_handler(CommandHandler("update", update_packages))
     application.add_handler(CommandHandler("top", top))
+
+    # Callback handlers
+    application.add_handler(CallbackQueryHandler(connect_menu, pattern='^connect_menu$'))
+    application.add_handler(CallbackQueryHandler(connect, pattern='^connect_'))
+    application.add_handler(CallbackQueryHandler(check_updates_button, pattern='^check_updates$'))
+    application.add_handler(CallbackQueryHandler(apply_update_button, pattern='^apply_update$'))
 
     # Generic command handler for any text
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_raw_command))
