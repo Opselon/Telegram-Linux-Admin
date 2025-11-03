@@ -11,5 +11,8 @@ pip-selfcheck.json
 # Config
 config.json
 
+# Database
+database.db
+
 # Other
 .DS_Store

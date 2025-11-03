@@ -4,20 +4,12 @@ from src.ssh_manager import SSHManager, SSHConnection
 
 @pytest.fixture
 def manager():
-    # Create a mock config file
-    config_data = {
-        "servers": [
-            {
-                "alias": "test_server",
-                "hostname": "localhost",
-                "user": "testuser",
-                "key_path": "/path/to/key"
-            }
-        ]
-    }
-    with patch("builtins.open", MagicMock()) as mock_open:
-        with patch("json.load", MagicMock(return_value=config_data)) as mock_json:
-            manager = SSHManager('dummy_config.json')
+    """Fixture to create an SSHManager with a mock database."""
+    servers = [
+        {"alias": "test_server", "hostname": "localhost", "user": "testuser", "key_path": "/path/to/key"}
+    ]
+    with patch('src.ssh_manager.get_all_servers', MagicMock(return_value=servers)):
+        manager = SSHManager()
     return manager
 
 @pytest.mark.asyncio
@@ -33,7 +25,7 @@ async def test_get_connection(manager):
 @pytest.mark.asyncio
 async def test_get_connection_not_found(manager):
     """Test getting a connection to a non-existent server."""
-    with pytest.raises(ValueError, match="Server with alias 'nonexistent' not found in config."):
+    with pytest.raises(ValueError, match="Server with alias 'nonexistent' not found in the database."):
         await manager.get_connection("nonexistent")
 
 @pytest.mark.asyncio
