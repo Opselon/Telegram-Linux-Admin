@@ -38,23 +38,104 @@ log_message() { echo "$(date +"%Y-%m-%d %H:%M:%S") - $1" | tee -a "$LOG_FILE"; }
 
 # --- Setup Wizard ---
 run_setup_wizard() {
-    clear; echo -e "${C_BOLD}====================================================${C_RESET}"; echo -e "${C_BOLD} Welcome to the Linux Secure Manager Setup Wizard ${C_RESET}"; echo -e "${C_BOLD}====================================================${C_RESET}"; print_warn "This script provides a full root shell. The security of your"; print_warn "Telegram account is critical. Enable Two-Step Verification."; echo
-    local new_bot_token; while [ -z "$new_bot_token" ]; do prompt_input "Enter your Telegram Bot Token" "" new_bot_token; done
-    local new_chat_id; print_info "To find your Chat ID, send a message to your bot, then visit:"; print_info "https://api.telegram.org/bot${new_bot_token}/getUpdates"; while [[ ! "$new_chat_id" =~ ^[0-9]+$ ]]; do prompt_input "Enter your numerical Telegram Chat ID" "" new_chat_id; done
-    local new_auto_maintenance; prompt_input "Enable scheduled automatic updates (Sun at 3am)? (y/n)" "y" new_auto_maintenance; [[ "$new_auto_maintenance" =~ ^[Yy]$ ]] && new_auto_maintenance="1" || new_auto_maintenance="0"
-    print_info "Saving configuration..."
-    sed -i "s#TELEGRAM_BOT_TOKEN=\".*\"#TELEGRAM_BOT_TOKEN=\"$new_bot_token\"#" "$SCRIPT_PATH"
-    sed -i "s#TELEGRAM_CHAT_ID=\".*\"#TELEGRAM_CHAT_ID=\"$new_chat_id\"#" "$SCRIPT_PATH"
-    sed -i "s#ENABLE_AUTO_MAINTENANCE=\".*\"#ENABLE_AUTO_MAINTENANCE=\"$new_auto_maintenance\"#" "$SCRIPT_PATH"
-    if grep -q "YOUR_TELEGRAM_BOT_TOKEN" "$SCRIPT_PATH"; then print_error "Configuration save FAILED! This is usually a permissions issue."; print_error "Please ensure you are running the installer with 'sudo'. Aborting."; exit 1; fi
-    print_success "Configuration saved!"
-    local setup_cron; prompt_input "Automatically set up cron jobs? (y/n)" "y" setup_cron
+    clear
+    echo -e "${C_BOLD}====================================================${C_RESET}"
+    echo -e "${C_BOLD} Welcome to the Linux Secure Manager Setup Wizard ${C_RESET}"
+    echo -e "${C_BOLD}====================================================${C_RESET}"
+    print_warn "This script provides a full root shell. The security of your"
+    print_warn "Telegram account is critical. Enable Two-Step Verification."
+    echo
+
+    # --- Get User Input ---
+    local new_bot_token
+    while [ -z "$new_bot_token" ]; do
+        prompt_input "Enter your Telegram Bot Token" "" new_bot_token
+    done
+
+    local new_chat_id
+    print_info "To find your Chat ID, send a message to your bot, then visit:"
+    print_info "https://api.telegram.org/bot${new_bot_token}/getUpdates"
+    while [[ ! "$new_chat_id" =~ ^[0-9]+$ ]]; do
+        prompt_input "Enter your numerical Telegram Chat ID" "" new_chat_id
+    done
+
+    local new_auto_maintenance
+    prompt_input "Enable scheduled automatic updates (Sun at 3am)? (y/n)" "y" new_auto_maintenance
+    [[ "$new_auto_maintenance" =~ ^[Yy]$ ]] && new_auto_maintenance="1" || new_auto_maintenance="0"
+
+    # --- Robust Save Configuration ---
+    print_info "Attempting to save configuration..."
+    
+    # Create a temporary file to build the new script content
+    local temp_script_file
+    temp_script_file=$(mktemp)
+
+    # Use awk for a robust, line-by-line replacement of the config block
+    awk -v token="$new_bot_token" -v chat_id="$new_chat_id" -v auto_maint="$new_auto_maintenance" '
+    BEGIN { in_block=0 }
+    /# \[CONFIG_START\]/ {
+        print "# [CONFIG_START]"
+        print "TELEGRAM_BOT_TOKEN=\"" token "\""
+        print "TELEGRAM_CHAT_ID=\"" chat_id "\""
+        print "ENABLE_AUTO_MAINTENANCE=\"" auto_maint "\""
+        in_block=1
+        next
+    }
+    /# \[CONFIG_END\]/ {
+        print "# [CONFIG_END]"
+        in_block=0
+        next
+    }
+    !in_block { print }
+    ' "$SCRIPT_PATH" > "$temp_script_file"
+
+    # Verify the temporary file was created and has content
+    if [ ! -s "$temp_script_file" ]; then
+        print_error "Failed to create temporary config file. Aborting."
+        rm -f "$temp_script_file"
+        exit 1
+    fi
+
+    # Attempt to replace the original script with the new one
+    if ! mv "$temp_script_file" "$SCRIPT_PATH"; then
+        print_error "Configuration save FAILED! Could not overwrite the script file."
+        print_error "Even as root, this can fail if the file has an 'immutable' flag."
+        print_info "Run this command to check: lsattr $SCRIPT_PATH"
+        print_info "If you see an 'i' attribute, remove it with: sudo chattr -i $SCRIPT_PATH"
+        print_error "Aborting setup."
+        rm -f "$temp_script_file"
+        exit 1
+    fi
+    
+    # Final verification
+    if grep -q "YOUR_TELEGRAM_BOT_TOKEN" "$SCRIPT_PATH"; then
+        print_error "Verification FAILED. The configuration was not written correctly."
+        print_error "Aborting setup."
+        exit 1
+    fi
+    
+    print_success "Configuration saved successfully!"
+    chmod +x "$SCRIPT_PATH" # Ensure script remains executable
+
+    # --- Setup Cron Jobs ---
+    local setup_cron
+    prompt_input "Automatically set up cron jobs? (y/n)" "y" setup_cron
     if [[ "$setup_cron" =~ ^[Yy]$ ]]; then
-        print_info "Setting up cron jobs..."; local LISTEN_CRON="* * * * * $SCRIPT_PATH --listen >> $LOG_FILE 2>&1"; (crontab -l 2>/dev/null | grep -Fv "$SCRIPT_PATH --listen" || true; echo "$LISTEN_CRON") | crontab -
-        if [ "$new_auto_maintenance" -eq 1 ]; then local AUTO_CRON="0 3 * * 0 $SCRIPT_PATH --auto >> $LOG_FILE 2>&1"; (crontab -l 2>/dev/null | grep -Fv "$SCRIPT_PATH --auto" || true; echo "$AUTO_CRON") | crontab -; fi
+        print_info "Setting up cron jobs..."
+        local LISTEN_CRON="* * * * * $SCRIPT_PATH --listen >> $LOG_FILE 2>&1"
+        (crontab -l 2>/dev/null | grep -Fv "$SCRIPT_PATH --listen" || true; echo "$LISTEN_CRON") | crontab -
+        
+        if [ "$new_auto_maintenance" -eq 1 ]; then
+            local AUTO_CRON="0 3 * * 0 $SCRIPT_PATH --auto >> $LOG_FILE 2>&1"
+            (crontab -l 2>/dev/null | grep -Fv "$SCRIPT_PATH --auto" || true; echo "$AUTO_CRON") | crontab -
+        fi
         print_success "Cron jobs have been configured."
     fi
-    echo; print_success "Setup complete! Type /start in your Telegram bot."; print_info "You can run 'sudo $SCRIPT_PATH' again for a management menu."; exit 0
+
+    echo
+    print_success "Setup complete! Type /start in your Telegram bot."
+    print_info "You can run 'sudo $SCRIPT_PATH' again for a management menu."
+    exit 0
 }
 
 # --- Telegram API & Messaging ---
