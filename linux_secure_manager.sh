@@ -36,7 +36,6 @@ REPO_URL="https://raw.githubusercontent.com/Opselon/Telegram-Linux-Admin/main/li
 
 log_message() { echo "$(date +"%Y-%m-%d %H:%M:%S") - $1" | tee -a "$LOG_FILE"; }
 
-# --- Setup Wizard ---
 run_setup_wizard() {
     clear
     echo -e "${C_BOLD}====================================================${C_RESET}"
@@ -63,31 +62,38 @@ run_setup_wizard() {
     prompt_input "Enable scheduled automatic updates (Sun at 3am)? (y/n)" "y" new_auto_maintenance
     [[ "$new_auto_maintenance" =~ ^[Yy]$ ]] && new_auto_maintenance="1" || new_auto_maintenance="0"
 
-    # --- Robust Save Configuration ---
+    # --- Bulletproof Save Configuration ---
     print_info "Attempting to save configuration..."
     
-    # Create a temporary file to build the new script content
+    # Find the line numbers of the configuration markers
+    local start_line
+    start_line=$(grep -n "# \[CONFIG_START\]" "$SCRIPT_PATH" | cut -d: -f1)
+    local end_line
+    end_line=$(grep -n "# \[CONFIG_END\]" "$SCRIPT_PATH" | cut -d: -f1)
+
+    if [ -z "$start_line" ] || [ -z "$end_line" ]; then
+        print_error "Configuration markers (# [CONFIG_START] or # [CONFIG_END]) are missing from the script."
+        print_error "The script file may be corrupted. Please re-download it. Aborting."
+        exit 1
+    fi
+
+    # Create the new configuration block as a string
+    local new_config_block
+    new_config_block="# [CONFIG_START]
+TELEGRAM_BOT_TOKEN=\"$new_bot_token\"
+TELEGRAM_CHAT_ID=\"$new_chat_id\"
+ENABLE_AUTO_MAINTENANCE=\"$new_auto_maintenance\"
+# [CONFIG_END]"
+
+    # Create a temporary file by combining:
+    # 1. The part of the script BEFORE the config block
+    # 2. The NEW config block
+    # 3. The part of the script AFTER the config block
     local temp_script_file
     temp_script_file=$(mktemp)
-
-    # Use awk for a robust, line-by-line replacement of the config block
-    awk -v token="$new_bot_token" -v chat_id="$new_chat_id" -v auto_maint="$new_auto_maintenance" '
-    BEGIN { in_block=0 }
-    /# \[CONFIG_START\]/ {
-        print "# [CONFIG_START]"
-        print "TELEGRAM_BOT_TOKEN=\"" token "\""
-        print "TELEGRAM_CHAT_ID=\"" chat_id "\""
-        print "ENABLE_AUTO_MAINTENANCE=\"" auto_maint "\""
-        in_block=1
-        next
-    }
-    /# \[CONFIG_END\]/ {
-        print "# [CONFIG_END]"
-        in_block=0
-        next
-    }
-    !in_block { print }
-    ' "$SCRIPT_PATH" > "$temp_script_file"
+    head -n $((start_line - 1)) "$SCRIPT_PATH" > "$temp_script_file"
+    echo "$new_config_block" >> "$temp_script_file"
+    tail -n +$((end_line + 1)) "$SCRIPT_PATH" >> "$temp_script_file"
 
     # Verify the temporary file was created and has content
     if [ ! -s "$temp_script_file" ]; then
@@ -99,9 +105,8 @@ run_setup_wizard() {
     # Attempt to replace the original script with the new one
     if ! mv "$temp_script_file" "$SCRIPT_PATH"; then
         print_error "Configuration save FAILED! Could not overwrite the script file."
-        print_error "Even as root, this can fail if the file has an 'immutable' flag."
-        print_info "Run this command to check: lsattr $SCRIPT_PATH"
-        print_info "If you see an 'i' attribute, remove it with: sudo chattr -i $SCRIPT_PATH"
+        print_error "This can fail if the file has an 'immutable' flag ('lsattr' should show 'i')."
+        print_info "If so, remove it with: sudo chattr -i $SCRIPT_PATH"
         print_error "Aborting setup."
         rm -f "$temp_script_file"
         exit 1
@@ -109,7 +114,7 @@ run_setup_wizard() {
     
     # Final verification
     if grep -q "YOUR_TELEGRAM_BOT_TOKEN" "$SCRIPT_PATH"; then
-        print_error "Verification FAILED. The configuration was not written correctly."
+        print_error "Verification FAILED. For an unknown reason, the configuration was not written correctly."
         print_error "Aborting setup."
         exit 1
     fi
