@@ -62,21 +62,9 @@ run_setup_wizard() {
     prompt_input "Enable scheduled automatic updates (Sun at 3am)? (y/n)" "y" new_auto_maintenance
     [[ "$new_auto_maintenance" =~ ^[Yy]$ ]] && new_auto_maintenance="1" || new_auto_maintenance="0"
 
-    # --- Bulletproof Save Configuration ---
+    # --- Bulletproof Save Configuration with Live Error Logging ---
     print_info "Attempting to save configuration..."
     
-    # Find the line numbers of the configuration markers
-    local start_line
-    start_line=$(grep -n "# \[CONFIG_START\]" "$SCRIPT_PATH" | cut -d: -f1)
-    local end_line
-    end_line=$(grep -n "# \[CONFIG_END\]" "$SCRIPT_PATH" | cut -d: -f1)
-
-    if [ -z "$start_line" ] || [ -z "$end_line" ]; then
-        print_error "Configuration markers (# [CONFIG_START] or # [CONFIG_END]) are missing from the script."
-        print_error "The script file may be corrupted. Please re-download it. Aborting."
-        exit 1
-    fi
-
     # Create the new configuration block as a string
     local new_config_block
     new_config_block="# [CONFIG_START]
@@ -84,37 +72,54 @@ TELEGRAM_BOT_TOKEN=\"$new_bot_token\"
 TELEGRAM_CHAT_ID=\"$new_chat_id\"
 ENABLE_AUTO_MAINTENANCE=\"$new_auto_maintenance\"
 # [CONFIG_END]"
-
-    # Create a temporary file by combining:
-    # 1. The part of the script BEFORE the config block
-    # 2. The NEW config block
-    # 3. The part of the script AFTER the config block
+    
+    # Create a temporary file to build the new script content
     local temp_script_file
     temp_script_file=$(mktemp)
+    if [ $? -ne 0 ]; then
+        print_error "FATAL: Could not create a temporary file in /tmp. Aborting."
+        exit 1
+    fi
+
+    # Find line numbers of the config markers
+    local start_line; start_line=$(grep -n "# \[CONFIG_START\]" "$SCRIPT_PATH" | cut -d: -f1)
+    local end_line; end_line=$(grep -n "# \[CONFIG_END\]" "$SCRIPT_PATH" | cut -d: -f1)
+    if [ -z "$start_line" ] || [ -z "$end_line" ]; then
+        print_error "FATAL: Config markers are missing from the script. Please re-download it. Aborting."
+        rm -f "$temp_script_file"
+        exit 1
+    fi
+
+    # Rebuild the script in the temporary file
     head -n $((start_line - 1)) "$SCRIPT_PATH" > "$temp_script_file"
     echo "$new_config_block" >> "$temp_script_file"
     tail -n +$((end_line + 1)) "$SCRIPT_PATH" >> "$temp_script_file"
 
-    # Verify the temporary file was created and has content
-    if [ ! -s "$temp_script_file" ]; then
-        print_error "Failed to create temporary config file. Aborting."
-        rm -f "$temp_script_file"
-        exit 1
-    fi
+    # --- Critical Step: Attempt to overwrite the original script and CAPTURE any error ---
+    local error_output
+    error_output=$(mv -f "$temp_script_file" "$SCRIPT_PATH" 2>&1)
 
-    # Attempt to replace the original script with the new one
-    if ! mv "$temp_script_file" "$SCRIPT_PATH"; then
-        print_error "Configuration save FAILED! Could not overwrite the script file."
-        print_error "This can fail if the file has an 'immutable' flag ('lsattr' should show 'i')."
-        print_info "If so, remove it with: sudo chattr -i $SCRIPT_PATH"
-        print_error "Aborting setup."
-        rm -f "$temp_script_file"
+    # Check the exit code of the 'mv' command
+    if [ $? -ne 0 ]; then
+        print_error "Configuration save FAILED! The system prevented the script file from being overwritten."
+        echo
+        echo -e "${C_YELLOW}====================== LIVE SYSTEM ERROR LOG ======================${C_RESET}"
+        echo -e "${C_RED}$error_output${C_RESET}"
+        echo -e "${C_YELLOW}===================================================================${C_RESET}"
+        echo
+        print_info "Common causes for this error, even as root:"
+        print_info "1. The filesystem is mounted as read-only."
+        print_info "2. The file has a special 'immutable' attribute set."
+        print_info "   - Check this with the command: lsattr $SCRIPT_PATH"
+        print_info "   - If you see an 'i' attribute, remove it with: sudo chattr -i $SCRIPT_PATH"
+        print_error "Aborting setup. Please resolve the system error above and try again."
+        rm -f "$temp_script_file" # Clean up temp file on failure
         exit 1
     fi
     
-    # Final verification
+    # Final verification as a sanity check
     if grep -q "YOUR_TELEGRAM_BOT_TOKEN" "$SCRIPT_PATH"; then
-        print_error "Verification FAILED. For an unknown reason, the configuration was not written correctly."
+        print_error "Verification FAILED. The configuration was not written correctly for an unknown reason."
         print_error "Aborting setup."
         exit 1
     fi
