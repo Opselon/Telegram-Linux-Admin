@@ -5,9 +5,9 @@ import os
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 from telegram.error import BadRequest
-from src.ssh_manager import SSHManager
-from src.updater import check_for_updates, apply_update
-from src.database import get_whitelisted_users, get_all_servers, initialize_database, DB_FILE, close_db_connection
+from .ssh_manager import SSHManager
+from .updater import check_for_updates, apply_update
+from .database import get_whitelisted_users, get_all_servers, initialize_database, DB_FILE, close_db_connection
 from functools import wraps
 
 # Enable logging
