@@ -13,4 +13,4 @@ python3 scripts/setup.py
 
 echo "\n--- Setup complete ---"
 echo "To activate the virtual environment, run: source venv/bin/activate"
-echo "To run the bot manually, run: python3 src/main.py"
+echo "To run the bot manually, run: python3 -m src.main"
