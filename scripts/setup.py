@@ -1,13 +1,13 @@
 import json
 import os
-import stat
 import getpass
-import subprocess
+from src.database import initialize_database, add_user, add_server, get_all_servers, remove_server
 
 CONFIG_FILE = 'config.json'
 SERVICE_FILE = '/etc/systemd/system/telegram_bot.service'
 VENV_PYTHON = 'venv/bin/python'
 CRON_FILE = '/etc/cron.d/telegram_bot_update'
+
 
 def print_header(title):
     print("\n" + "="*40)
@@ -22,36 +22,35 @@ def get_input(prompt, default=None):
     else:
         return input(f"{prompt}: ")
 
+def setup_telegram_token():
+    """Sets up the config.json file with the Telegram token."""
+    print_header("Telegram Bot Token Setup")
+    token = get_input("Enter your Telegram Bot Token")
+    with open('config.json', 'w') as f:
+        json.dump({"telegram_token": token}, f, indent=2)
+    print("Telegram token saved to config.json")
 
-def setup_config():
-    """Creates or updates the config.json file."""
-    print_header("Configuration Setup")
+def setup_database():
+    """Initializes the database and guides the user through initial setup."""
+    initialize_database()
 
-    if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, 'r') as f:
-            config = json.load(f)
-    else:
-        config = {"telegram_token": "", "whitelisted_users": [], "servers": []}
-
-    config['telegram_token'] = get_input("Enter your Telegram Bot Token", config.get('telegram_token'))
-
-    print("\n--- Whitelisted Users ---")
-    print("Enter your Telegram user ID to grant access to the bot.")
+    print_header("Initial User & Server Setup")
+    print("Enter your Telegram user ID to grant yourself access to the bot.")
     print("You can get your user ID by messaging @userinfobot on Telegram.")
     user_id = get_input("Your Telegram User ID")
     if user_id.isdigit():
-        config['whitelisted_users'] = [int(user_id)]
+        add_user(int(user_id))
+        print("User added successfully.")
     else:
         print("Invalid user ID. Must be a number.")
-        config['whitelisted_users'] = []
-
 
     while True:
         print("\n--- Server Configuration ---")
-        if not config['servers']:
+        servers = get_all_servers()
+        if not servers:
             print("No servers configured yet.")
         else:
-            for i, server in enumerate(config['servers']):
+            for i, server in enumerate(servers):
                 print(f"  {i+1}. {server['alias']} ({server['user']}@{server['hostname']})")
 
         choice = get_input("\nChoose an action: [a]dd server, [r]emove server, [d]one", "d")
@@ -60,22 +59,23 @@ def setup_config():
             hostname = get_input("  Enter the server's hostname or IP address")
             user = get_input("  Enter the SSH username")
             key_path = get_input("  Enter the path to your SSH private key", f"/home/{getpass.getuser()}/.ssh/id_rsa")
-            config['servers'].append({"alias": alias, "hostname": hostname, "user": user, "key_path": key_path})
+            try:
+                add_server(alias, hostname, user, key_path)
+                print("Server added successfully.")
+            except ValueError as e:
+                print(f"Error: {e}")
         elif choice.lower() == 'r':
             try:
                 index = int(get_input("  Enter the number of the server to remove")) - 1
-                if 0 <= index < len(config['servers']):
-                    del config['servers'][index]
+                if 0 <= index < len(servers):
+                    remove_server(servers[index]['alias'])
+                    print("Server removed.")
                 else:
                     print("Invalid server number.")
             except ValueError:
                 print("Invalid input.")
         elif choice.lower() == 'd':
             break
-
-    with open(CONFIG_FILE, 'w') as f:
-        json.dump(config, f, indent=2)
-    print(f"\nConfiguration successfully saved to {CONFIG_FILE}")
 
 def setup_systemd():
     """Generates and installs a systemd service file."""
@@ -161,7 +161,10 @@ if __name__ == "__main__":
         print_header("Telegram Bot Setup Wizard")
         print("This wizard will guide you through configuring the bot.")
 
-        setup_config()
+        if not os.path.exists('config.json'):
+            setup_telegram_token()
+
+        setup_database()
 
         auto_update = get_input("\nEnable daily automatic updates? (y/n)", "y")
         if auto_update.lower() == 'y':

@@ -1,6 +1,6 @@
 import asyncio
 import asyncssh
-import json
+from src.database import get_all_servers
 
 class SSHConnection:
     def __init__(self, config):
@@ -39,22 +39,21 @@ class SSHConnection:
             await self.conn.wait_closed()
 
 class SSHManager:
-    def __init__(self, config_path='config.json'):
-        with open(config_path, 'r') as f:
-            self.config = json.load(f)
+    def __init__(self):
         self.connections = {}
+        self.server_configs = {s['alias']: s for s in get_all_servers()}
 
     def get_server_config(self, alias):
-        for server in self.config['servers']:
-            if server['alias'] == alias:
-                return server
-        return None
+        return self.server_configs.get(alias)
+
+    def refresh_server_configs(self):
+        self.server_configs = {s['alias']: s for s in get_all_servers()}
 
     async def get_connection(self, alias):
         if alias not in self.connections:
             server_config = self.get_server_config(alias)
             if not server_config:
-                raise ValueError(f"Server with alias '{alias}' not found in config.")
+                raise ValueError(f"Server with alias '{alias}' not found in the database.")
             self.connections[alias] = SSHConnection(server_config)
 
         conn = self.connections[alias]

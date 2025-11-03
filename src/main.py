@@ -1,11 +1,13 @@
 import logging
 import json
 import asyncio
+import os
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 from telegram.error import BadRequest
 from src.ssh_manager import SSHManager
 from src.updater import check_for_updates, apply_update
+from src.database import get_whitelisted_users, get_all_servers, initialize_database, DB_FILE, close_db_connection
 from functools import wraps
 
 # Enable logging
@@ -16,14 +18,16 @@ logger = logging.getLogger(__name__)
 
 ssh_manager = None
 user_connections = {}  # Maps user_id to server_alias
-config = {}
+whitelisted_users = []
+telegram_token = ""
+RESTORING = False
 
 def authorized(func):
     """Decorator to check if the user is authorized."""
     @wraps(func)
     async def wrapped(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
         user_id = update.effective_user.id
-        if user_id not in config.get('whitelisted_users', []):
+        if user_id not in whitelisted_users:
             if update.callback_query:
                 await update.callback_query.answer("You are not authorized.", show_alert=True)
             else:
@@ -42,16 +46,75 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Displays the main menu."""
     keyboard = [
         [InlineKeyboardButton("Connect to Server", callback_data='connect_menu')],
+        [InlineKeyboardButton("Backup & Restore", callback_data='backup_menu')],
         [InlineKeyboardButton("Check for Updates", callback_data='check_updates')],
+        [InlineKeyboardButton("Reload Server List", callback_data='reload_servers')],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text('Please choose an option:', reply_markup=reply_markup)
 
 @authorized
+async def backup_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Displays the backup and restore menu."""
+    keyboard = [
+        [InlineKeyboardButton("Backup Database", callback_data='backup')],
+        [InlineKeyboardButton("Restore from Backup", callback_data='restore')],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    if update.callback_query:
+        await update.callback_query.message.edit_text('Backup & Restore Options:', reply_markup=reply_markup)
+    else:
+        await update.message.reply_text('Backup & Restore Options:', reply_markup=reply_markup)
+
+@authorized
+async def backup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Sends the database file to the user."""
+    query = update.callback_query
+    await query.answer()
+    try:
+        await context.bot.send_document(chat_id=query.from_user.id, document=open(DB_FILE, 'rb'))
+    except Exception as e:
+        await query.message.reply_text(f"Failed to send backup: {e}")
+
+
+@authorized
+async def restore(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Prompts the user to upload a database file."""
+    global RESTORING
+    RESTORING = True
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("Please upload the `database.db` file to restore.")
+
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles file uploads for restoring the database."""
+    global RESTORING
+    if not RESTORING:
+        return
+
+    if not update.message.document or update.message.document.file_name != 'database.db':
+        await update.message.reply_text("Invalid file. Please upload a `database.db` file.")
+        return
+
+    try:
+        file = await context.bot.get_file(update.message.document.file_id)
+        await file.download_to_drive(DB_FILE)
+        await update.message.reply_text("Database restored. Restarting the bot to apply changes...")
+
+        # This will trigger the systemd service to restart the bot
+        os._exit(0)
+    except Exception as e:
+        await update.message.reply_text(f"Failed to restore database: {e}")
+    finally:
+        RESTORING = False
+
+
+@authorized
 async def connect_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Displays a menu of servers to connect to."""
+    servers = get_all_servers()
     keyboard = []
-    for server in config.get('servers', []):
+    for server in servers:
         keyboard.append([InlineKeyboardButton(server['alias'], callback_data=f"connect_{server['alias']}")])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -181,25 +244,37 @@ async def apply_update_button(update: Update, context: ContextTypes.DEFAULT_TYPE
     result = apply_update()
     await query.edit_message_text(result)
 
+@authorized
+async def reload_servers(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Reloads the server list from the database."""
+    query = update.callback_query
+    await query.answer()
+    ssh_manager.refresh_server_configs()
+    await query.edit_message_text("Server list reloaded.")
+
 async def post_shutdown(application: Application):
     await ssh_manager.disconnect_all()
+    close_db_connection()
 
 
 def main() -> None:
     """Start the bot."""
-    global ssh_manager, config
+    global ssh_manager, whitelisted_users, telegram_token
+
+    initialize_database()
+    whitelisted_users = get_whitelisted_users()
+
     try:
         with open('config.json', 'r') as f:
             config = json.load(f)
-        ssh_manager = SSHManager('config.json')
-    except FileNotFoundError:
-        logger.error("config.json not found. Please create it from config.example.json.")
-        return
-    except (json.JSONDecodeError, KeyError) as e:
-        logger.error(f"Error in config.json: {e}")
+            telegram_token = config['telegram_token']
+    except (FileNotFoundError, KeyError):
+        logger.error("config.json with telegram_token not found. Please run the setup script.")
         return
 
-    application = Application.builder().token(config["telegram_token"]).post_shutdown(post_shutdown).build()
+    ssh_manager = SSHManager()
+
+    application = Application.builder().token(telegram_token).post_shutdown(post_shutdown).build()
 
     # Core commands
     application.add_handler(CommandHandler("start", start))
@@ -217,9 +292,15 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(connect, pattern='^connect_'))
     application.add_handler(CallbackQueryHandler(check_updates_button, pattern='^check_updates$'))
     application.add_handler(CallbackQueryHandler(apply_update_button, pattern='^apply_update$'))
+    application.add_handler(CallbackQueryHandler(reload_servers, pattern='^reload_servers$'))
+    application.add_handler(CallbackQueryHandler(backup_menu, pattern='^backup_menu$'))
+    application.add_handler(CallbackQueryHandler(backup, pattern='^backup$'))
+    application.add_handler(CallbackQueryHandler(restore, pattern='^restore$'))
 
     # Generic command handler for any text
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_raw_command))
+    application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+
 
     application.run_polling()
 
