@@ -1,6 +1,6 @@
 import asyncio
 import asyncssh
-from src.database import get_all_servers
+from .database import get_all_servers
 
 class SSHConnection:
     def __init__(self, config):

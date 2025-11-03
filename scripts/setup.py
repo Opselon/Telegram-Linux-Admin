@@ -1,6 +1,11 @@
 import json
 import os
+import sys
 import getpass
+
+# Add the project root to the Python path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 from src.database import initialize_database, add_user, add_server, get_all_servers, remove_server
 
 CONFIG_FILE = 'config.json'
@@ -85,7 +90,6 @@ def setup_systemd():
         print(f"To install the service, please run 'sudo python3 {os.path.abspath(__file__)} --install-service'")
         return
 
-    script_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src', 'main.py'))
     python_path = os.path.abspath(VENV_PYTHON)
 
     if not os.path.exists(python_path):
@@ -102,7 +106,7 @@ After=network.target
 User={getpass.getuser()}
 Group={getpass.getuser()}
 WorkingDirectory={os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))}
-ExecStart={python_path} {script_path}
+ExecStart={python_path} -m src.main
 Restart=always
 RestartSec=5
 
@@ -173,3 +177,8 @@ if __name__ == "__main__":
         install_service = get_input("\nInstall the systemd service to run the bot automatically? (y/n)", "y")
         if install_service.lower() == 'y':
             setup_systemd()
+
+        print("\n--- Setup Complete ---")
+        print("To run the bot manually, activate the virtual environment and run:")
+        print("source venv/bin/activate")
+        print("python3 -m src.main")
