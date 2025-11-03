@@ -2,8 +2,6 @@
 
 <div align="center">
 
-<img src="https://raw.githubusercontent.com/Opselon/Telegram-Linux-Admin/main/assets/logo.png" alt="Telegram Linux Admin Logo" width="150"/>
-
 ### The Ultimate Interactive Linux Terminal in Your Pocket
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
