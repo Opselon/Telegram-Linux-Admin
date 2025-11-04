@@ -7,7 +7,7 @@ import subprocess
 # Add the project root to the Python path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from src.database import initialize_database, add_user, remove_user, get_whitelisted_users
+from src.database import initialize_database
 from src.config import config
 SERVICE_FILE = '/etc/systemd/system/telegram_bot.service'
 VENV_PYTHON = 'venv/bin/python'
@@ -147,6 +147,43 @@ WantedBy=multi-user.target
     input("\n  Press Enter to return to the main menu...")
 
 
+def manage_cron_job():
+    print_header("Cron Job Management for Auto-Updates")
+    is_installed = os.path.exists(CRON_FILE)
+    print(f"  Cron Job Status: {'Installed' if is_installed else 'Not Installed'}")
+
+    print("\n  [i] Install/Update Cron Job | [u] Uninstall Cron Job | [m] Main Menu")
+    choice = get_input("Choose an action").lower()
+
+    if choice == 'i':
+        update_command = os.path.abspath('venv/bin/tla-bot-update')
+        user = getpass.getuser()
+        log_file = '/var/log/telegram_bot_update.log'
+
+        # Ensure log file exists and has correct permissions
+        if not os.path.exists(log_file):
+            run_as_root(["touch", log_file])
+            run_as_root(["chown", f"{user}:{user}", log_file])
+
+        cron_content = f"0 3 * * * {user} {update_command} >> {log_file} 2>&1\n"
+        temp_cron_file = "telegram_bot_update.tmp"
+        with open(temp_cron_file, 'w') as f:
+            f.write(cron_content)
+
+        if run_as_root(["mv", temp_cron_file, CRON_FILE]):
+            run_as_root(["chmod", "644", CRON_FILE])
+            print("  ✅ Cron job for daily updates installed successfully.")
+
+    elif choice == 'u':
+        if is_installed:
+            run_as_root(["rm", CRON_FILE])
+            print("  ✅ Cron job uninstalled.")
+        else:
+            print("  Cron job is not installed.")
+
+    input("\n  Press Enter to return to the main menu...")
+
+
 def main():
     initialize_database()
     while True:
@@ -155,7 +192,8 @@ def main():
             '1': "Configure Telegram Bot",
             '2': "Manage Whitelisted Users",
             '3': "Manage Systemd Service",
-            '4': "Exit"
+            '4': "Manage Cron Job for Auto-Updates",
+            '5': "Exit"
         }
         print_menu(menu_options)
         choice = get_input("Select an option")
@@ -167,6 +205,8 @@ def main():
         elif choice == '3':
             manage_systemd_service()
         elif choice == '4':
+            manage_cron_job()
+        elif choice == '5':
             print("\nExiting setup panel. Goodbye!\n")
             break
         else:
