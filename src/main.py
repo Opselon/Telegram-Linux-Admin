@@ -44,6 +44,8 @@ def authorized(func):
             await send_debug_message(update, f"Unauthorized access denied for user_id: {user_id}.")
             if update.callback_query:
                 await update.callback_query.answer("🚫 You are not authorized to use this bot.", show_alert=True)
+            else:
+                await update.message.reply_text("🚫 **Access Denied**\nYou are not authorized to use this bot.")
             return
 
         await send_debug_message(update, "Authorization successful.")
