@@ -249,17 +249,34 @@ def rollback(commit_hash, db_backup_path):
 
     return rollback_log
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
+def main():
+    parser = argparse.ArgumentParser(description="Telegram Linux Admin Bot Updater")
     parser.add_argument('--auto', action='store_true', help='Run in automated (cron) mode.')
     args = parser.parse_args()
 
     if args.auto:
+        logger.info("Running in automated mode...")
         update_status = check_for_updates()
-        if "An update is available!" in update_status:
+        if update_status["status"] == "update_available":
+            logger.info("Update available, applying automatically.")
             apply_update(is_auto=True)
         else:
-            print("No updates available.")
+            logger.info("No updates available.")
     else:
-        # This part is for manual execution, which is not the primary use case of this script
-        print("This script is intended to be run with the --auto flag by a cron job.")
+        print("--- Manual Bot Updater ---")
+        update_status = check_for_updates()
+        print(f"Status: {update_status['message']}")
+
+        if update_status["status"] == "update_available":
+            choice = input("An update is available. Do you want to apply it? (y/n): ").lower()
+            if choice == 'y':
+                print("Starting update...")
+                log_output = apply_update(is_auto=False)
+                # We need to strip markdown for the console
+                log_output = log_output.replace("**", "").replace("`", "")
+                print(log_output)
+            else:
+                print("Update cancelled.")
+
+if __name__ == '__main__':
+    main()

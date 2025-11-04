@@ -13,10 +13,18 @@ SERVICE_FILE = '/etc/systemd/system/telegram_bot.service'
 VENV_PYTHON = 'venv/bin/python'
 CRON_FILE = '/etc/cron.d/telegram_bot_update'
 
+# --- Color Definitions ---
+C_BLUE = "\033[34m"
+C_GREEN = "\033[32m"
+C_YELLOW = "\033[33m"
+C_RED = "\033[31m"
+C_BOLD = "\033[1m"
+C_RESET = "\033[0m"
+
 def print_header(title):
-    print("\n" + "="*50)
-    print(f"  {title}")
-    print("="*50)
+    print(f"\n{C_BOLD}{'='*50}{C_RESET}")
+    print(f"  {C_BOLD}{C_BLUE}{title}{C_RESET}")
+    print(f"{C_BOLD}{'='*50}{C_RESET}")
 
 def print_menu(options):
     for key, value in options.items():
@@ -24,7 +32,7 @@ def print_menu(options):
     print("-" * 50)
 
 def get_input(prompt):
-    return input(f"  > {prompt}: ")
+    return input(f"  {C_YELLOW}> {prompt}:{C_RESET} ")
 
 def run_as_root(command):
     """Executes a command with sudo, asking for password if necessary."""
