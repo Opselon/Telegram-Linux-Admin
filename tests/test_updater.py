@@ -56,3 +56,37 @@ def test_apply_update_success(mock_run_command, mock_exists, mock_copy, mock_rem
     assert "Update process completed!" in result
     assert mock_run_command.call_count == 6
     assert mock_copy.called
+
+@patch('os.remove')
+@patch('shutil.move')
+@patch('shutil.copy2')
+@patch('os.path.exists')
+@patch('src.updater.run_command')
+def test_apply_update_failure_and_rollback(mock_run_command, mock_exists, mock_copy, mock_move, mock_remove):
+    """Test a failed update and the subsequent rollback."""
+    # Simulate the existence of the db for backup, and the backup for restore
+    mock_exists.side_effect = lambda path: path in ['database.db', 'database.db.backup']
+
+    mock_run_command.side_effect = [
+        # Pre-update checks
+        {"stdout": "true", "stderr": "", "returncode": 0},
+        {"stdout": "", "stderr": "", "returncode": 0},
+        # Backup
+        {"stdout": "old_hash", "stderr": "", "returncode": 0},
+        # Update process fails
+        {"stdout": "", "stderr": "Error pulling", "returncode": 1}, # git pull fails
+        # Rollback process
+        {"stdout": "Success", "stderr": "", "returncode": 0}, # git reset --hard
+        {"stdout": "Success", "stderr": "", "returncode": 0}, # pip install
+        {"stdout": "Success", "stderr": "", "returncode": 0}, # systemctl restart
+    ]
+
+    result = apply_update()
+
+    assert "Update Failed:" in result
+    assert "Attempting to roll back" in result
+    assert "Bot service restarted. The system should be back to its pre-update state." in result
+    # Pre-checks (2) + Backup (1) + Failed pull (1) + Rollback (3)
+    assert mock_run_command.call_count == 7
+    assert mock_copy.call_count == 1 # Only for backup
+    assert mock_move.call_count == 1 # For restore
