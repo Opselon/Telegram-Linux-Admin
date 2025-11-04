@@ -110,6 +110,7 @@ def _resolve_message(update: Update):
 async def add_server_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Starts the conversation to add a new server."""
 <<<<<<< ours
+<<<<<<< ours
     if (query := update.callback_query) is not None:
         await query.answer()
     message = _resolve_message(update)
@@ -122,6 +123,8 @@ async def add_server_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         "First, what is the short alias for this server? (e.g., 'webserver')"
     )
 =======
+=======
+>>>>>>> theirs
     prompt = (
         "🖥️ **Add a New Server**\n\n"
         "Let's add a new server. First, what is the short alias for this server? (e.g., `webserver`)"
@@ -133,6 +136,9 @@ async def add_server_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     else:
         await update.effective_message.reply_text(prompt, parse_mode='Markdown')
 
+<<<<<<< ours
+>>>>>>> theirs
+=======
 >>>>>>> theirs
     return ALIAS
 
@@ -210,14 +216,20 @@ async def remove_server_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
     servers = get_all_servers()
     if not servers:
 <<<<<<< ours
+<<<<<<< ours
         await message.reply_text("No servers to remove.")
 =======
+=======
+>>>>>>> theirs
         message = "🤷 **No servers to remove.**"
         if update.callback_query:
             await update.callback_query.answer()
             await update.callback_query.edit_message_text(message, parse_mode='Markdown')
         else:
             await update.effective_message.reply_text(message, parse_mode='Markdown')
+<<<<<<< ours
+>>>>>>> theirs
+=======
 >>>>>>> theirs
         return
 
@@ -229,8 +241,11 @@ async def remove_server_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     reply_markup = InlineKeyboardMarkup(keyboard)
 <<<<<<< ours
+<<<<<<< ours
     await message.reply_text("Select a server to remove:", reply_markup=reply_markup)
 =======
+=======
+>>>>>>> theirs
     if update.callback_query:
         await update.callback_query.answer()
         await update.callback_query.edit_message_text(
@@ -244,6 +259,9 @@ async def remove_server_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
             reply_markup=reply_markup,
             parse_mode='Markdown'
         )
+<<<<<<< ours
+>>>>>>> theirs
+=======
 >>>>>>> theirs
 
 # --- Navigation ---
@@ -345,6 +363,7 @@ async def handle_server_connection(update: Update, context: ContextTypes.DEFAULT
 
 @authorized
 <<<<<<< ours
+<<<<<<< ours
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Parses the CallbackQuery and updates the message text."""
     query = update.callback_query
@@ -364,6 +383,8 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update_bot_command(update, context)
 
 
+=======
+>>>>>>> theirs
 =======
 >>>>>>> theirs
 # --- Debugging ---
@@ -567,6 +588,7 @@ async def remove_server_confirm(update: Update, context: ContextTypes.DEFAULT_TY
 async def check_for_updates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Checks for updates and notifies the user."""
 <<<<<<< ours
+<<<<<<< ours
     message = _resolve_message(update)
     if message is None:
         logger.warning("Check for updates command triggered without message context.")
@@ -580,10 +602,16 @@ async def check_for_updates_command(update: Update, context: ContextTypes.DEFAUL
     result = check_for_updates()
     await update.effective_message.reply_text(result["message"], disable_web_page_preview=True)
 >>>>>>> theirs
+=======
+    await update.effective_message.reply_text("🔎 Checking for updates...")
+    result = check_for_updates()
+    await update.effective_message.reply_text(result["message"], disable_web_page_preview=True)
+>>>>>>> theirs
 
 @authorized
 async def update_bot_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles the bot update process with real-time feedback."""
+<<<<<<< ours
 <<<<<<< ours
     message = _resolve_message(update)
     if message is None:
@@ -593,6 +621,8 @@ async def update_bot_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     progress_message = await message.reply_text(
         "Update initiated...\n\nThis may take a few minutes. The log will appear here once the process is complete.",
 =======
+=======
+>>>>>>> theirs
     if update.callback_query:
         await update.callback_query.answer()
         base_message = update.callback_query.message
