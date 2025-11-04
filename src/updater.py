@@ -164,7 +164,7 @@ def apply_update(is_auto=False):
 
         # Step 4: Update Dependencies
         log_and_append("\n**4. Installing/updating dependencies...**")
-        pip_command = f"'{sys.executable}' -m pip install -r requirements.txt"
+        pip_command = f"'{sys.executable}' -m pip install -e ."
         pip_result = run_command(pip_command)
         if pip_result["returncode"] != 0:
             raise Exception(f"Failed to update dependencies:\n```\n{pip_result['stderr']}\n```")
@@ -231,7 +231,7 @@ def rollback(commit_hash, db_backup_path):
 
     # 3. Re-install old dependencies
     log_and_append("\n**3. Re-installing previous dependencies...**")
-    pip_command = f"'{sys.executable}' -m pip install -r requirements.txt"
+    pip_command = f"'{sys.executable}' -m pip install -e ."
     pip_result = run_command(pip_command)
     if pip_result["returncode"] != 0:
         log_and_append(f"⚠️ **Warning:** Failed to re-install dependencies. The bot may not start correctly.\n```\n{pip_result['stderr']}\n```")

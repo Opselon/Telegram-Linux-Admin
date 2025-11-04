@@ -1,4 +1,0 @@
-python-telegram-bot[ext]
-asyncssh
-pytest
-pytest-asyncio
