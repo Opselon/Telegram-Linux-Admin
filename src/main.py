@@ -27,6 +27,7 @@ whitelisted_users = []
 telegram_token = ""
 RESTORING = False
 SHELL_MODE_USERS = set()
+DEBUG_MODE = False
 
 # Conversation states for adding a server
 (ALIAS, HOSTNAME, USER, AUTH_METHOD, PASSWORD, KEY_PATH) = range(6)
@@ -37,16 +38,16 @@ def authorized(func):
     @wraps(func)
     async def wrapped(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
         user_id = update.effective_user.id
-        # Log every authorization attempt to see what's happening
-        logger.info(f"Checking authorization for user_id: {user_id}. Whitelist: {whitelisted_users}")
+        await send_debug_message(update, f"Checking authorization for user_id: {user_id}...")
 
         if user_id not in whitelisted_users:
             logger.warning(f"Unauthorized access denied for user_id: {user_id}")
+            await send_debug_message(update, f"Unauthorized access denied for user_id: {user_id}.")
             if update.callback_query:
                 await update.callback_query.answer("🚫 You are not authorized to use this bot.", show_alert=True)
-            # Silently ignore unauthorized commands to prevent bot discovery
             return
 
+        await send_debug_message(update, "Authorization successful.")
         return await func(update, context, *args, **kwargs)
     return wrapped
 
@@ -144,6 +145,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Displays the main menu with options."""
+    logger.info("Displaying main menu.")
     keyboard = [
         [InlineKeyboardButton("🔌 Connect to a Server", callback_data='connect_server_menu')],
         [
@@ -166,6 +168,7 @@ async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 @authorized
 async def connect_server_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Displays a menu of servers to connect to."""
+    logger.info("Displaying connect server menu.")
     servers = get_all_servers()
     if not servers:
         await update.callback_query.answer("No servers configured. Add one first!", show_alert=True)
@@ -206,6 +209,8 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
 
+    logger.info(f"Button pressed with data: {query.data}")
+
     if query.data == 'main_menu':
         await main_menu(update, context)
     elif query.data == 'connect_server_menu':
@@ -216,6 +221,21 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await remove_server_menu(query, context)
     elif query.data == 'update_bot':
         await update_bot_command(query, context)
+
+
+# --- Debugging ---
+async def send_debug_message(update: Update, text: str):
+    """Sends a debug message to the user if debug mode is enabled."""
+    if DEBUG_MODE:
+        await update.effective_chat.send_message(f"🐞 **DEBUG:** {text}", parse_mode='Markdown')
+
+@authorized
+async def toggle_debug_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Toggles debug mode on or off."""
+    global DEBUG_MODE
+    DEBUG_MODE = not DEBUG_MODE
+    status = "ON" if DEBUG_MODE else "OFF"
+    await update.message.reply_text(f"🐞 **Debug Mode is now {status}**", parse_mode='Markdown')
 
 
 @authorized
@@ -313,6 +333,7 @@ def main() -> None:
     application.add_handler(add_server_handler)
 
     # --- Standalone Commands ---
+    application.add_handler(CommandHandler('debug', toggle_debug_mode))
     application.add_handler(CommandHandler('check_updates', check_for_updates_command))
     application.add_handler(CommandHandler('update_bot', update_bot_command))
 
