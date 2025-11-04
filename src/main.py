@@ -18,6 +18,7 @@ from .database import (
 )
 from .config import config
 from functools import wraps
+from typing import Optional
 
 # --- Globals & Logging ---
 # Standard logging setup to provide visibility into the bot's operations.
@@ -42,11 +43,40 @@ DEBUG_MODE = False
 (AWAIT_COMMAND, ALIAS, HOSTNAME, USER, AUTH_METHOD, PASSWORD, KEY_PATH) = range(7)
 
 # --- Authorization ---
+def _extract_user_id(update: Update) -> Optional[int]:
+    """Safely extract a user id from any kind of update."""
+    if update is None:
+        return None
+
+    if update.effective_user:
+        return update.effective_user.id
+
+    if update.callback_query and update.callback_query.from_user:
+        return update.callback_query.from_user.id
+
+    if update.message and update.message.from_user:
+        return update.message.from_user.id
+
+    return None
+
+
 def authorized(func):
     """Decorator to check if the user is authorized."""
+
     @wraps(func)
     async def wrapped(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
-        user_id = update.effective_user.id
+        user_id = _extract_user_id(update)
+        if user_id is None:
+            logger.error("Unable to extract user id from update; denying access for safety.")
+            if update and update.callback_query:
+                await update.callback_query.answer("🚫 Unable to identify user.", show_alert=True)
+            elif update and update.effective_chat:
+                await update.effective_chat.send_message(
+                    "🚫 **Access Denied**\nWe could not verify your identity for this request.",
+                    parse_mode='Markdown'
+                )
+            return
+
         await send_debug_message(update, f"Checking authorization for user_id: {user_id}...")
 
         if user_id not in config.whitelisted_users:
@@ -54,19 +84,56 @@ def authorized(func):
             await send_debug_message(update, f"Unauthorized access denied for user_id: {user_id}.")
             if update.callback_query:
                 await update.callback_query.answer("🚫 You are not authorized to use this bot.", show_alert=True)
-            else:
-                await update.message.reply_text("🚫 **Access Denied**\nYou are not authorized to use this bot.")
+            elif update.effective_message:
+                await update.effective_message.reply_text(
+                    "🚫 **Access Denied**\nYou are not authorized to use this bot.",
+                    parse_mode='Markdown'
+                )
             return
 
         await send_debug_message(update, "Authorization successful.")
         return await func(update, context, *args, **kwargs)
+
     return wrapped
+
+
+def _resolve_message(update: Update):
+    """Return the message associated with an update, falling back to callback messages."""
+    if update.message:
+        return update.message
+    if update.callback_query:
+        return update.callback_query.message
+    return None
 
 # --- Add/Remove Server ---
 @authorized
 async def add_server_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Starts the conversation to add a new server."""
-    await update.message.reply_text("🖥️ **Add a New Server**\n\nLet's add a new server. First, what is the short alias for this server? (e.g., 'webserver')")
+<<<<<<< ours
+    if (query := update.callback_query) is not None:
+        await query.answer()
+    message = _resolve_message(update)
+    if message is None:
+        logger.warning("Add server requested but no message context is available.")
+        return ConversationHandler.END
+
+    await message.reply_text(
+        "🖥️ **Add a New Server**\n\nLet's add a new server. "
+        "First, what is the short alias for this server? (e.g., 'webserver')"
+    )
+=======
+    prompt = (
+        "🖥️ **Add a New Server**\n\n"
+        "Let's add a new server. First, what is the short alias for this server? (e.g., `webserver`)"
+    )
+
+    if update.callback_query:
+        await update.callback_query.answer()
+        await update.callback_query.edit_message_text(prompt, parse_mode='Markdown')
+    else:
+        await update.effective_message.reply_text(prompt, parse_mode='Markdown')
+
+>>>>>>> theirs
     return ALIAS
 
 async def get_alias(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -133,18 +200,51 @@ async def cancel_add_server(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 @authorized
 async def remove_server_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Displays a menu of servers to remove."""
-    servers = get_all_servers()
-    if not servers:
-        await update.message.reply_text("🤷 No servers to remove.")
+    if (query := update.callback_query) is not None:
+        await query.answer()
+    message = _resolve_message(update)
+    if message is None:
+        logger.warning("Remove server menu requested but no message context is available.")
         return
 
-    keyboard = []
-    for server in servers:
-        keyboard.append([InlineKeyboardButton(f"🗑️ {server['alias']}", callback_data=f"remove_{server['alias']}")])
-    keyboard.append([InlineKeyboardButton("🔙 Cancel", callback_data='main_menu')])
+    servers = get_all_servers()
+    if not servers:
+<<<<<<< ours
+        await message.reply_text("No servers to remove.")
+=======
+        message = "🤷 **No servers to remove.**"
+        if update.callback_query:
+            await update.callback_query.answer()
+            await update.callback_query.edit_message_text(message, parse_mode='Markdown')
+        else:
+            await update.effective_message.reply_text(message, parse_mode='Markdown')
+>>>>>>> theirs
+        return
+
+    keyboard = [
+        [InlineKeyboardButton(f"Remove {server['alias']}", callback_data=f"remove_{server['alias']}")]
+        for server in servers
+    ]
+    keyboard.append([InlineKeyboardButton("Cancel", callback_data="main_menu")])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text('🗑️ **Select a server to remove:**', reply_markup=reply_markup)
+<<<<<<< ours
+    await message.reply_text("Select a server to remove:", reply_markup=reply_markup)
+=======
+    if update.callback_query:
+        await update.callback_query.answer()
+        await update.callback_query.edit_message_text(
+            '🗑️ **Select a server to remove:**',
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+    else:
+        await update.effective_message.reply_text(
+            '🗑️ **Select a server to remove:**',
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+>>>>>>> theirs
 
 # --- Navigation ---
 @authorized
@@ -170,6 +270,7 @@ async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     menu_text = "🐧 **Welcome to your Linux Admin Bot!**\n\nWhat would you like to do?"
 
     if update.callback_query:
+        await update.callback_query.answer()
         await update.callback_query.edit_message_text(menu_text, reply_markup=reply_markup, parse_mode='Markdown')
     else:
         await update.message.reply_text(menu_text, reply_markup=reply_markup, parse_mode='Markdown')
@@ -191,6 +292,7 @@ async def connect_server_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
     keyboard.append([InlineKeyboardButton("🔙 Back to Main Menu", callback_data='main_menu')])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.callback_query.answer()
     await update.callback_query.edit_message_text('**Select a server to connect to:**', reply_markup=reply_markup, parse_mode='Markdown')
 
 @authorized
@@ -242,6 +344,7 @@ async def handle_server_connection(update: Update, context: ContextTypes.DEFAULT
 
 
 @authorized
+<<<<<<< ours
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Parses the CallbackQuery and updates the message text."""
     query = update.callback_query
@@ -254,13 +357,15 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     elif query.data == 'connect_server_menu':
         await connect_server_menu(update, context)
     elif query.data == 'add_server_start':
-        await add_server_start(query, context)
+        await add_server_start(update, context)
     elif query.data == 'remove_server_menu':
-        await remove_server_menu(query, context)
+        await remove_server_menu(update, context)
     elif query.data == 'update_bot':
-        await update_bot_command(query, context)
+        await update_bot_command(update, context)
 
 
+=======
+>>>>>>> theirs
 # --- Debugging ---
 async def send_debug_message(update: Update, text: str):
     """Sends a debug message to the user if debug mode is enabled."""
@@ -461,27 +566,53 @@ async def remove_server_confirm(update: Update, context: ContextTypes.DEFAULT_TY
 @authorized
 async def check_for_updates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Checks for updates and notifies the user."""
-    await update.message.reply_text("🔎 Checking for updates...")
+<<<<<<< ours
+    message = _resolve_message(update)
+    if message is None:
+        logger.warning("Check for updates command triggered without message context.")
+        return
+
+    await message.reply_text("Checking for updates...")
     result = check_for_updates()
-    await update.message.reply_text(result["message"])
+    await message.reply_text(result["message"])
+=======
+    await update.effective_message.reply_text("🔎 Checking for updates...")
+    result = check_for_updates()
+    await update.effective_message.reply_text(result["message"], disable_web_page_preview=True)
+>>>>>>> theirs
 
 @authorized
 async def update_bot_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles the bot update process with real-time feedback."""
-    message = await update.message.reply_text(
+<<<<<<< ours
+    message = _resolve_message(update)
+    if message is None:
+        logger.warning("Update command triggered without message context.")
+        return
+
+    progress_message = await message.reply_text(
+        "Update initiated...\n\nThis may take a few minutes. The log will appear here once the process is complete.",
+=======
+    if update.callback_query:
+        await update.callback_query.answer()
+        base_message = update.callback_query.message
+    else:
+        base_message = update.effective_message
+
+    message = await base_message.reply_text(
         "⏳ **Update initiated...**\n\nThis may take a few minutes. "
         "The log will appear here once the process is complete.",
+>>>>>>> theirs
         parse_mode='Markdown'
     )
 
     try:
         update_log = apply_update()
-        await message.edit_text(update_log, parse_mode='Markdown')
-    except Exception as e:
-        logger.error(f"An error occurred in the update process: {e}", exc_info=True)
-        await message.edit_text(
-            f"❌ **An unexpected error occurred.**\n"
-            f"Check the logs for more details.\n\n`{e}`",
+        await progress_message.edit_text(update_log, parse_mode='Markdown')
+    except Exception as exc:
+        logger.error("An error occurred in the update process: %s", exc, exc_info=True)
+        await progress_message.edit_text(
+            "An unexpected error occurred.\nCheck the logs for more details.\n\n`{}`".format(exc),
             parse_mode='Markdown'
         )
 
@@ -531,7 +662,10 @@ def main() -> None:
     # --- Conversation Handlers ---
     # These handlers manage multi-step interactions with the user, like adding a server or running a command.
     add_server_handler = ConversationHandler(
-        entry_points=[CommandHandler('add_server', add_server_start)],
+        entry_points=[
+            CommandHandler('add_server', add_server_start),
+            CallbackQueryHandler(add_server_start, pattern='^add_server_start$')
+        ],
         states={
             ALIAS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_alias)],
             HOSTNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_hostname)],
@@ -555,9 +689,11 @@ def main() -> None:
 
     # --- UI & Menu Handlers ---
     # These handlers respond to button presses (CallbackQuery) from the user.
-    # The `button` handler acts as a general router for simple menu navigation.
-    # The others use regex patterns to route specific actions like connecting to or disconnecting from a server.
-    application.add_handler(CallbackQueryHandler(button)) # General button handler
+    # Specific callback handlers keep the routing explicit and easier to audit.
+    application.add_handler(CallbackQueryHandler(main_menu, pattern='^main_menu$'))
+    application.add_handler(CallbackQueryHandler(connect_server_menu, pattern='^connect_server_menu$'))
+    application.add_handler(CallbackQueryHandler(remove_server_menu, pattern='^remove_server_menu$'))
+    application.add_handler(CallbackQueryHandler(update_bot_command, pattern='^update_bot$'))
     application.add_handler(CallbackQueryHandler(handle_server_connection, pattern='^connect_'))
     application.add_handler(CallbackQueryHandler(start_shell_session, pattern='^start_shell_'))
     application.add_handler(CallbackQueryHandler(disconnect, pattern='^disconnect_'))
