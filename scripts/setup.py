@@ -2,187 +2,168 @@ import json
 import os
 import getpass
 import sys
+import subprocess
 
 # Add the project root to the Python path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from src.database import initialize_database, add_user, add_server, get_all_servers, remove_server
-
-CONFIG_FILE = 'config.json'
+from src.database import initialize_database, add_user, remove_user, get_whitelisted_users
+from src.config import config
 SERVICE_FILE = '/etc/systemd/system/telegram_bot.service'
 VENV_PYTHON = 'venv/bin/python'
 CRON_FILE = '/etc/cron.d/telegram_bot_update'
 
-
 def print_header(title):
-    print("\n" + "="*40)
-    print(f" {title}")
-    print("="*40)
+    print("\n" + "="*50)
+    print(f"  {title}")
+    print("="*50)
 
-def get_input(prompt, default=None):
-    """Gets user input with an optional default value."""
-    if default:
-        response = input(f"{prompt} (default: {default}): ")
-        return response or default
-    else:
-        return input(f"{prompt}: ")
+def print_menu(options):
+    for key, value in options.items():
+        print(f"  [{key}] {value}")
+    print("-" * 50)
 
-def setup_telegram_token():
-    """Sets up the config.json file with the Telegram token."""
-    print_header("Telegram Bot Token Setup")
-    token = get_input("Enter your Telegram Bot Token")
-    with open('config.json', 'w') as f:
-        json.dump({"telegram_token": token}, f, indent=2)
-    print("Telegram token saved to config.json")
+def get_input(prompt):
+    return input(f"  > {prompt}: ")
 
-def setup_database():
-    """Initializes the database and guides the user through initial setup."""
-    initialize_database()
+def run_as_root(command):
+    """Executes a command with sudo, asking for password if necessary."""
+    try:
+        subprocess.run(["sudo", "-v"], check=True, capture_output=True) # Check if sudo is active
+        subprocess.run(["sudo"] + command, check=True)
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        print("\nError: Could not execute command as root. Please run the setup with 'sudo'.")
+        return False
 
-    print_header("Initial User & Server Setup")
-    print("Enter your Telegram user ID to grant yourself access to the bot.")
-    print("You can get your user ID by messaging @userinfobot on Telegram.")
-    user_id = get_input("Your Telegram User ID")
-    if user_id.isdigit():
-        add_user(int(user_id))
-        print("User added successfully.")
-    else:
-        print("Invalid user ID. Must be a number.")
+def manage_telegram_bot():
+    print_header("Telegram Bot Configuration")
+    print(f"  Current Token: {config.telegram_token if config.telegram_token else 'Not set'}")
+    new_token = get_input("Enter new Telegram Bot Token (or press Enter to keep current)")
+    if new_token:
+        config.telegram_token = new_token
+        config.save_config()
+        print("  ✅ Token updated.")
 
+    input("\n  Press Enter to return to the main menu...")
+
+def manage_whitelist():
     while True:
-        print("\n--- Server Configuration ---")
-        servers = get_all_servers()
-        if not servers:
-            print("No servers configured yet.")
+        print_header("Whitelist Management")
+        users = config.whitelisted_users
+        if not users:
+            print("  No whitelisted users.")
         else:
-            for i, server in enumerate(servers):
-                print(f"  {i+1}. {server['alias']} ({server['user']}@{server['hostname']})")
+            for i, user_id in enumerate(users):
+                print(f"  {i+1}. {user_id}")
 
-        choice = get_input("\nChoose an action: [a]dd server, [r]emove server, [d]one", "d")
-        if choice.lower() == 'a':
-            alias = get_input("  Enter a short alias for the server (e.g., 'webserver')")
-            hostname = get_input("  Enter the server's hostname or IP address")
-            user = get_input("  Enter the SSH username")
+        print("\n  [a] Add User | [r] Remove User | [m] Main Menu")
+        choice = get_input("Choose an action").lower()
 
-            auth_method = get_input("  Choose authentication method: [k]ey or [p]assword", "k")
-            if auth_method.lower() == 'p':
-                password = getpass.getpass("  Enter SSH password: ")
-                add_server(alias, hostname, user, password=password)
-            else:
-                key_path = get_input("  Enter the path to your SSH private key", f"/home/{getpass.getuser()}/.ssh/id_rsa")
-                add_server(alias, hostname, user, key_path=key_path)
-
-            print("Server added successfully.")
-        elif choice.lower() == 'r':
-            try:
-                index = int(get_input("  Enter the number of the server to remove")) - 1
-                if 0 <= index < len(servers):
-                    remove_server(servers[index]['alias'])
-                    print("Server removed.")
+        if choice == 'a':
+            user_id_str = get_input("Enter Telegram User ID to add")
+            if user_id_str.isdigit():
+                user_id = int(user_id_str)
+                if user_id not in config.whitelisted_users:
+                    config.whitelisted_users.append(user_id)
+                    config.save_config()
+                    print("  ✅ User added.")
                 else:
-                    print("Invalid server number.")
-            except ValueError:
-                print("Invalid input.")
-        elif choice.lower() == 'd':
+                    print("  User already in whitelist.")
+            else:
+                print("  ❌ Invalid ID.")
+        elif choice == 'r':
+            user_id_str = get_input("Enter User ID to remove")
+            if user_id_str.isdigit():
+                user_id = int(user_id_str)
+                if user_id in config.whitelisted_users:
+                    config.whitelisted_users.remove(user_id)
+                    config.save_config()
+                    print("  ✅ User removed.")
+                else:
+                    print("  User not in whitelist.")
+            else:
+                print("  ❌ Invalid ID.")
+        elif choice == 'm':
             break
+        else:
+            print("  ❌ Invalid choice.")
+        input("\n  Press Enter to continue...")
 
-def setup_systemd():
-    """Generates and installs a systemd service file."""
-    print_header("Systemd Service Setup")
-    if os.geteuid() != 0:
-        print("This script is not running as root. Cannot install the systemd service.")
-        print(f"To install the service, please run 'sudo python3 {os.path.abspath(__file__)} --install-service'")
-        return
+def manage_systemd_service():
+    print_header("Systemd Service Management")
+    is_installed = os.path.exists(SERVICE_FILE)
+    print(f"  Service Status: {'Installed' if is_installed else 'Not Installed'}")
 
-    python_path = os.path.abspath(VENV_PYTHON)
+    print("\n  [i] Install/Update Service | [u] Uninstall Service | [m] Main Menu")
+    choice = get_input("Choose an action").lower()
 
-    if not os.path.exists(python_path):
-        print(f"Error: Python executable not found at {python_path}.")
-        print("Please ensure you have created a virtual environment by running install.sh.")
-        return
-
-    service_content = f"""
+    if choice == 'i':
+        bot_command = os.path.abspath('venv/bin/tla-bot')
+        service_content = f"""
 [Unit]
-Description=Telegram Multi-Server Bot
+Description=Telegram Linux Admin Bot
 After=network.target
 
 [Service]
 User={getpass.getuser()}
 Group={getpass.getuser()}
-WorkingDirectory={os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))}
-ExecStart={python_path} -m src.main
+WorkingDirectory={os.getcwd()}
+ExecStart={bot_command}
 Restart=always
-RestartSec=5
+RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
 """
-    try:
-        with open(SERVICE_FILE, 'w') as f:
+        temp_service_file = "telegram_bot.service.tmp"
+        with open(temp_service_file, 'w') as f:
             f.write(service_content)
 
-        os.system('systemctl daemon-reload')
-        os.system('systemctl enable telegram_bot.service')
-        print(f"Systemd service created at {SERVICE_FILE}")
-        print("\nTo start the service now, run: sudo systemctl start telegram_bot.service")
-        print("To check the service status, run: sudo systemctl status telegram_bot.service")
-        print("To view live logs, run: sudo journalctl -u telegram_bot -f")
-    except Exception as e:
-        print(f"\nAn error occurred while creating the systemd service: {e}")
+        if run_as_root(["mv", temp_service_file, SERVICE_FILE]):
+            run_as_root(["systemctl", "daemon-reload"])
+            run_as_root(["systemctl", "enable", "telegram_bot.service"])
+            print("  ✅ Service installed/updated and enabled successfully.")
+            print("  To start it, run: sudo systemctl start telegram_bot.service")
 
-def setup_cron():
-    """Generates and installs a cron job for daily updates."""
-    print_header("Automatic Updates Setup")
-    if os.geteuid() != 0:
-        print("This script is not running as root. Cannot install the cron job.")
-        print(f"To install the cron job, please run 'sudo python3 {os.path.abspath(__file__)} --install-cron'")
-        return
+    elif choice == 'u':
+        if is_installed:
+            run_as_root(["systemctl", "stop", "telegram_bot.service"])
+            run_as_root(["systemctl", "disable", "telegram_bot.service"])
+            run_as_root(["rm", SERVICE_FILE])
+            run_as_root(["systemctl", "daemon-reload"])
+            print("  ✅ Service uninstalled.")
+        else:
+            print("  Service is not installed.")
 
-    updater_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src', 'updater.py'))
-    python_path = os.path.abspath(VENV_PYTHON)
+    input("\n  Press Enter to return to the main menu...")
 
-    if not os.path.exists(python_path):
-        print(f"Error: Python executable not found at {python_path}.")
-        return
 
-    cron_content = f"0 3 * * * {getpass.getuser()} cd {os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))} && {python_path} {updater_path} --auto\n"
+def main():
+    initialize_database()
+    while True:
+        print_header("Telegram Linux Admin - Setup Panel")
+        menu_options = {
+            '1': "Configure Telegram Bot",
+            '2': "Manage Whitelisted Users",
+            '3': "Manage Systemd Service",
+            '4': "Exit"
+        }
+        print_menu(menu_options)
+        choice = get_input("Select an option")
 
-    try:
-        with open(CRON_FILE, 'w') as f:
-            f.write(cron_content)
-        print(f"Cron job for daily updates created at {CRON_FILE}")
-    except Exception as e:
-        print(f"\nAn error occurred while creating the cron job: {e}")
+        if choice == '1':
+            manage_telegram_bot()
+        elif choice == '2':
+            manage_whitelist()
+        elif choice == '3':
+            manage_systemd_service()
+        elif choice == '4':
+            print("\nExiting setup panel. Goodbye!\n")
+            break
+        else:
+            print("\n  ❌ Invalid option. Please try again.")
+            input("\n  Press Enter to continue...")
 
 if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser(description="Setup wizard for the Telegram Multi-Server Bot.")
-    parser.add_argument('--install-service', action='store_true', help='Install the systemd service (requires root).')
-    parser.add_argument('--install-cron', action='store_true', help='Install the cron job for daily updates (requires root).')
-    args = parser.parse_args()
-
-    if args.install_service:
-        setup_systemd()
-    elif args.install_cron:
-        setup_cron()
-    else:
-        print_header("Telegram Bot Setup Wizard")
-        print("This wizard will guide you through configuring the bot.")
-
-        if not os.path.exists('config.json'):
-            setup_telegram_token()
-
-        setup_database()
-
-        auto_update = get_input("\nEnable daily automatic updates? (y/n)", "y")
-        if auto_update.lower() == 'y':
-            setup_cron()
-
-        install_service = get_input("\nInstall the systemd service to run the bot automatically? (y/n)", "y")
-        if install_service.lower() == 'y':
-            setup_systemd()
-
-        print("\n--- Setup Complete ---")
-        print("To run the bot manually, activate the virtual environment and run:")
-        print("source venv/bin/activate")
-        print("python3 -m src.main")
+    main()

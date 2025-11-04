@@ -12,9 +12,10 @@ from telegram.error import BadRequest
 from .ssh_manager import SSHManager
 from .updater import check_for_updates, apply_update
 from .database import (
-    get_whitelisted_users, get_all_servers, initialize_database, DB_FILE,
+    get_all_servers, initialize_database,
     close_db_connection, add_server, remove_server
 )
+from .config import config
 from functools import wraps
 
 # --- Globals & Logging ---
@@ -23,8 +24,6 @@ logger = logging.getLogger(__name__)
 
 ssh_manager = None
 user_connections = {}
-whitelisted_users = []
-telegram_token = ""
 RESTORING = False
 SHELL_MODE_USERS = set()
 DEBUG_MODE = False
@@ -40,7 +39,7 @@ def authorized(func):
         user_id = update.effective_user.id
         await send_debug_message(update, f"Checking authorization for user_id: {user_id}...")
 
-        if user_id not in whitelisted_users:
+        if user_id not in config.whitelisted_users:
             logger.warning(f"Unauthorized access denied for user_id: {user_id}")
             await send_debug_message(update, f"Unauthorized access denied for user_id: {user_id}.")
             if update.callback_query:
@@ -426,22 +425,10 @@ async def update_bot_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 def main() -> None:
     """Initializes and runs the Telegram bot."""
-    global whitelisted_users, ssh_manager, telegram_token
+    global ssh_manager
 
-    # --- Load Configuration ---
-    try:
-        # Assumes config.json is in the project root, one level above 'src'
-        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        config_path = os.path.join(project_root, 'config.json')
-        with open(config_path, 'r') as f:
-            config = json.load(f)
-            telegram_token = config["telegram_token"]
-            whitelisted_users = [int(user_id) for user_id in config.get("whitelisted_users", [])]
-    except FileNotFoundError:
-        logger.error(f"Configuration file 'config.json' not found. Please create it or run the setup script.")
-        sys.exit(1)
-    except (KeyError, json.JSONDecodeError) as e:
-        logger.error(f"Error reading or parsing 'config.json': {e}")
+    if not config.telegram_token:
+        logger.error("Telegram token is not configured. Please run the setup wizard.")
         sys.exit(1)
 
     # --- Database & SSH Manager Initialization ---
@@ -453,7 +440,7 @@ def main() -> None:
         sys.exit(1)
 
     # --- Create the Application ---
-    application = Application.builder().token(telegram_token).build()
+    application = Application.builder().token(config.telegram_token).build()
 
     # --- Handlers ---
     add_server_handler = ConversationHandler(
