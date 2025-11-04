@@ -182,7 +182,7 @@ def apply_update(is_auto=False):
             )
         log_and_append("✅ Bot service restart command issued successfully.")
 
-        log_and_append("\n🎉 **Update process completed!** The bot is restarting.")
+        log_and_append("\n🎉 **Update process completed!** The bot is restarting and will be back online shortly.")
 
     except Exception as e:
         log_and_append(f"\n❌ **Update Failed:** {e}")
