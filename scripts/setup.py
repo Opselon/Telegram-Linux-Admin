@@ -246,13 +246,23 @@ def management_menu():
             input("\n  Press Enter to continue...")
 
 def main():
-    """Main function to run the setup or management panel."""
+    """
+    Main entry point for the setup script.
+
+    This function implements the "smart" setup flow. It checks if a configuration
+    file already exists.
+    - If no config is found, it launches the `first_time_setup()` wizard to guide
+      the user through the initial required configuration.
+    - If a config already exists, it launches the `management_menu()` to allow
+      the user to view and modify their existing settings.
+    """
     initialize_database()
-    # Check if this is a first-time setup by looking for the config file
+    # Check if this is a first-time setup by looking for the config file or if the token is empty.
     if not os.path.exists('config.json') or not config.telegram_token:
         first_time_setup()
     else:
         management_menu()
 
 if __name__ == "__main__":
+    # The script begins execution here.
     main()

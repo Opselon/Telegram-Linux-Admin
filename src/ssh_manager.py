@@ -13,13 +13,29 @@ SHELL_PROMPT_PATTERN = r'\[.*@.* ~\]\$ $' # Example prompt, adjust if needed
 logger = logging.getLogger(__name__)
 
 class SSHConnection:
+    """
+    Manages a single, persistent SSH connection to a remote server.
+    This class handles connection logic, command execution, and maintains an
+    interactive shell session.
+    """
     def __init__(self, config):
+        """
+        Initializes the SSHConnection.
+
+        Args:
+            config (dict): A dictionary containing server configuration details
+                           (alias, hostname, user, password/key_path).
+        """
         self.config = config
         self.conn = None
         self.shell_process = None
         self.last_activity = time.time()
 
     async def connect(self):
+        """
+        Establishes the SSH connection with retry logic.
+        Raises ConnectionError if the connection fails after multiple attempts.
+        """
         if self.is_connected():
             return
 
@@ -123,13 +139,21 @@ class SSHConnection:
 
 
 class SSHManager:
+    """
+    Manages a pool of SSHConnection objects.
+    This class is the main interface for the bot to interact with SSH connections.
+    It handles connection pooling, retrieval, and lifecycle management, including
+    a background health check to clean up idle or dead connections.
+    """
     def __init__(self):
+        """Initializes the SSHManager, the connection pool, and server configurations."""
         self.connections = {}
         self.server_configs = {}
         self.health_check_task = None
         self.refresh_server_configs()
 
     def get_server_config(self, alias):
+        """Retrieves the configuration for a server by its alias."""
         return self.server_configs.get(alias)
 
     def refresh_server_configs(self):

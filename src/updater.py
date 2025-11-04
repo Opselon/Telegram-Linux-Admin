@@ -90,13 +90,27 @@ def check_for_updates():
 
 def apply_update(is_auto=False):
     """
-    Applies the update by pulling the latest changes and restarting the bot.
-    Includes pre-update checks, backup, and rollback functionality.
-    Returns a detailed log of the process.
+    Applies a Git update to the application in a safe, transactional manner.
+
+    This function performs the following steps:
+    1.  **Safety Checks:** Ensures the directory is a Git repo with no uncommitted changes.
+    2.  **Backup:** Saves the current Git commit hash and a copy of the database.
+    3.  **Update:** Pulls the latest code, reinstalls dependencies, and restarts the service.
+    4.  **Rollback:** If any step in the update fails, it automatically triggers a rollback
+        to the pre-update state.
+    5.  **Cleanup:** Removes temporary backup files.
+
+    Args:
+        is_auto (bool): If True, logs are written to the logger but not collected for display
+                        in Telegram (for use in automated cron jobs).
+
+    Returns:
+        str: A formatted log of the entire update process.
     """
     update_log = []
 
     def log_and_append(message):
+        """Helper to log messages and append them to the user-facing log."""
         logger.info(message)
         if not is_auto:
             update_log.append(message)
@@ -201,12 +215,25 @@ def apply_update(is_auto=False):
 
 def rollback(commit_hash, db_backup_path):
     """
-    Rolls back the repository to a specific commit, restores the database,
-    re-installs dependencies, and restarts the bot.
+    Rolls the application back to a previous state after a failed update.
+
+    This is a critical recovery function that performs the following steps:
+    1.  **Code Revert:** Resets the Git repository to the last known good commit.
+    2.  **Database Restore:** Restores the database from the backup file.
+    3.  **Dependency Re-install:** Re-installs the dependencies to match the old code.
+    4.  **Service Restart:** Restarts the bot to bring it back online in its previous state.
+
+    Args:
+        commit_hash (str): The Git commit hash to revert to.
+        db_backup_path (str): The path to the database backup file.
+
+    Returns:
+        list: A list of log messages detailing the rollback process.
     """
     rollback_log = []
 
     def log_and_append(message):
+        """Helper to log rollback messages with a WARNING level."""
         logger.warning(message)
         rollback_log.append(message)
 
