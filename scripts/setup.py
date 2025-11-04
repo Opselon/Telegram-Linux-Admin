@@ -117,6 +117,7 @@ After=network.target
 User={getpass.getuser()}
 Group={getpass.getuser()}
 WorkingDirectory={os.getcwd()}
+Environment="PYTHONPATH={os.getcwd()}"
 ExecStart={bot_command}
 Restart=always
 RestartSec=10
