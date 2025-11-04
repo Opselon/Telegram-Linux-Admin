@@ -485,6 +485,10 @@ async def post_shutdown(application: Application) -> None:
         await ssh_manager.close_all_connections()
     close_db_connection()
 
+async def post_init(application: Application) -> None:
+    """Starts the SSH health check after the application has been initialized."""
+    ssh_manager.start_health_check()
+
 def main() -> None:
     """Initializes and runs the Telegram bot."""
     global ssh_manager
@@ -502,7 +506,7 @@ def main() -> None:
         sys.exit(1)
 
     # --- Create the Application ---
-    application = Application.builder().token(config.telegram_token).post_shutdown(post_shutdown).build()
+    application = Application.builder().token(config.telegram_token).post_init(post_init).post_shutdown(post_shutdown).build()
 
     # --- Error Handler ---
     application.add_error_handler(error_handler)
@@ -546,7 +550,6 @@ def main() -> None:
     application.add_handler(CommandHandler('update_bot', update_bot_command))
 
     # --- Start Health Check & Run Bot ---
-    ssh_manager.start_health_check()
     logger.info("Bot is starting...")
     application.run_polling()
 
