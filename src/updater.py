@@ -2,6 +2,8 @@ import subprocess
 import sys
 import argparse
 import logging
+import shutil
+import os
 
 # Configure logging for the updater script
 logging.basicConfig(
@@ -89,6 +91,7 @@ def check_for_updates():
 def apply_update(is_auto=False):
     """
     Applies the update by pulling the latest changes and restarting the bot.
+    Includes pre-update checks, backup, and rollback functionality.
     Returns a detailed log of the process.
     """
     update_log = []
@@ -100,39 +103,151 @@ def apply_update(is_auto=False):
 
     log_and_append("🚀 **Starting Update Process...**")
 
-    # 1. Git Pull
-    log_and_append("\n**1. Pulling latest changes from Git...**")
-    pull_result = run_command("git pull")
-    if pull_result["returncode"] != 0:
-        error_message = f"❌ **Error:** Failed to pull updates.\n```\n{pull_result['stderr']}\n```"
+    # --- Pre-Update Safety Checks ---
+    log_and_append("\n**1. Running Pre-Update Safety Checks...**")
+
+    # Check if this is a git repository
+    git_check = run_command("git rev-parse --is-inside-work-tree")
+    if git_check["returncode"] != 0 or git_check["stdout"] != "true":
+        error_message = "❌ **Error:** This does not appear to be a git repository. Cannot update."
         log_and_append(error_message)
         return "\n".join(update_log)
-    log_and_append(f"✅ Git pull successful.\n```\n{pull_result['stdout']}\n```")
 
-    # 2. Update Dependencies
-    log_and_append("\n**2. Installing/updating dependencies...**")
+    # Check for uncommitted changes
+    status_check = run_command("git status --porcelain")
+    if status_check["stdout"]:
+        error_message = (
+            "❌ **Error:** Uncommitted changes detected. Please commit or stash them before updating.\n"
+            f"```\n{status_check['stdout']}\n```"
+        )
+        log_and_append(error_message)
+        return "\n".join(update_log)
+
+    log_and_append("✅ Safety checks passed.")
+
+    # --- Backup ---
+    log_and_append("\n**2. Backing up current state...**")
+
+    # Get current commit hash for rollback
+    current_hash_result = run_command("git rev-parse HEAD")
+    if current_hash_result["returncode"] != 0:
+        error_message = "❌ **Error:** Could not get current commit hash. Aborting update."
+        log_and_append(error_message)
+        return "\n".join(update_log)
+
+    current_hash = current_hash_result["stdout"]
+    log_and_append(f"✅ Current commit hash saved: `{current_hash}`")
+
+    # Backup the database
+    db_backup_path = ""
+    try:
+        # Assumes the script is run from the project root
+        db_path = 'database.db'
+        if os.path.exists(db_path):
+            db_backup_path = f"{db_path}.backup"
+            shutil.copy2(db_path, db_backup_path)
+            log_and_append("✅ Database backed up successfully.")
+        else:
+            log_and_append("ℹ️ Database file not found, skipping backup.")
+    except Exception as e:
+        error_message = f"❌ **Error:** Failed to back up database: {e}"
+        log_and_append(error_message)
+        return "\n".join(update_log)
+
+    try:
+        # Step 3: Git Pull
+        log_and_append("\n**3. Pulling latest changes from Git...**")
+        pull_result = run_command("git pull")
+        if pull_result["returncode"] != 0:
+            raise Exception(f"Failed to pull updates:\n```\n{pull_result['stderr']}\n```")
+        log_and_append(f"✅ Git pull successful.\n```\n{pull_result['stdout']}\n```")
+
+        # Step 4: Update Dependencies
+        log_and_append("\n**4. Installing/updating dependencies...**")
+        pip_command = f"'{sys.executable}' -m pip install -r requirements.txt"
+        pip_result = run_command(pip_command)
+        if pip_result["returncode"] != 0:
+            raise Exception(f"Failed to update dependencies:\n```\n{pip_result['stderr']}\n```")
+        log_and_append("✅ Dependencies are up to date.")
+
+        # Step 5: Restart Bot
+        log_and_append("\n**5. Restarting the bot service...**")
+        restart_command = "sudo systemctl restart telegram_bot.service"
+        restart_result = run_command(restart_command)
+        if restart_result["returncode"] != 0:
+            raise Exception(
+                "Failed to restart the bot service. This is a critical error. "
+                "The bot may be offline.\n"
+                f"```\n{restart_result['stderr']}\n```"
+            )
+        log_and_append("✅ Bot service restart command issued successfully.")
+
+        log_and_append("\n🎉 **Update process completed!** The bot is restarting.")
+
+    except Exception as e:
+        log_and_append(f"\n❌ **Update Failed:** {e}")
+        log_and_append("\n🔄 **Attempting to roll back to the previous version...**")
+        rollback_log = rollback(current_hash, db_backup_path)
+        update_log.extend(rollback_log)
+
+    finally:
+        # Clean up the database backup file
+        if db_backup_path and os.path.exists(db_backup_path):
+            os.remove(db_backup_path)
+            log_and_append("\n🗑️ Cleaned up database backup file.")
+
+    return "\n".join(update_log)
+
+
+def rollback(commit_hash, db_backup_path):
+    """
+    Rolls back the repository to a specific commit, restores the database,
+    re-installs dependencies, and restarts the bot.
+    """
+    rollback_log = []
+
+    def log_and_append(message):
+        logger.warning(message)
+        rollback_log.append(message)
+
+    # 1. Restore Code
+    log_and_append("\n**1. Reverting code to the last stable version...**")
+    reset_command = f"git reset --hard {commit_hash}"
+    reset_result = run_command(reset_command)
+    if reset_result["returncode"] != 0:
+        log_and_append(f"❌ **CRITICAL FAILURE:** Could not revert code. Manual intervention required.\n```\n{reset_result['stderr']}\n```")
+        return rollback_log
+    log_and_append("✅ Code reverted successfully.")
+
+    # 2. Restore Database
+    if db_backup_path and os.path.exists(db_backup_path):
+        log_and_append("\n**2. Restoring database from backup...**")
+        try:
+            shutil.move(db_backup_path, 'database.db')
+            log_and_append("✅ Database restored successfully.")
+        except Exception as e:
+            log_and_append(f"❌ **CRITICAL FAILURE:** Could not restore database. Manual intervention required.\nError: {e}")
+            return rollback_log
+
+    # 3. Re-install old dependencies
+    log_and_append("\n**3. Re-installing previous dependencies...**")
     pip_command = f"'{sys.executable}' -m pip install -r requirements.txt"
     pip_result = run_command(pip_command)
     if pip_result["returncode"] != 0:
-        error_message = f"❌ **Error:** Failed to update dependencies.\n```\n{pip_result['stderr']}\n```"
-        log_and_append(error_message)
-        return "\n".join(update_log)
-    log_and_append("✅ Dependencies are up to date.")
+        log_and_append(f"⚠️ **Warning:** Failed to re-install dependencies. The bot may not start correctly.\n```\n{pip_result['stderr']}\n```")
+    else:
+        log_and_append("✅ Dependencies re-installed.")
 
-    # 3. Restart Bot
-    log_and_append("\n**3. Restarting the bot service...**")
+    # 4. Restart Bot
+    log_and_append("\n**4. Attempting to restart the bot service...**")
     restart_command = "sudo systemctl restart telegram_bot.service"
     restart_result = run_command(restart_command)
     if restart_result["returncode"] != 0:
-        error_message = f"❌ **Critical Error:** Failed to restart the bot service.\n" \
-                        f"The bot might be down. Please check the server manually.\n" \
-                        f"```\n{restart_result['stderr']}\n```"
-        log_and_append(error_message)
-        return "\n".join(update_log)
-    log_and_append("✅ Bot service restart command issued successfully.")
+        log_and_append(f"❌ **CRITICAL FAILURE:** Could not restart the bot. Manual intervention is likely required.\n```\n{restart_result['stderr']}\n```")
+    else:
+        log_and_append("✅ Bot service restarted. The system should be back to its pre-update state.")
 
-    log_and_append("\n🎉 **Update process completed!** The bot is restarting.")
-    return "\n".join(update_log)
+    return rollback_log
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
