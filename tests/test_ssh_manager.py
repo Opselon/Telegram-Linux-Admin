@@ -49,6 +49,7 @@ async def test_run_command(manager):
 
     mock_ssh_conn = AsyncMock()
     mock_ssh_conn.create_process = MagicMock(return_value=mock_process)
+    mock_ssh_conn.is_closing = MagicMock(return_value=False)
 
     # Patch asyncssh.connect to prevent real connection attempts
     with patch("asyncssh.connect", new_callable=AsyncMock) as mock_connect:

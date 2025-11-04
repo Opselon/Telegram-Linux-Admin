@@ -9,6 +9,7 @@ from telegram.ext import (
     CallbackQueryHandler, ConversationHandler
 )
 from telegram.error import BadRequest
+import asyncssh
 from .ssh_manager import SSHManager
 from .updater import check_for_updates, apply_update
 from .database import (
@@ -214,9 +215,21 @@ async def handle_server_connection(update: Update, context: ContextTypes.DEFAULT
             parse_mode='Markdown'
         )
 
+    except asyncssh.PermissionDenied:
+        error_message = "❌ **Authentication Failed:**\nPermission denied. Please check your username, password, or SSH key."
+        logger.error(f"Authentication failed for {alias}")
+        await query.edit_message_text(error_message, parse_mode='Markdown')
+    except asyncssh.ConnectionRefusedError:
+        error_message = f"❌ **Connection Refused:**\nCould not connect to `{alias}`. Please ensure the server is running and the port is correct."
+        logger.error(f"Connection refused for {alias}")
+        await query.edit_message_text(error_message, parse_mode='Markdown')
+    except (asyncssh.SocketError, asyncssh.misc.gaierror):
+        error_message = f"❌ **Host Not Found:**\nCould not resolve hostname `{alias}`. Please check the server address."
+        logger.error(f"Hostname could not be resolved for {alias}")
+        await query.edit_message_text(error_message, parse_mode='Markdown')
     except Exception as e:
-        logger.error(f"Failed to connect to {alias} for user {user_id}: {e}", exc_info=True)
-        await query.edit_message_text(f"❌ **Error connecting to {alias}:**\n`{e}`", parse_mode='Markdown')
+        logger.error(f"An unexpected error occurred while connecting to {alias}: {e}", exc_info=True)
+        await query.edit_message_text(f"❌ **An unexpected error occurred:**\n`{e}`", parse_mode='Markdown')
 
 
 @authorized
@@ -282,14 +295,29 @@ async def execute_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     result_message = await update.message.reply_text(f"Running `{command}` on `{alias}`...", parse_mode='Markdown')
 
     output = ""
+    last_output = ""
     try:
         async for line, stream in ssh_manager.run_command(alias, command):
             output += line
-            # To avoid hitting Telegram's rate limits, edit the message only periodically
-            if len(output) % 100 == 0:
-                await result_message.edit_text(f"```\n{output}\n```", parse_mode='Markdown')
+            # To avoid hitting Telegram's rate limits and API errors, edit the message only periodically and if it has changed
+            if len(output) % 100 == 0 and output != last_output:
+                try:
+                    await result_message.edit_text(f"```\n{output}\n```", parse_mode='Markdown')
+                    last_output = output
+                except BadRequest as e:
+                    if "Message is not modified" not in str(e):
+                        logger.warning(f"Error editing message: {e}")
 
-        await result_message.edit_text(f"✅ **Command completed on `{alias}`**\n\n```\n{output}\n```", parse_mode='Markdown')
+        final_message = f"✅ **Command completed on `{alias}`**\n\n```\n{output}\n```"
+        if len(final_message) > 4096:
+            # If the message is too long, send it as a file
+            with open("output.txt", "w") as f:
+                f.write(output)
+            await result_message.delete()
+            await update.message.reply_document(document=open("output.txt", "rb"), caption=f"Command output for `{command}`")
+            os.remove("output.txt")
+        else:
+            await result_message.edit_text(final_message, parse_mode='Markdown')
 
     except Exception as e:
         logger.error(f"Error executing command '{command}' on '{alias}': {e}", exc_info=True)
@@ -343,7 +371,14 @@ async def handle_shell_command(update: Update, context: ContextTypes.DEFAULT_TYP
         output = await ssh_manager.run_command_in_shell(alias, command)
         if not output:
             output = "[No output]"
-        await update.message.reply_text(f"```\n{output}\n```", parse_mode='Markdown')
+
+        if len(output) > 4000:
+            with open("shell_output.txt", "w") as f:
+                f.write(output)
+            await update.message.reply_document(document=open("shell_output.txt", "rb"), caption=f"Shell output for `{command}`")
+            os.remove("shell_output.txt")
+        else:
+            await update.message.reply_text(f"```\n{output}\n```", parse_mode='Markdown')
     except Exception as e:
         logger.error(f"Error in shell on {alias} for user {user_id}: {e}", exc_info=True)
         await update.message.reply_text(f"❌ **Error:**\n`{e}`", parse_mode='Markdown')
@@ -361,6 +396,23 @@ async def exit_shell(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
         await update.message.reply_text("🔌 **Shell session terminated.**", parse_mode='Markdown')
         await main_menu(update, context)
+
+
+# --- Error Handling ---
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Log the error and send a telegram message to notify the user."""
+    logger.error("Exception while handling an update:", exc_info=context.error)
+
+    # Try to send a user-friendly message
+    if isinstance(update, Update) and update.effective_chat:
+        try:
+            await update.effective_chat.send_message(
+                "❌ **An unexpected error occurred.**\n"
+                "The technical details have been logged. If the problem persists, please check the bot's logs.",
+                parse_mode='Markdown'
+            )
+        except Exception as e:
+            logger.error(f"Failed to send error message to user: {e}", exc_info=True)
 
 
 @authorized
@@ -425,6 +477,14 @@ async def update_bot_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
 
 
+async def post_shutdown(application: Application) -> None:
+    """Gracefully shuts down the SSH manager and database connections."""
+    logger.info("Bot is shutting down...")
+    if ssh_manager:
+        ssh_manager.stop_health_check()
+        await ssh_manager.close_all_connections()
+    close_db_connection()
+
 def main() -> None:
     """Initializes and runs the Telegram bot."""
     global ssh_manager
@@ -438,11 +498,14 @@ def main() -> None:
         initialize_database()
         ssh_manager = SSHManager()
     except Exception as e:
-        logger.error(f"Error during database or SSH manager initialization: {e}", exc_info=True)
+        logger.critical(f"Error during database or SSH manager initialization: {e}", exc_info=True)
         sys.exit(1)
 
     # --- Create the Application ---
-    application = Application.builder().token(config.telegram_token).build()
+    application = Application.builder().token(config.telegram_token).post_shutdown(post_shutdown).build()
+
+    # --- Error Handler ---
+    application.add_error_handler(error_handler)
 
     # --- Handlers ---
     add_server_handler = ConversationHandler(
@@ -458,7 +521,6 @@ def main() -> None:
         fallbacks=[CommandHandler('cancel', cancel_add_server)],
     )
 
-    # --- Conversation Handlers ---
     run_command_handler = ConversationHandler(
         entry_points=[CallbackQueryHandler(run_command_start, pattern='^run_command_')],
         states={
@@ -483,17 +545,10 @@ def main() -> None:
     application.add_handler(CommandHandler('check_updates', check_for_updates_command))
     application.add_handler(CommandHandler('update_bot', update_bot_command))
 
-    # --- Start/Stop Bot ---
-    try:
-        logger.info("Bot is starting...")
-        application.run_polling()
-    except Exception as e:
-        logger.critical(f"Bot failed to start or crashed: {e}", exc_info=True)
-    finally:
-        logger.info("Bot is shutting down...")
-        close_db_connection()
-        if ssh_manager:
-            asyncio.run(ssh_manager.close_all_connections())
+    # --- Start Health Check & Run Bot ---
+    ssh_manager.start_health_check()
+    logger.info("Bot is starting...")
+    application.run_polling()
 
 if __name__ == "__main__":
     main()
