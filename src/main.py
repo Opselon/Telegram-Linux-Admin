@@ -29,8 +29,8 @@ RESTORING = False
 SHELL_MODE_USERS = set()
 DEBUG_MODE = False
 
-# Conversation states for adding a server
-(ALIAS, HOSTNAME, USER, AUTH_METHOD, PASSWORD, KEY_PATH) = range(6)
+# Conversation states
+(AWAIT_COMMAND, ALIAS, HOSTNAME, USER, AUTH_METHOD, PASSWORD, KEY_PATH) = range(7)
 
 # --- Authorization ---
 def authorized(func):
@@ -184,22 +184,37 @@ async def connect_server_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 @authorized
 async def handle_server_connection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles the connection to a selected server."""
+    """Handles the connection to a selected server and shows the command menu."""
     query = update.callback_query
     await query.answer()
     alias = query.data.split('_', 1)[1]
+    user_id = update.effective_user.id
 
     try:
         await query.edit_message_text(f"🔌 **Connecting to {alias}...**", parse_mode='Markdown')
-        # This is where you would add logic to initiate an SSH connection
-        # For now, we'll just confirm the connection and show a placeholder menu
+
+        # Establish the SSH connection
+        await ssh_manager.get_connection(alias)
+
+        # Store the active connection alias for the user
+        user_connections[user_id] = alias
+
+        logger.info(f"User {user_id} connected to server '{alias}'.")
+
         keyboard = [
-            [InlineKeyboardButton("🔙 Back to Main Menu", callback_data='main_menu')]
+            [InlineKeyboardButton("▶️ Run a Command", callback_data=f"run_command_{alias}")],
+            [InlineKeyboardButton("🖥️ Open Interactive Shell", callback_data=f"start_shell_{alias}")],
+            [InlineKeyboardButton("🔌 Disconnect", callback_data=f"disconnect_{alias}")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(f"✅ **Connected to {alias}!**\n\n(Placeholder for command buttons)", reply_markup=reply_markup, parse_mode='Markdown')
+        await query.edit_message_text(
+            f"✅ **Connected to {alias}!**\n\nWhat would you like to do?",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
 
     except Exception as e:
+        logger.error(f"Failed to connect to {alias} for user {user_id}: {e}", exc_info=True)
         await query.edit_message_text(f"❌ **Error connecting to {alias}:**\n`{e}`", parse_mode='Markdown')
 
 
@@ -236,6 +251,137 @@ async def toggle_debug_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     DEBUG_MODE = not DEBUG_MODE
     status = "ON" if DEBUG_MODE else "OFF"
     await update.message.reply_text(f"🐞 **Debug Mode is now {status}**", parse_mode='Markdown')
+
+
+# --- Command Execution ---
+@authorized
+async def run_command_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Asks the user for a command to run."""
+    query = update.callback_query
+    await query.answer()
+
+    context.user_data['alias'] = query.data.split('_', 2)[2]
+
+    await query.edit_message_text(
+        f"Ok, please send the command you want to run on **{context.user_data['alias']}**.",
+        parse_mode='Markdown'
+    )
+    return AWAIT_COMMAND
+
+async def execute_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Executes the command on the remote server."""
+    user_id = update.effective_user.id
+    alias = user_connections.get(user_id)
+    command = update.message.text
+
+    if not alias:
+        await update.message.reply_text("No active connection. Please connect to a server first.")
+        return ConversationHandler.END
+
+    result_message = await update.message.reply_text(f"Running `{command}` on `{alias}`...", parse_mode='Markdown')
+
+    output = ""
+    try:
+        async for line, stream in ssh_manager.run_command(alias, command):
+            output += line
+            # To avoid hitting Telegram's rate limits, edit the message only periodically
+            if len(output) % 100 == 0:
+                await result_message.edit_text(f"```\n{output}\n```", parse_mode='Markdown')
+
+        await result_message.edit_text(f"✅ **Command completed on `{alias}`**\n\n```\n{output}\n```", parse_mode='Markdown')
+
+    except Exception as e:
+        logger.error(f"Error executing command '{command}' on '{alias}': {e}", exc_info=True)
+        await result_message.edit_text(f"❌ **Error:**\n`{e}`", parse_mode='Markdown')
+
+    return ConversationHandler.END
+
+async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Cancels the command execution."""
+    await update.message.reply_text("Command cancelled.")
+    return ConversationHandler.END
+
+
+# --- Interactive Shell ---
+@authorized
+async def start_shell_session(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Starts an interactive shell session for the user."""
+    query = update.callback_query
+    await query.answer()
+    alias = query.data.split('_', 2)[2]
+    user_id = update.effective_user.id
+
+    try:
+        await ssh_manager.start_shell_session(alias)
+        SHELL_MODE_USERS.add(user_id)
+        user_connections[user_id] = alias  # Ensure connection is tracked
+        await query.edit_message_text(
+            f"🖥️ **Interactive shell started on `{alias}`.**\n\n"
+            "Send any message to execute it as a command. Send `/exit_shell` to end the session.",
+            parse_mode='Markdown'
+        )
+    except Exception as e:
+        logger.error(f"Error starting shell on {alias} for user {user_id}: {e}", exc_info=True)
+        await query.edit_message_text(f"❌ **Error:** Could not start shell.\n`{e}`", parse_mode='Markdown')
+
+async def handle_shell_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles commands sent by a user in shell mode."""
+    user_id = update.effective_user.id
+    if user_id not in SHELL_MODE_USERS:
+        # This message is not a shell command, process as normal (or ignore)
+        return
+
+    alias = user_connections.get(user_id)
+    command = update.message.text
+
+    if command.strip() == 'exit':
+        await exit_shell(update, context)
+        return
+
+    try:
+        output = await ssh_manager.run_command_in_shell(alias, command)
+        if not output:
+            output = "[No output]"
+        await update.message.reply_text(f"```\n{output}\n```", parse_mode='Markdown')
+    except Exception as e:
+        logger.error(f"Error in shell on {alias} for user {user_id}: {e}", exc_info=True)
+        await update.message.reply_text(f"❌ **Error:**\n`{e}`", parse_mode='Markdown')
+
+@authorized
+async def exit_shell(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Exits the interactive shell mode."""
+    user_id = update.effective_user.id
+    if user_id in SHELL_MODE_USERS:
+        SHELL_MODE_USERS.remove(user_id)
+        alias = user_connections.get(user_id)
+        if alias:
+            await ssh_manager.disconnect(alias)
+            del user_connections[user_id]
+
+        await update.message.reply_text("🔌 **Shell session terminated.**", parse_mode='Markdown')
+        await main_menu(update, context)
+
+
+@authorized
+async def disconnect(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Disconnects the user from the server."""
+    query = update.callback_query
+    await query.answer()
+    alias = query.data.split('_', 1)[1]
+    user_id = update.effective_user.id
+
+    try:
+        await ssh_manager.disconnect(alias)
+        if user_id in user_connections:
+            del user_connections[user_id]
+
+        logger.info(f"User {user_id} disconnected from {alias}.")
+        await query.edit_message_text("🔌 **Disconnected successfully.**", parse_mode='Markdown')
+        await main_menu(update, context)
+
+    except Exception as e:
+        logger.error(f"Error disconnecting from {alias} for user {user_id}: {e}", exc_info=True)
+        await query.edit_message_text(f"❌ **Error:** Could not disconnect.\n`{e}`", parse_mode='Markdown')
 
 
 @authorized
@@ -323,17 +469,28 @@ def main() -> None:
         fallbacks=[CommandHandler('cancel', cancel_add_server)],
     )
 
-    # --- Navigation & Core Commands ---
-    application.add_handler(CommandHandler('start', start))
-    application.add_handler(CallbackQueryHandler(button, pattern='^(main_menu|connect_server_menu|add_server_start|remove_server_menu|update_bot)$'))
+    # --- Conversation Handlers ---
+    run_command_handler = ConversationHandler(
+        entry_points=[CallbackQueryHandler(run_command_start, pattern='^run_command_')],
+        states={
+            AWAIT_COMMAND: [MessageHandler(filters.TEXT & ~filters.COMMAND, execute_command)],
+        },
+        fallbacks=[CommandHandler('cancel', cancel_command)],
+    )
+    application.add_handler(add_server_handler)
+    application.add_handler(run_command_handler)
+
+    # --- Callback Query Handlers for Menus ---
+    application.add_handler(CallbackQueryHandler(button)) # General button handler
     application.add_handler(CallbackQueryHandler(handle_server_connection, pattern='^connect_'))
+    application.add_handler(CallbackQueryHandler(start_shell_session, pattern='^start_shell_'))
+    application.add_handler(CallbackQueryHandler(disconnect, pattern='^disconnect_'))
     application.add_handler(CallbackQueryHandler(remove_server_confirm, pattern='^remove_'))
 
-    # --- Add Server Conversation ---
-    application.add_handler(add_server_handler)
-
-    # --- Standalone Commands ---
+    # --- Command Handlers ---
+    application.add_handler(CommandHandler('start', start))
     application.add_handler(CommandHandler('debug', toggle_debug_mode))
+    application.add_handler(CommandHandler('exit_shell', exit_shell))
     application.add_handler(CommandHandler('check_updates', check_for_updates_command))
     application.add_handler(CommandHandler('update_bot', update_bot_command))
 
