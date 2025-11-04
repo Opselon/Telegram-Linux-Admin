@@ -45,6 +45,7 @@ jobs:
       - name: Smoke Test Application
         env:
           PYTHONPATH: .
+          SMOKE_TEST: 1
         run: |
           echo '{"telegram_token": "123456:ABC-DEF1234567890", "whitelisted_users": [12345]}' > config.json
           tla-bot &
