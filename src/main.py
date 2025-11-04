@@ -551,7 +551,15 @@ def main() -> None:
 
     # --- Start Health Check & Run Bot ---
     logger.info("Bot is starting...")
-    application.run_polling()
+
+    # Special mode for CI/CD smoke test
+    if os.environ.get("SMOKE_TEST"):
+        logger.info("Smoke test mode enabled. Bot will not connect to Telegram.")
+        # Keep the event loop running for a short time for the test
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(asyncio.sleep(15))
+    else:
+        application.run_polling()
 
 if __name__ == "__main__":
     main()
