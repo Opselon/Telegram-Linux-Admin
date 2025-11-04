@@ -141,6 +141,28 @@ async def remove_server_confirm(update: Update, context: ContextTypes.DEFAULT_TY
     ssh_manager.refresh_server_configs()
     await query.edit_message_text(f"✅ **Server '{alias}' removed successfully!**", parse_mode='Markdown')
 
+# --- Update ---
+@authorized
+async def check_for_updates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Checks for updates and notifies the user."""
+    await update.message.reply_text("🔎 Checking for updates...")
+    result = check_for_updates()
+    await update.message.reply_text(result["message"])
+
+@authorized
+async def update_bot_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles the bot update process."""
+    await update.message.reply_text(
+        "⏳ **Update initiated...**\n\nThis may take a few minutes. "
+        "I will post the results here once completed.",
+        parse_mode='Markdown'
+    )
+
+    update_log = apply_update()
+
+    # Send the detailed log
+    await update.message.reply_text(update_log, parse_mode='Markdown')
+
 
 def main() -> None:
     """Initializes and runs the Telegram bot."""
@@ -165,7 +187,7 @@ def main() -> None:
     # --- Database & SSH Manager Initialization ---
     try:
         initialize_database()
-        ssh_manager = SSHManager(get_all_servers())
+        ssh_manager = SSHManager()
     except Exception as e:
         logger.error(f"Error during database or SSH manager initialization: {e}", exc_info=True)
         sys.exit(1)
@@ -186,6 +208,10 @@ def main() -> None:
         },
         fallbacks=[CommandHandler('cancel', cancel_add_server)],
     )
+
+    # --- Update Handlers ---
+    application.add_handler(CommandHandler('check_updates', check_for_updates_command))
+    application.add_handler(CommandHandler('update_bot', update_bot_command))
 
     application.add_handler(add_server_handler)
     application.add_handler(CommandHandler('remove_server', remove_server_menu))
