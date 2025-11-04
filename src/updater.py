@@ -1,63 +1,138 @@
 import subprocess
 import sys
 import argparse
+import logging
+
+# Configure logging for the updater script
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.FileHandler("updater.log"),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 def run_command(command):
-    """Executes a shell command and returns its output."""
+    """
+    Executes a shell command and returns a dictionary with stdout, stderr, and return code.
+    Logs the command and its outcome.
+    """
+    logger.info(f"Executing command: {command}")
     try:
         result = subprocess.run(
             command,
             shell=True,
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
+            capture_output=True,
+            text=True,
+            timeout=300  # 5-minute timeout for commands
         )
-        return result.stdout.strip()
-    except subprocess.CalledProcessError as e:
-        return f"Error: {e.stderr.strip()}"
+
+        if result.returncode == 0:
+            logger.info(f"Command successful. STDOUT:\n{result.stdout.strip()}")
+        else:
+            logger.error(
+                f"Command failed with return code {result.returncode}.\n"
+                f"STDOUT:\n{result.stdout.strip()}\n"
+                f"STDERR:\n{result.stderr.strip()}"
+            )
+
+        return {
+            "stdout": result.stdout.strip(),
+            "stderr": result.stderr.strip(),
+            "returncode": result.returncode
+        }
+
+    except subprocess.TimeoutExpired:
+        logger.error(f"Command '{command}' timed out.")
+        return {
+            "stdout": "",
+            "stderr": "Command timed out after 300 seconds.",
+            "returncode": -1,
+        }
+    except Exception as e:
+        logger.error(f"An unexpected error occurred while running command '{command}': {e}", exc_info=True)
+        return {
+            "stdout": "",
+            "stderr": f"An unexpected error occurred: {e}",
+            "returncode": -1,
+        }
 
 def check_for_updates():
-    """Checks if there are any updates available in the git repository."""
-    run_command("git fetch")
-    local_hash = run_command("git rev-parse HEAD")
-    remote_hash = run_command("git rev-parse @{u}")
+    """
+    Checks if there are any updates available in the git repository.
+    Returns a dictionary with the status and a descriptive message.
+    """
+    logger.info("Checking for updates...")
 
-    if local_hash == remote_hash:
-        return "You are already on the latest version."
+    fetch_result = run_command("git fetch")
+    if fetch_result["returncode"] != 0:
+        return {"status": "error", "message": f"Failed to fetch from remote:\n{fetch_result['stderr']}"}
+
+    local_hash_result = run_command("git rev-parse HEAD")
+    if local_hash_result["returncode"] != 0:
+        return {"status": "error", "message": f"Failed to get local commit hash:\n{local_hash_result['stderr']}"}
+
+    remote_hash_result = run_command("git rev-parse @{u}")
+    if remote_hash_result["returncode"] != 0:
+        return {"status": "error", "message": f"Failed to get remote commit hash:\n{remote_hash_result['stderr']}"}
+
+    if local_hash_result["stdout"] == remote_hash_result["stdout"]:
+        logger.info("No updates available.")
+        return {"status": "no_update", "message": "You are already on the latest version."}
     else:
-        return "An update is available! Use /update_bot to apply it."
+        logger.info("Update available.")
+        return {"status": "update_available", "message": "An update is available! Use /update_bot to apply it."}
+
 
 def apply_update(is_auto=False):
-    """Applies the update by pulling the latest changes and restarting the bot."""
-    pull_output = run_command("git pull")
-    if "Error:" in pull_output:
-        if not is_auto:
-            return f"Failed to pull updates: {pull_output}"
-        else:
-            print(f"Auto-update failed to pull: {pull_output}")
-            return
+    """
+    Applies the update by pulling the latest changes and restarting the bot.
+    Returns a detailed log of the process.
+    """
+    update_log = []
 
-    pip_output = run_command(f"{sys.executable} -m pip install -r requirements.txt")
-    if "Error:" in pip_output:
+    def log_and_append(message):
+        logger.info(message)
         if not is_auto:
-            return f"Failed to update dependencies: {pip_output}"
-        else:
-            print(f"Auto-update failed to install dependencies: {pip_output}")
-            return
+            update_log.append(message)
 
-    restart_output = run_command("sudo systemctl restart telegram_bot.service")
-    if "Error:" in restart_output:
-        if not is_auto:
-            return f"Failed to restart the bot: {restart_output}"
-        else:
-            print(f"Auto-update failed to restart bot: {restart_output}")
-            return
+    log_and_append("🚀 **Starting Update Process...**")
 
-    if not is_auto:
-        return "Update applied successfully! The bot is restarting."
-    else:
-        print("Auto-update applied successfully.")
+    # 1. Git Pull
+    log_and_append("\n**1. Pulling latest changes from Git...**")
+    pull_result = run_command("git pull")
+    if pull_result["returncode"] != 0:
+        error_message = f"❌ **Error:** Failed to pull updates.\n```\n{pull_result['stderr']}\n```"
+        log_and_append(error_message)
+        return "\n".join(update_log)
+    log_and_append(f"✅ Git pull successful.\n```\n{pull_result['stdout']}\n```")
+
+    # 2. Update Dependencies
+    log_and_append("\n**2. Installing/updating dependencies...**")
+    pip_command = f"'{sys.executable}' -m pip install -r requirements.txt"
+    pip_result = run_command(pip_command)
+    if pip_result["returncode"] != 0:
+        error_message = f"❌ **Error:** Failed to update dependencies.\n```\n{pip_result['stderr']}\n```"
+        log_and_append(error_message)
+        return "\n".join(update_log)
+    log_and_append("✅ Dependencies are up to date.")
+
+    # 3. Restart Bot
+    log_and_append("\n**3. Restarting the bot service...**")
+    restart_command = "sudo systemctl restart telegram_bot.service"
+    restart_result = run_command(restart_command)
+    if restart_result["returncode"] != 0:
+        error_message = f"❌ **Critical Error:** Failed to restart the bot service.\n" \
+                        f"The bot might be down. Please check the server manually.\n" \
+                        f"```\n{restart_result['stderr']}\n```"
+        log_and_append(error_message)
+        return "\n".join(update_log)
+    log_and_append("✅ Bot service restart command issued successfully.")
+
+    log_and_append("\n🎉 **Update process completed!** The bot is restarting.")
+    return "\n".join(update_log)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
