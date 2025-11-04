@@ -151,17 +151,23 @@ async def check_for_updates_command(update: Update, context: ContextTypes.DEFAUL
 
 @authorized
 async def update_bot_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles the bot update process."""
-    await update.message.reply_text(
+    """Handles the bot update process with real-time feedback."""
+    message = await update.message.reply_text(
         "⏳ **Update initiated...**\n\nThis may take a few minutes. "
-        "I will post the results here once completed.",
+        "The log will appear here once the process is complete.",
         parse_mode='Markdown'
     )
 
-    update_log = apply_update()
-
-    # Send the detailed log
-    await update.message.reply_text(update_log, parse_mode='Markdown')
+    try:
+        update_log = apply_update()
+        await message.edit_text(update_log, parse_mode='Markdown')
+    except Exception as e:
+        logger.error(f"An error occurred in the update process: {e}", exc_info=True)
+        await message.edit_text(
+            f"❌ **An unexpected error occurred.**\n"
+            f"Check the logs for more details.\n\n`{e}`",
+            parse_mode='Markdown'
+        )
 
 
 def main() -> None:

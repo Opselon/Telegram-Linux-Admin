@@ -32,13 +32,27 @@ def test_check_for_updates_available(mock_run_command):
     assert result['status'] == 'update_available'
     assert "An update is available!" in result['message']
 
+@patch('os.remove')
+@patch('shutil.copy2')
+@patch('os.path.exists')
 @patch('src.updater.run_command')
-def test_apply_update_success(mock_run_command):
+def test_apply_update_success(mock_run_command, mock_exists, mock_copy, mock_remove):
     """Test successful application of an update."""
-    mock_run_command.return_value = {"stdout": "Success", "stderr": "", "returncode": 0}
+    mock_exists.return_value = True
+    mock_run_command.side_effect = [
+        # Pre-update checks
+        {"stdout": "true", "stderr": "", "returncode": 0},  # git rev-parse --is-inside-work-tree
+        {"stdout": "", "stderr": "", "returncode": 0},      # git status --porcelain
+        # Backup
+        {"stdout": "old_hash", "stderr": "", "returncode": 0}, # git rev-parse HEAD
+        # Update process
+        {"stdout": "Success", "stderr": "", "returncode": 0}, # git pull
+        {"stdout": "Success", "stderr": "", "returncode": 0}, # pip install
+        {"stdout": "Success", "stderr": "", "returncode": 0}, # systemctl restart
+    ]
 
     result = apply_update()
 
     assert "Update process completed!" in result
-    # git pull, pip install, systemctl restart
-    assert mock_run_command.call_count == 3
+    assert mock_run_command.call_count == 6
+    assert mock_copy.called
