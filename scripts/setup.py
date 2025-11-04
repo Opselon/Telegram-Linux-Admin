@@ -98,15 +98,8 @@ def manage_whitelist():
             print("  ❌ Invalid choice.")
         input("\n  Press Enter to continue...")
 
-def manage_systemd_service():
-    print_header("Systemd Service Management")
-    is_installed = os.path.exists(SERVICE_FILE)
-    print(f"  Service Status: {'Installed' if is_installed else 'Not Installed'}")
-
-    print("\n  [i] Install/Update Service | [u] Uninstall Service | [m] Main Menu")
-    choice = get_input("Choose an action").lower()
-
-    if choice == 'i':
+def manage_systemd_service(install=False):
+    if install:
         bot_command = os.path.abspath('venv/bin/tla-bot')
         service_content = f"""
 [Unit]
@@ -148,15 +141,8 @@ WantedBy=multi-user.target
     input("\n  Press Enter to return to the main menu...")
 
 
-def manage_cron_job():
-    print_header("Cron Job Management for Auto-Updates")
-    is_installed = os.path.exists(CRON_FILE)
-    print(f"  Cron Job Status: {'Installed' if is_installed else 'Not Installed'}")
-
-    print("\n  [i] Install/Update Cron Job | [u] Uninstall Cron Job | [m] Main Menu")
-    choice = get_input("Choose an action").lower()
-
-    if choice == 'i':
+def manage_cron_job(install=False):
+    if install:
         update_command = os.path.abspath('venv/bin/tla-bot-update')
         user = getpass.getuser()
         log_file = '/var/log/telegram_bot_update.log'
@@ -185,10 +171,55 @@ def manage_cron_job():
     input("\n  Press Enter to return to the main menu...")
 
 
-def main():
-    initialize_database()
+def first_time_setup():
+    """Guides the user through the initial essential setup."""
+    print_header("Welcome to the Telegram Linux Admin Bot Setup Wizard!")
+    print("This wizard will guide you through the essential setup steps.")
+
+    # Step 1: Configure Telegram Token
+    print_header("Step 1: Configure Telegram Bot")
+    while not config.telegram_token:
+        new_token = get_input("Please enter your Telegram Bot Token")
+        if new_token:
+            config.telegram_token = new_token
+            config.save_config()
+            print("  ✅ Token saved.")
+        else:
+            print("  ❌ Token cannot be empty.")
+
+    # Step 2: Add initial whitelisted user
+    print_header("Step 2: Add Your Telegram User ID")
+    while not config.whitelisted_users:
+        user_id_str = get_input("Please enter your Telegram User ID")
+        if user_id_str.isdigit():
+            user_id = int(user_id_str)
+            config.whitelisted_users.append(user_id)
+            config.save_config()
+            print("  ✅ You have been added to the whitelist.")
+        else:
+            print("  ❌ Invalid ID. Please enter a numeric user ID.")
+
+    # Step 3: Ask to install Systemd Service
+    print_header("Step 3: Install as a Systemd Service (Recommended)")
+    choice = get_input("Do you want to install the bot as a systemd service? (y/n)").lower()
+    if choice == 'y':
+        manage_systemd_service(install=True)
+
+    # Step 4: Ask to install Cron Job
+    print_header("Step 4: Configure Automatic Updates (Recommended)")
+    choice = get_input("Do you want to set up a daily cron job for automatic updates? (y/n)").lower()
+    if choice == 'y':
+        manage_cron_job(install=True)
+
+    print("\n🎉 Basic setup is complete! You can now start the bot.")
+    print("You can re-run this script later to access the management panel and modify your settings.")
+    input("\nPress Enter to exit...")
+
+
+def management_menu():
+    """Displays the main management menu for existing installations."""
     while True:
-        print_header("Telegram Linux Admin - Setup Panel")
+        print_header("Telegram Linux Admin - Management Panel")
         menu_options = {
             '1': "Configure Telegram Bot",
             '2': "Manage Whitelisted Users",
@@ -208,11 +239,20 @@ def main():
         elif choice == '4':
             manage_cron_job()
         elif choice == '5':
-            print("\nExiting setup panel. Goodbye!\n")
+            print("\nExiting management panel. Goodbye!\n")
             break
         else:
             print("\n  ❌ Invalid option. Please try again.")
             input("\n  Press Enter to continue...")
+
+def main():
+    """Main function to run the setup or management panel."""
+    initialize_database()
+    # Check if this is a first-time setup by looking for the config file
+    if not os.path.exists('config.json') or not config.telegram_token:
+        first_time_setup()
+    else:
+        management_menu()
 
 if __name__ == "__main__":
     main()
