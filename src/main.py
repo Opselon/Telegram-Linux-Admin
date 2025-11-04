@@ -37,12 +37,16 @@ def authorized(func):
     @wraps(func)
     async def wrapped(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
         user_id = update.effective_user.id
+        # Log every authorization attempt to see what's happening
+        logger.info(f"Checking authorization for user_id: {user_id}. Whitelist: {whitelisted_users}")
+
         if user_id not in whitelisted_users:
+            logger.warning(f"Unauthorized access denied for user_id: {user_id}")
             if update.callback_query:
                 await update.callback_query.answer("🚫 You are not authorized to use this bot.", show_alert=True)
-            else:
-                await update.message.reply_text("🚫 **Access Denied**\nYou are not authorized to use this bot.")
+            # Silently ignore unauthorized commands to prevent bot discovery
             return
+
         return await func(update, context, *args, **kwargs)
     return wrapped
 
@@ -130,6 +134,90 @@ async def remove_server_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text('🗑️ **Select a server to remove:**', reply_markup=reply_markup)
 
+# --- Navigation ---
+@authorized
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Sends the main menu."""
+    user_id = update.effective_user.id
+    logger.info(f"User {user_id} initiated /start command.")
+    await main_menu(update, context)
+
+async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Displays the main menu with options."""
+    keyboard = [
+        [InlineKeyboardButton("🔌 Connect to a Server", callback_data='connect_server_menu')],
+        [
+            InlineKeyboardButton("➕ Add Server", callback_data='add_server_start'),
+            InlineKeyboardButton("➖ Remove Server", callback_data='remove_server_menu')
+        ],
+        [InlineKeyboardButton("🔄 Update Bot", callback_data='update_bot')],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    menu_text = "🐧 **Welcome to your Linux Admin Bot!**\n\nWhat would you like to do?"
+
+    if update.callback_query:
+        await update.callback_query.edit_message_text(menu_text, reply_markup=reply_markup, parse_mode='Markdown')
+    else:
+        await update.message.reply_text(menu_text, reply_markup=reply_markup, parse_mode='Markdown')
+
+
+# --- Server Connection ---
+@authorized
+async def connect_server_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Displays a menu of servers to connect to."""
+    servers = get_all_servers()
+    if not servers:
+        await update.callback_query.answer("No servers configured. Add one first!", show_alert=True)
+        return
+
+    keyboard = []
+    for server in servers:
+        keyboard.append([InlineKeyboardButton(f"🖥️ {server['alias']}", callback_data=f"connect_{server['alias']}")])
+    keyboard.append([InlineKeyboardButton("🔙 Back to Main Menu", callback_data='main_menu')])
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.callback_query.edit_message_text('**Select a server to connect to:**', reply_markup=reply_markup, parse_mode='Markdown')
+
+@authorized
+async def handle_server_connection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles the connection to a selected server."""
+    query = update.callback_query
+    await query.answer()
+    alias = query.data.split('_', 1)[1]
+
+    try:
+        await query.edit_message_text(f"🔌 **Connecting to {alias}...**", parse_mode='Markdown')
+        # This is where you would add logic to initiate an SSH connection
+        # For now, we'll just confirm the connection and show a placeholder menu
+        keyboard = [
+            [InlineKeyboardButton("🔙 Back to Main Menu", callback_data='main_menu')]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(f"✅ **Connected to {alias}!**\n\n(Placeholder for command buttons)", reply_markup=reply_markup, parse_mode='Markdown')
+
+    except Exception as e:
+        await query.edit_message_text(f"❌ **Error connecting to {alias}:**\n`{e}`", parse_mode='Markdown')
+
+
+@authorized
+async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Parses the CallbackQuery and updates the message text."""
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == 'main_menu':
+        await main_menu(update, context)
+    elif query.data == 'connect_server_menu':
+        await connect_server_menu(update, context)
+    elif query.data == 'add_server_start':
+        await add_server_start(query, context)
+    elif query.data == 'remove_server_menu':
+        await remove_server_menu(query, context)
+    elif query.data == 'update_bot':
+        await update_bot_command(query, context)
+
+
 @authorized
 async def remove_server_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Removes a server after confirmation."""
@@ -215,13 +303,18 @@ def main() -> None:
         fallbacks=[CommandHandler('cancel', cancel_add_server)],
     )
 
-    # --- Update Handlers ---
+    # --- Navigation & Core Commands ---
+    application.add_handler(CommandHandler('start', start))
+    application.add_handler(CallbackQueryHandler(button, pattern='^(main_menu|connect_server_menu|add_server_start|remove_server_menu|update_bot)$'))
+    application.add_handler(CallbackQueryHandler(handle_server_connection, pattern='^connect_'))
+    application.add_handler(CallbackQueryHandler(remove_server_confirm, pattern='^remove_'))
+
+    # --- Add Server Conversation ---
+    application.add_handler(add_server_handler)
+
+    # --- Standalone Commands ---
     application.add_handler(CommandHandler('check_updates', check_for_updates_command))
     application.add_handler(CommandHandler('update_bot', update_bot_command))
-
-    application.add_handler(add_server_handler)
-    application.add_handler(CommandHandler('remove_server', remove_server_menu))
-    application.add_handler(CallbackQueryHandler(remove_server_confirm, pattern='^remove_'))
 
     # --- Start/Stop Bot ---
     try:
