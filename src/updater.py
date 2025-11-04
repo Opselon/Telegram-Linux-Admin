@@ -1,309 +1,555 @@
+from __future__ import annotations
+
+import argparse
+import hashlib
+import hmac
+import json
+import logging
+from logging.handlers import RotatingFileHandler
+import os
+import re
+import shlex
+import shutil
 import subprocess
 import sys
-import argparse
-import logging
-import shutil
-import os
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, List, Optional
 
-# Configure logging for the updater script
+COMMAND_TIMEOUT = 180
+MANIFEST_SECRET_ENV = "UPDATER_MANIFEST_KEY"
+REPO_ROOT = Path(__file__).resolve().parent.parent
+SECURITY_DIR = REPO_ROOT / "security"
+MANIFEST_PATH = SECURITY_DIR / "update_manifest.json"
+LOG_DIR = REPO_ROOT / "var" / "log"
+try:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+except OSError:
+    fallback_dir = Path.cwd() / "updater-logs"
+    fallback_dir.mkdir(parents=True, exist_ok=True)
+    LOG_DIR = fallback_dir
+if os.name == "posix":
+    try:
+        os.chmod(LOG_DIR, 0o700)
+    except PermissionError:
+        pass
+LOG_FILE = LOG_DIR / "updater.log"
+DB_PATH = REPO_ROOT / "database.db"
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
-        logging.FileHandler("updater.log"),
-        logging.StreamHandler()
-    ]
+        RotatingFileHandler(LOG_FILE, maxBytes=1_048_576, backupCount=5, encoding="utf-8"),
+        logging.StreamHandler(),
+    ],
 )
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("updater")
 
-def run_command(command):
-    """
-    Executes a shell command and returns a dictionary with stdout, stderr, and return code.
-    Logs the command and its outcome.
-    """
-    logger.info(f"Executing command: {command}")
-    try:
-        result = subprocess.run(
-            command,
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=300  # 5-minute timeout for commands
-        )
+_VALID_COMMIT_RE = re.compile(r"^[0-9a-f]{7,40}$")
+_REMOTE_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+_BRANCH_RE = re.compile(r"^[A-Za-z0-9/._-]+$")
+_SERVICE_UNIT_RE = re.compile(r"^[A-Za-z0-9_.@-]+\.service$")
 
-        if result.returncode == 0:
-            logger.info(f"Command successful. STDOUT:\n{result.stdout.strip()}")
-        else:
-            logger.error(
-                f"Command failed with return code {result.returncode}.\n"
-                f"STDOUT:\n{result.stdout.strip()}\n"
-                f"STDERR:\n{result.stderr.strip()}"
+
+class SecurityError(RuntimeError):
+    """Raised when a security policy check fails."""
+
+
+class CommandRejected(SecurityError):
+    """Raised when a command does not match the execution policy."""
+
+
+def compute_sha256(path: Path) -> str:
+    """Return the hex encoded SHA-256 digest for a file."""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _sanitised_environment() -> Dict[str, str]:
+    """Create a curated environment for subprocess execution."""
+    allowed = {
+        "PATH",
+        "SYSTEMROOT",
+        "WINDIR",
+        "HOME",
+        "USER",
+        "USERNAME",
+        "LANG",
+        "LC_ALL",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "HTTPS_PROXY",
+        "HTTP_PROXY",
+        "NO_PROXY",
+    }
+    env = {}
+    for key, value in os.environ.items():
+        if key in allowed or key.startswith("GIT_") or key.startswith("PIP_"):
+            env[key] = value
+    env["PYTHONIOENCODING"] = "utf-8"
+    return env
+
+
+def _format_command(arguments: List[str]) -> str:
+    return " ".join(shlex.quote(arg) for arg in arguments)
+
+
+@dataclass(frozen=True)
+class SecurityManifest:
+    schema_version: str
+    allowed_remote: str
+    allowed_remote_url: str
+    allowed_branch: str
+    requirements_lock: Path
+    requirements_lock_sha256: str
+    service_unit: Optional[str] = None
+    service_scope: str = "system"
+
+    @classmethod
+    def load(cls, path: Path, secret: Optional[str]) -> "SecurityManifest":
+        if not path.exists():
+            raise SecurityError(
+                f"Security manifest not found at {path}. Updates are blocked until it exists."
             )
 
-        return {
-            "stdout": result.stdout.strip(),
-            "stderr": result.stderr.strip(),
-            "returncode": result.returncode
-        }
+        data = json.loads(path.read_text(encoding="utf-8"))
+        signature = data.pop("signature", None)
+        if signature is None:
+            raise SecurityError("Security manifest is missing a signature field.")
 
-    except subprocess.TimeoutExpired:
-        logger.error(f"Command '{command}' timed out.")
-        return {
-            "stdout": "",
-            "stderr": "Command timed out after 300 seconds.",
-            "returncode": -1,
-        }
-    except Exception as e:
-        logger.error(f"An unexpected error occurred while running command '{command}': {e}", exc_info=True)
-        return {
-            "stdout": "",
-            "stderr": f"An unexpected error occurred: {e}",
-            "returncode": -1,
-        }
+        canonical = json.dumps(data, sort_keys=True, separators=(",", ":"))
+        if not secret:
+            raise SecurityError(
+                "Environment variable UPDATER_MANIFEST_KEY is not set; cannot validate manifest."
+            )
 
-def check_for_updates():
-    """
-    Checks if there are any updates available in the git repository.
-    Returns a dictionary with the status and a descriptive message.
-    """
-    logger.info("Checking for updates...")
+        expected_signature = hmac.new(
+            secret.encode("utf-8"), canonical.encode("utf-8"), hashlib.sha256
+        ).hexdigest()
+        if not hmac.compare_digest(signature, expected_signature):
+            raise SecurityError("Security manifest signature verification failed.")
 
-    fetch_result = run_command("git fetch")
-    if fetch_result["returncode"] != 0:
-        return {"status": "error", "message": f"Failed to fetch from remote:\n{fetch_result['stderr']}"}
+        allowed_remote = data.get("allowed_remote")
+        if not allowed_remote or not _REMOTE_RE.fullmatch(allowed_remote):
+            raise SecurityError("Manifest contains an invalid allowed_remote value.")
 
-    local_hash_result = run_command("git rev-parse HEAD")
-    if local_hash_result["returncode"] != 0:
-        return {"status": "error", "message": f"Failed to get local commit hash:\n{local_hash_result['stderr']}"}
+        allowed_branch = data.get("allowed_branch")
+        if not allowed_branch or not _BRANCH_RE.fullmatch(allowed_branch):
+            raise SecurityError("Manifest contains an invalid allowed_branch value.")
 
-    remote_hash_result = run_command("git rev-parse @{u}")
-    if remote_hash_result["returncode"] != 0:
-        return {"status": "error", "message": f"Failed to get remote commit hash:\n{remote_hash_result['stderr']}"}
+        allowed_remote_url = data.get("allowed_remote_url")
+        if not allowed_remote_url:
+            raise SecurityError("Manifest missing allowed_remote_url value.")
 
-    if local_hash_result["stdout"] == remote_hash_result["stdout"]:
-        logger.info("No updates available.")
-        return {"status": "no_update", "message": "You are already on the latest version."}
-    else:
-        logger.info("Update available.")
-        return {"status": "update_available", "message": "An update is available! Use /update_bot to apply it."}
+        requirements_rel = data.get("requirements_lock", "security/requirements.lock")
+        requirements_lock = (path.parent / requirements_rel).resolve()
+        if REPO_ROOT not in requirements_lock.parents and requirements_lock != REPO_ROOT:
+            raise SecurityError("Requirements lock file must reside inside the repository.")
+
+        requirements_hash = data.get("requirements_lock_sha256")
+        if not requirements_hash or len(requirements_hash) != 64:
+            raise SecurityError("Manifest must include requirements_lock_sha256 (64 hex chars).")
+
+        service_unit = data.get("service_unit")
+        if service_unit and not _SERVICE_UNIT_RE.fullmatch(service_unit):
+            raise SecurityError("Manifest service_unit is not a valid systemd unit name.")
+
+        service_scope = data.get("service_scope", "system")
+        if service_scope not in {"system", "user"}:
+            raise SecurityError("Manifest service_scope must be either 'system' or 'user'.")
+
+        return cls(
+            schema_version=data.get("schema_version", "1.0"),
+            allowed_remote=allowed_remote,
+            allowed_remote_url=allowed_remote_url,
+            allowed_branch=allowed_branch,
+            requirements_lock=requirements_lock,
+            requirements_lock_sha256=requirements_hash,
+            service_unit=service_unit,
+            service_scope=service_scope,
+        )
+
+    def validate_requirements_lock(self) -> None:
+        if not self.requirements_lock.exists():
+            raise SecurityError(
+                f"Requirements lock file {self.requirements_lock} is missing."
+            )
+        current_digest = compute_sha256(self.requirements_lock)
+        if not hmac.compare_digest(current_digest, self.requirements_lock_sha256):
+            raise SecurityError("Requirements lock digest mismatch; aborting update.")
 
 
-def apply_update(is_auto=False):
-    """
-    Applies a Git update to the application in a safe, transactional manner.
+class CommandPolicy:
+    """Maps logical command identifiers to vetted argument lists."""
 
-    This function performs the following steps:
-    1.  **Safety Checks:** Ensures the directory is a Git repo with no uncommitted changes.
-    2.  **Backup:** Saves the current Git commit hash and a copy of the database.
-    3.  **Update:** Pulls the latest code, reinstalls dependencies, and restarts the service.
-    4.  **Rollback:** If any step in the update fails, it automatically triggers a rollback
-        to the pre-update state.
-    5.  **Cleanup:** Removes temporary backup files.
+    def __init__(self, repo_dir: Path, manifest: SecurityManifest):
+        self.repo_dir = repo_dir
+        self.manifest = manifest
 
-    Args:
-        is_auto (bool): If True, logs are written to the logger but not collected for display
-                        in Telegram (for use in automated cron jobs).
+    def build(self, command_id: str, **kwargs) -> List[str]:
+        builder = getattr(self, f"_build_{command_id}", None)
+        if builder is None:
+            raise CommandRejected(f"Command '{command_id}' is not permitted.")
+        return builder(**kwargs)
 
-    Returns:
-        str: A formatted log of the entire update process.
-    """
-    update_log = []
+    def _build_git_fetch(self) -> List[str]:
+        return ["git", "fetch", "--prune", "--tags", self.manifest.allowed_remote, self.manifest.allowed_branch]
 
-    def log_and_append(message):
-        """Helper to log messages and append them to the user-facing log."""
+    def _build_git_rev_parse_head(self) -> List[str]:
+        return ["git", "rev-parse", "HEAD"]
+
+    def _build_git_rev_parse_tracking(self) -> List[str]:
+        ref = f"{self.manifest.allowed_remote}/{self.manifest.allowed_branch}"
+        return ["git", "rev-parse", ref]
+
+    def _build_git_check_worktree(self) -> List[str]:
+        return ["git", "rev-parse", "--is-inside-work-tree"]
+
+    def _build_git_status_porcelain(self) -> List[str]:
+        return ["git", "status", "--porcelain"]
+
+    def _build_git_current_branch(self) -> List[str]:
+        return ["git", "symbolic-ref", "--short", "HEAD"]
+
+    def _build_git_remote_url(self) -> List[str]:
+        return ["git", "remote", "get-url", self.manifest.allowed_remote]
+
+    def _build_git_pull(self) -> List[str]:
+        return ["git", "pull", "--ff-only", self.manifest.allowed_remote, self.manifest.allowed_branch]
+
+    def _build_git_reset_hard(self, commit_hash: str) -> List[str]:
+        if not _VALID_COMMIT_RE.fullmatch(commit_hash):
+            raise CommandRejected("Commit hash failed validation.")
+        return ["git", "reset", "--hard", commit_hash]
+
+    def _build_pip_sync(self) -> List[str]:
+        lock_path = self.manifest.requirements_lock
+        return [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--upgrade",
+            "--require-virtualenv",
+            "--no-deps",
+            "--require-hashes",
+            "-r",
+            str(lock_path),
+        ]
+
+    def _build_systemctl_restart(self) -> List[str]:
+        if not self.manifest.service_unit:
+            raise CommandRejected("No service unit provided in manifest.")
+        args = ["systemctl"]
+        if self.manifest.service_scope == "user":
+            args.extend(["--user"])
+        args.extend(["restart", self.manifest.service_unit])
+        return args
+
+
+class SecureCommandRunner:
+    """Executes commands under a strict allow-list."""
+
+    def __init__(self, policy: CommandPolicy):
+        self.policy = policy
+
+    def run(
+        self, command_id: str, *, check: bool = False, **policy_kwargs: object
+    ) -> subprocess.CompletedProcess:
+        argv = self.policy.build(command_id, **policy_kwargs)
+        logger.info("Executing command (%s): %s", command_id, _format_command(argv))
+        try:
+            result = subprocess.run(
+                argv,
+                cwd=self.policy.repo_dir,
+                env=_sanitised_environment(),
+                capture_output=True,
+                text=True,
+                timeout=COMMAND_TIMEOUT,
+                check=check,
+            )
+        except subprocess.TimeoutExpired as exc:
+            logger.error("Command timed out (%s): %s", command_id, _format_command(exc.cmd))
+            raise
+        except subprocess.CalledProcessError as exc:
+            logger.error(
+                "Command raised CalledProcessError (%s): %s\nSTDOUT:\n%s\nSTDERR:\n%s",
+                command_id,
+                _format_command(exc.cmd),
+                exc.stdout,
+                exc.stderr,
+            )
+            raise
+
+        if result.returncode != 0:
+            logger.error(
+                "Command failed (%s) -> %s\nSTDOUT:\n%s\nSTDERR:\n%s",
+                command_id,
+                result.returncode,
+                result.stdout.strip(),
+                result.stderr.strip(),
+            )
+        elif result.stdout:
+            logger.debug("Command output (%s): %s", command_id, result.stdout.strip())
+
+        return result
+
+
+def load_security_context() -> tuple[SecurityManifest, SecureCommandRunner]:
+    secret = os.environ.get(MANIFEST_SECRET_ENV)
+    manifest = SecurityManifest.load(MANIFEST_PATH, secret)
+    manifest.validate_requirements_lock()
+    policy = CommandPolicy(REPO_ROOT, manifest)
+    runner = SecureCommandRunner(policy)
+    return manifest, runner
+
+
+def _ensure_git_repository(runner: SecureCommandRunner) -> None:
+    result = runner.run("git_check_worktree", check=True)
+    if result.stdout.strip().lower() != "true":
+        raise SecurityError("The updater must run inside a Git work tree.")
+
+
+def _ensure_clean_worktree(runner: SecureCommandRunner) -> None:
+    status = runner.run("git_status_porcelain", check=True).stdout.strip()
+    if status:
+        raise SecurityError("Uncommitted changes detected; aborting update.")
+
+
+def _ensure_expected_branch(runner: SecureCommandRunner, manifest: SecurityManifest) -> None:
+    branch = runner.run("git_current_branch", check=True).stdout.strip()
+    if branch != manifest.allowed_branch:
+        raise SecurityError(
+            f"Updater locked to branch '{manifest.allowed_branch}' but current branch is '{branch}'."
+        )
+
+
+def _ensure_expected_remote(runner: SecureCommandRunner, manifest: SecurityManifest) -> None:
+    remote_url = runner.run("git_remote_url", check=True).stdout.strip()
+    if not hmac.compare_digest(remote_url, manifest.allowed_remote_url):
+        raise SecurityError("Remote URL does not match manifest; refusing to continue.")
+
+
+def _ensure_virtualenv() -> None:
+    if getattr(sys, "base_prefix", sys.prefix) == sys.prefix:
+        raise SecurityError(
+            "Pip operations are locked to a virtual environment. Activate the deployment venv first."
+        )
+
+
+def backup_database(db_path: Path) -> Optional[Path]:
+    if not db_path.exists():
+        return None
+    if db_path.is_symlink():
+        raise SecurityError(f"Database path {db_path} must not be a symlink.")
+
+    backups_dir = REPO_ROOT / "var" / "backups"
+    backups_dir.mkdir(parents=True, exist_ok=True)
+
+    if os.name == "posix":
+        try:
+            os.chmod(backups_dir, 0o700)
+        except PermissionError:
+            pass
+
+    fd, temp_path = tempfile.mkstemp(prefix="db-backup-", suffix=".sqlite", dir=str(backups_dir))
+    backup_path = Path(temp_path)
+    with os.fdopen(fd, "wb") as destination, db_path.open("rb") as source:
+        shutil.copyfileobj(source, destination)
+        destination.flush()
+        os.fsync(destination.fileno())
+    logger.info("Database backup created at %s", backup_path)
+    return backup_path
+
+
+def restore_database(backup_path: Path, destination_path: Path) -> None:
+    if not backup_path.exists():
+        raise SecurityError(f"Backup file {backup_path} is missing; cannot restore database.")
+    if destination_path.exists() and destination_path.is_symlink():
+        raise SecurityError(f"Destination path {destination_path} must not be a symlink.")
+    tmp_fd, tmp_name = tempfile.mkstemp(prefix="db-restore-", suffix=".sqlite", dir=str(destination_path.parent))
+    tmp_path = Path(tmp_name)
+    with os.fdopen(tmp_fd, "wb") as destination, backup_path.open("rb") as source:
+        shutil.copyfileobj(source, destination)
+        destination.flush()
+        os.fsync(destination.fileno())
+    os.replace(tmp_path, destination_path)
+    logger.info("Database restored from %s", backup_path)
+
+
+def _cleanup_backup(path: Optional[Path]) -> None:
+    if path and path.exists():
+        try:
+            path.unlink()
+            logger.info("Removed database backup %s", path)
+        except OSError as exc:
+            logger.warning("Failed to remove database backup %s: %s", path, exc)
+
+
+def _restart_service(runner: SecureCommandRunner, manifest: SecurityManifest) -> None:
+    if not manifest.service_unit:
+        logger.warning("No service unit defined in manifest; skipping restart step.")
+        return
+    runner.run("systemctl_restart", check=True)
+
+
+def check_for_updates() -> Dict[str, str]:
+    logger.info("Starting secure update check.")
+    try:
+        manifest, runner = load_security_context()
+        _ensure_git_repository(runner)
+        _ensure_expected_branch(runner, manifest)
+        _ensure_expected_remote(runner, manifest)
+
+        runner.run("git_fetch", check=True)
+        local_hash = runner.run("git_rev_parse_head", check=True).stdout.strip()
+        remote_hash = runner.run("git_rev_parse_tracking", check=True).stdout.strip()
+    except (SecurityError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        logger.error("Update check failed: %s", exc)
+        return {"status": "error", "message": str(exc)}
+
+    if local_hash == remote_hash:
+        return {"status": "no_update", "message": "Already on the latest approved revision."}
+    return {
+        "status": "update_available",
+        "message": "Update available and manifest-approved. Use /update_bot to proceed.",
+    }
+
+
+def apply_update(is_auto: bool = False) -> str:
+    try:
+        manifest, runner = load_security_context()
+    except SecurityError as exc:
+        logger.error("Security initialisation failed: %s", exc)
+        return str(exc)
+
+    update_log: List[str] = []
+
+    def log_message(message: str) -> None:
         logger.info(message)
         if not is_auto:
             update_log.append(message)
 
-    log_and_append("🚀 **Starting Update Process...**")
+    log_message("[1/6] Starting secure update pipeline.")
 
-    # --- Pre-Update Safety Checks ---
-    log_and_append("\n**1. Running Pre-Update Safety Checks...**")
-
-    # Check if this is a git repository
-    git_check = run_command("git rev-parse --is-inside-work-tree")
-    if git_check["returncode"] != 0 or git_check["stdout"] != "true":
-        error_message = "❌ **Error:** This does not appear to be a git repository. Cannot update."
-        log_and_append(error_message)
-        return "\n".join(update_log)
-
-    # Check for uncommitted changes
-    status_check = run_command("git status --porcelain")
-    if status_check["stdout"]:
-        error_message = (
-            "❌ **Error:** Uncommitted changes detected. Please commit or stash them before updating.\n"
-            f"```\n{status_check['stdout']}\n```"
-        )
-        log_and_append(error_message)
-        return "\n".join(update_log)
-
-    log_and_append("✅ Safety checks passed.")
-
-    # --- Backup ---
-    log_and_append("\n**2. Backing up current state...**")
-
-    # Get current commit hash for rollback
-    current_hash_result = run_command("git rev-parse HEAD")
-    if current_hash_result["returncode"] != 0:
-        error_message = "❌ **Error:** Could not get current commit hash. Aborting update."
-        log_and_append(error_message)
-        return "\n".join(update_log)
-
-    current_hash = current_hash_result["stdout"]
-    log_and_append(f"✅ Current commit hash saved: `{current_hash}`")
-
-    # Backup the database
-    db_backup_path = ""
+    backup_path: Optional[Path] = None
+    current_hash = ""
     try:
-        # Assumes the script is run from the project root
-        db_path = 'database.db'
-        if os.path.exists(db_path):
-            db_backup_path = f"{db_path}.backup"
-            shutil.copy2(db_path, db_backup_path)
-            log_and_append("✅ Database backed up successfully.")
+        _ensure_git_repository(runner)
+        _ensure_expected_branch(runner, manifest)
+        _ensure_expected_remote(runner, manifest)
+        _ensure_clean_worktree(runner)
+        _ensure_virtualenv()
+
+        current_hash = runner.run("git_rev_parse_head", check=True).stdout.strip()
+        log_message(f"[2/6] Saved current commit hash {current_hash}.")
+
+        backup_path = backup_database(DB_PATH)
+        if backup_path:
+            log_message(f"[3/6] Database backup staged at {backup_path}.")
         else:
-            log_and_append("ℹ️ Database file not found, skipping backup.")
-    except Exception as e:
-        error_message = f"❌ **Error:** Failed to back up database: {e}"
-        log_and_append(error_message)
-        return "\n".join(update_log)
+            log_message("[3/6] Database file not present; backup skipped.")
 
-    try:
-        # Step 3: Git Pull
-        log_and_append("\n**3. Pulling latest changes from Git...**")
-        pull_result = run_command("git pull")
-        if pull_result["returncode"] != 0:
-            raise Exception(f"Failed to pull updates:\n```\n{pull_result['stderr']}\n```")
-        log_and_append(f"✅ Git pull successful.\n```\n{pull_result['stdout']}\n```")
+        runner.run("git_fetch", check=True)
+        runner.run("git_pull", check=True)
+        log_message("[4/6] Repository fast-forwarded to manifest branch.")
 
-        # Step 4: Update Dependencies
-        log_and_append("\n**4. Installing/updating dependencies...**")
-        pip_command = f"'{sys.executable}' -m pip install -e ."
-        pip_result = run_command(pip_command)
-        if pip_result["returncode"] != 0:
-            raise Exception(f"Failed to update dependencies:\n```\n{pip_result['stderr']}\n```")
-        log_and_append("✅ Dependencies are up to date.")
+        manifest.validate_requirements_lock()
+        runner.run("pip_sync", check=True)
+        log_message("[5/6] Dependencies aligned with locked hashes.")
 
-        # Step 5: Restart Bot
-        log_and_append("\n**5. Restarting the bot service...**")
-        restart_command = "sudo systemctl restart telegram_bot.service"
-        restart_result = run_command(restart_command)
-        if restart_result["returncode"] != 0:
-            raise Exception(
-                "Failed to restart the bot service. This is a critical error. "
-                "The bot may be offline.\n"
-                f"```\n{restart_result['stderr']}\n```"
-            )
-        log_and_append("✅ Bot service restart command issued successfully.")
-
-        log_and_append("\n🎉 **Update process completed!** The bot is restarting and will be back online shortly.")
-
-    except Exception as e:
-        log_and_append(f"\n❌ **Update Failed:** {e}")
-        log_and_append("\n🔄 **Attempting to roll back to the previous version...**")
-        rollback_log = rollback(current_hash, db_backup_path)
-        update_log.extend(rollback_log)
-
+        _restart_service(runner, manifest)
+        log_message("[6/6] Service restart issued.")
+        log_message("Update completed successfully.")
+    except (SecurityError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        log_message(f"Update failed: {exc}")
+        log_message("Attempting automatic rollback.")
+        rollback_entries = rollback(manifest, runner, current_hash, backup_path)
+        update_log.extend(rollback_entries)
     finally:
-        # Clean up the database backup file
-        if db_backup_path and os.path.exists(db_backup_path):
-            os.remove(db_backup_path)
-            log_and_append("\n🗑️ Cleaned up database backup file.")
+        _cleanup_backup(backup_path)
 
     return "\n".join(update_log)
 
 
-def rollback(commit_hash, db_backup_path):
-    """
-    Rolls the application back to a previous state after a failed update.
+def rollback(
+    manifest: SecurityManifest,
+    runner: SecureCommandRunner,
+    commit_hash: str,
+    db_backup_path: Optional[Path],
+) -> List[str]:
+    rollback_log: List[str] = ["Rollback sequence initiated."]
 
-    This is a critical recovery function that performs the following steps:
-    1.  **Code Revert:** Resets the Git repository to the last known good commit.
-    2.  **Database Restore:** Restores the database from the backup file.
-    3.  **Dependency Re-install:** Re-installs the dependencies to match the old code.
-    4.  **Service Restart:** Restarts the bot to bring it back online in its previous state.
-
-    Args:
-        commit_hash (str): The Git commit hash to revert to.
-        db_backup_path (str): The path to the database backup file.
-
-    Returns:
-        list: A list of log messages detailing the rollback process.
-    """
-    rollback_log = []
-
-    def log_and_append(message):
-        """Helper to log rollback messages with a WARNING level."""
+    def append(message: str) -> None:
         logger.warning(message)
         rollback_log.append(message)
 
-    # 1. Restore Code
-    log_and_append("\n**1. Reverting code to the last stable version...**")
-    reset_command = f"git reset --hard {commit_hash}"
-    reset_result = run_command(reset_command)
-    if reset_result["returncode"] != 0:
-        log_and_append(f"❌ **CRITICAL FAILURE:** Could not revert code. Manual intervention required.\n```\n{reset_result['stderr']}\n```")
+    if not commit_hash:
+        append("No prior commit hash recorded; cannot roll back code.")
         return rollback_log
-    log_and_append("✅ Code reverted successfully.")
 
-    # 2. Restore Database
-    if db_backup_path and os.path.exists(db_backup_path):
-        log_and_append("\n**2. Restoring database from backup...**")
+    try:
+        runner.run("git_reset_hard", check=True, commit_hash=commit_hash)
+        append("Git repository reset to saved commit.")
+    except (SecurityError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        append(f"ERROR: Git reset failed - {exc}")
+        return rollback_log
+
+    if db_backup_path and db_backup_path.exists():
         try:
-            shutil.move(db_backup_path, 'database.db')
-            log_and_append("✅ Database restored successfully.")
-        except Exception as e:
-            log_and_append(f"❌ **CRITICAL FAILURE:** Could not restore database. Manual intervention required.\nError: {e}")
-            return rollback_log
+            restore_database(db_backup_path, DB_PATH)
+            append("Database restored from secure backup.")
+        except SecurityError as exc:
+            append(f"ERROR: Database restore failed - {exc}")
 
-    # 3. Re-install old dependencies
-    log_and_append("\n**3. Re-installing previous dependencies...**")
-    pip_command = f"'{sys.executable}' -m pip install -e ."
-    pip_result = run_command(pip_command)
-    if pip_result["returncode"] != 0:
-        log_and_append(f"⚠️ **Warning:** Failed to re-install dependencies. The bot may not start correctly.\n```\n{pip_result['stderr']}\n```")
-    else:
-        log_and_append("✅ Dependencies re-installed.")
+    try:
+        manifest.validate_requirements_lock()
+        runner.run("pip_sync", check=False)
+        append("Dependencies re-synchronised with lock file.")
+    except (SecurityError, subprocess.TimeoutExpired, subprocess.CalledProcessError) as exc:
+        append(f"WARNING: Dependency sync failed during rollback - {exc}")
 
-    # 4. Restart Bot
-    log_and_append("\n**4. Attempting to restart the bot service...**")
-    restart_command = "sudo systemctl restart telegram_bot.service"
-    restart_result = run_command(restart_command)
-    if restart_result["returncode"] != 0:
-        log_and_append(f"❌ **CRITICAL FAILURE:** Could not restart the bot. Manual intervention is likely required.\n```\n{restart_result['stderr']}\n```")
-    else:
-        log_and_append("✅ Bot service restarted. The system should be back to its pre-update state.")
+    try:
+        _restart_service(runner, manifest)
+        append("Service restart attempted post-rollback.")
+    except (SecurityError, subprocess.TimeoutExpired, subprocess.CalledProcessError) as exc:
+        append(f"WARNING: Service restart failed during rollback - {exc}")
 
+    append("Rollback sequence finished.")
     return rollback_log
 
-def main():
-    parser = argparse.ArgumentParser(description="Telegram Linux Admin Bot Updater")
-    parser.add_argument('--auto', action='store_true', help='Run in automated (cron) mode.')
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Secure Telegram Linux Admin Bot Updater")
+    parser.add_argument("--auto", action="store_true", help="Run in automated (cron) mode.")
     args = parser.parse_args()
 
     if args.auto:
-        logger.info("Running in automated mode...")
-        update_status = check_for_updates()
-        if update_status["status"] == "update_available":
-            logger.info("Update available, applying automatically.")
+        logger.info("Running updater in automated mode.")
+        status = check_for_updates()
+        if status["status"] == "update_available":
+            logger.info("Update available; applying automatically.")
             apply_update(is_auto=True)
         else:
-            logger.info("No updates available.")
+            logger.info("No update action taken: %s", status["message"])
     else:
-        print("--- Manual Bot Updater ---")
-        update_status = check_for_updates()
-        print(f"Status: {update_status['message']}")
-
-        if update_status["status"] == "update_available":
-            choice = input("An update is available. Do you want to apply it? (y/n): ").lower()
-            if choice == 'y':
-                print("Starting update...")
-                log_output = apply_update(is_auto=False)
-                # We need to strip markdown for the console
-                log_output = log_output.replace("**", "").replace("`", "")
-                print(log_output)
+        print("--- Secure Bot Updater ---")
+        status = check_for_updates()
+        print(f"Status: {status['message']}")
+        if status["status"] == "update_available":
+            choice = input("An update is available. Apply it now? (y/N): ").strip().lower()
+            if choice == "y":
+                print("Starting secure update...")
+                result_log = apply_update(is_auto=False)
+                print(result_log)
             else:
                 print("Update cancelled.")
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()
