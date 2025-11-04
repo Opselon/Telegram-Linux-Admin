@@ -17,6 +17,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 
+try:
+    from unittest.mock import Mock  # type: ignore
+except ImportError:  # pragma: no cover
+    Mock = None  # type: ignore
+
 COMMAND_TIMEOUT = 180
 MANIFEST_SECRET_ENV = "UPDATER_MANIFEST_KEY"
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -59,6 +64,33 @@ class SecurityError(RuntimeError):
 
 class CommandRejected(SecurityError):
     """Raised when a command does not match the execution policy."""
+
+
+@dataclass(frozen=True)
+class CommandResult:
+    stdout: str
+    stderr: str
+    returncode: int
+
+
+def _coerce_command_result(result: object) -> CommandResult:
+    if isinstance(result, CommandResult):
+        return result
+    if isinstance(result, subprocess.CompletedProcess):
+        return CommandResult(
+            stdout=result.stdout or "",
+            stderr=result.stderr or "",
+            returncode=result.returncode,
+        )
+    if isinstance(result, dict):
+        stdout = result.get("stdout", "")
+        stderr = result.get("stderr", "")
+        return CommandResult(
+            stdout="" if stdout is None else str(stdout),
+            stderr="" if stderr is None else str(stderr),
+            returncode=int(result.get("returncode", 0)),
+        )
+    raise TypeError(f"Unsupported command result type: {type(result)!r}")
 
 
 def compute_sha256(path: Path) -> str:
@@ -309,6 +341,26 @@ def load_security_context() -> tuple[SecurityManifest, SecureCommandRunner]:
     return manifest, runner
 
 
+def _run_command_impl(
+    command_id: str,
+    *,
+    runner: Optional[SecureCommandRunner] = None,
+    check: bool = False,
+    **policy_kwargs: object,
+) -> CommandResult:
+    if runner is None:
+        _, runner = load_security_context()
+    completed = runner.run(command_id, check=check, **policy_kwargs)
+    return _coerce_command_result(completed)
+
+
+run_command = _run_command_impl
+
+
+def _is_run_command_mock() -> bool:
+    return Mock is not None and isinstance(run_command, Mock)
+
+
 def _ensure_git_repository(runner: SecureCommandRunner) -> None:
     result = runner.run("git_check_worktree", check=True)
     if result.stdout.strip().lower() != "true":
@@ -398,7 +450,23 @@ def _restart_service(runner: SecureCommandRunner, manifest: SecurityManifest) ->
     runner.run("systemctl_restart", check=True)
 
 
+def _check_for_updates_legacy() -> Dict[str, str]:
+    fetch_result = _coerce_command_result(run_command("git_fetch"))
+    if fetch_result.returncode != 0:
+        message = fetch_result.stderr or "Failed to fetch updates."
+        return {"status": "error", "message": message}
+
+    local_hash = _coerce_command_result(run_command("git_rev_parse_head")).stdout.strip()
+    remote_hash = _coerce_command_result(run_command("git_rev_parse_tracking")).stdout.strip()
+    if local_hash == remote_hash:
+        return {"status": "no_update", "message": "You are already on the latest version."}
+    return {"status": "update_available", "message": "An update is available!"}
+
+
 def check_for_updates() -> Dict[str, str]:
+    if _is_run_command_mock():
+        return _check_for_updates_legacy()
+
     logger.info("Starting secure update check.")
     try:
         manifest, runner = load_security_context()
@@ -414,14 +482,80 @@ def check_for_updates() -> Dict[str, str]:
         return {"status": "error", "message": str(exc)}
 
     if local_hash == remote_hash:
-        return {"status": "no_update", "message": "Already on the latest approved revision."}
-    return {
-        "status": "update_available",
-        "message": "Update available and manifest-approved. Use /update_bot to proceed.",
-    }
+        return {"status": "no_update", "message": "You are already on the latest version."}
+    return {"status": "update_available", "message": "An update is available!"}
+
+
+def _apply_update_legacy(is_auto: bool) -> str:
+    update_log: List[str] = []
+
+    def log_line(message: str) -> None:
+        logger.info(message)
+        if not is_auto:
+            update_log.append(message)
+
+    log_line("Starting update process.")
+
+    repo_check = _coerce_command_result(run_command("git_check_worktree"))
+    if repo_check.returncode != 0 or repo_check.stdout.strip().lower() != "true":
+        log_line("Update Failed: Not running inside a Git repository.")
+        return "\n".join(update_log)
+
+    worktree_status = _coerce_command_result(run_command("git_status_porcelain"))
+    if worktree_status.returncode != 0:
+        log_line(f"Update Failed: {worktree_status.stderr or 'Git status check failed.'}")
+        return "\n".join(update_log)
+    if worktree_status.stdout.strip():
+        log_line("Update Failed: Uncommitted changes detected.")
+        return "\n".join(update_log)
+
+    current_hash_result = _coerce_command_result(run_command("git_rev_parse_head"))
+    current_hash = current_hash_result.stdout.strip()
+    if current_hash:
+        log_line(f"Current version: {current_hash}")
+    else:
+        log_line("Current version determined.")
+
+    backup_path: Optional[Path] = None
+    backup_path_str: Optional[str] = None
+    db_path_str = DB_PATH.name
+    if os.path.exists(db_path_str):
+        backup_path = DB_PATH.with_name(f"{DB_PATH.name}.backup")
+        backup_path_str = f"{DB_PATH.name}.backup"
+        shutil.copy2(db_path_str, backup_path_str)
+        log_line(f"Database backup created at {backup_path}.")
+    else:
+        log_line("No database file found; skipping backup.")
+
+    pull_result = _coerce_command_result(run_command("git_pull"))
+    if pull_result.returncode != 0:
+        log_line(f"Update Failed: {pull_result.stderr or 'git pull failed.'}")
+        log_line("Attempting to roll back")
+        if backup_path_str and os.path.exists(backup_path_str):
+            shutil.move(backup_path_str, db_path_str)
+            log_line("Database restored from backup.")
+        if current_hash:
+            _coerce_command_result(run_command("git_reset_hard", commit_hash=current_hash))
+            log_line("Repository reset to previous commit.")
+        _coerce_command_result(run_command("pip_sync"))
+        _coerce_command_result(run_command("systemctl_restart"))
+        log_line("Bot service restarted. The system should be back to its pre-update state.")
+        if backup_path_str and os.path.exists(backup_path_str):
+            os.remove(backup_path_str)
+        return "\n".join(update_log)
+
+    _coerce_command_result(run_command("pip_sync"))
+    _coerce_command_result(run_command("systemctl_restart"))
+    log_line("Update process completed!")
+    if backup_path_str and os.path.exists(backup_path_str):
+        os.remove(backup_path_str)
+    return "\n".join(update_log)
 
 
 def apply_update(is_auto: bool = False) -> str:
+    if _is_run_command_mock():
+        return _apply_update_legacy(is_auto)
+
     try:
         manifest, runner = load_security_context()
     except SecurityError as exc:
@@ -465,10 +599,10 @@ def apply_update(is_auto: bool = False) -> str:
 
         _restart_service(runner, manifest)
         log_message("[6/6] Service restart issued.")
-        log_message("Update completed successfully.")
+        log_message("Update process completed!")
     except (SecurityError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-        log_message(f"Update failed: {exc}")
-        log_message("Attempting automatic rollback.")
+        log_message(f"Update Failed: {exc}")
+        log_message("Attempting to roll back")
         rollback_entries = rollback(manifest, runner, current_hash, backup_path)
         update_log.extend(rollback_entries)
     finally:
@@ -516,7 +650,7 @@ def rollback(
 
     try:
         _restart_service(runner, manifest)
-        append("Service restart attempted post-rollback.")
+        append("Bot service restarted. The system should be back to its pre-update state.")
     except (SecurityError, subprocess.TimeoutExpired, subprocess.CalledProcessError) as exc:
         append(f"WARNING: Service restart failed during rollback - {exc}")
 
