@@ -45,6 +45,38 @@ A powerful, asynchronous Python application that transforms your private Telegra
 
 ---
 
+## Docker
+
+For a containerized deployment, you can use the provided `Dockerfile`.
+
+### 1. Build the Image
+
+From the project root, run the following command:
+
+```bash
+docker build -t tla-bot:latest .
+```
+
+### 2. Run the Container
+
+When running the container, you must mount a local directory to the `/app/data` volume inside the container. This ensures that your `config.json` and `database.db` files are persisted across container restarts.
+
+```bash
+# Create a local directory for your data
+mkdir -p /path/to/your/appdata
+
+# Run the container
+docker run -d \
+  --name telegram-admin-bot \
+  -v /path/to/your/appdata:/app/data \
+  --restart unless-stopped \
+  tla-bot:latest
+```
+
+The first time you run the container, it will exit immediately. You will need to copy the `config.json` file into your data directory and run the setup wizard to configure the bot.
+
+---
+
 ## Uninstallation
 
 To completely remove the bot and all its data, run the uninstaller script. This will stop the service, remove all application files, and delete the systemd and cron configurations.

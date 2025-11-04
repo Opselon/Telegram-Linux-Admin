@@ -68,3 +68,15 @@ def test_add_duplicate_user():
 
     users = get_whitelisted_users()
     assert len(users) == 1
+
+def test_remove_server():
+    """Test removing a server."""
+    add_server("test1", "host1", "user1")
+    add_server("test2", "host2", "user2")
+
+    from src.database import remove_server
+    remove_server("test1")
+
+    servers = get_all_servers()
+    assert len(servers) == 1
+    assert servers[0]['alias'] == 'test2'
