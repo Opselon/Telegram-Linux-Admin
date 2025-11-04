@@ -142,11 +142,38 @@ async def remove_server_confirm(update: Update, context: ContextTypes.DEFAULT_TY
     await query.edit_message_text(f"✅ **Server '{alias}' removed successfully!**", parse_mode='Markdown')
 
 
-# Other handlers remain the same...
-
 def main() -> None:
-    # ...
+    """Initializes and runs the Telegram bot."""
+    global whitelisted_users, ssh_manager, telegram_token
 
+    # --- Load Configuration ---
+    try:
+        # Assumes config.json is in the project root, one level above 'src'
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        config_path = os.path.join(project_root, 'config.json')
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+            telegram_token = config["telegram_token"]
+            whitelisted_users = [int(user_id) for user_id in config.get("whitelisted_users", [])]
+    except FileNotFoundError:
+        logger.error(f"Configuration file 'config.json' not found. Please create it or run the setup script.")
+        sys.exit(1)
+    except (KeyError, json.JSONDecodeError) as e:
+        logger.error(f"Error reading or parsing 'config.json': {e}")
+        sys.exit(1)
+
+    # --- Database & SSH Manager Initialization ---
+    try:
+        initialize_database()
+        ssh_manager = SSHManager(get_all_servers())
+    except Exception as e:
+        logger.error(f"Error during database or SSH manager initialization: {e}", exc_info=True)
+        sys.exit(1)
+
+    # --- Create the Application ---
+    application = Application.builder().token(telegram_token).build()
+
+    # --- Handlers ---
     add_server_handler = ConversationHandler(
         entry_points=[CommandHandler('add_server', add_server_start)],
         states={
@@ -159,14 +186,22 @@ def main() -> None:
         },
         fallbacks=[CommandHandler('cancel', cancel_add_server)],
     )
+
     application.add_handler(add_server_handler)
     application.add_handler(CommandHandler('remove_server', remove_server_menu))
     application.add_handler(CallbackQueryHandler(remove_server_confirm, pattern='^remove_'))
 
-    # ... (the rest of the main function is unchanged)
-
-    logger.info("Bot started successfully!")
-    application.run_polling()
+    # --- Start/Stop Bot ---
+    try:
+        logger.info("Bot is starting...")
+        application.run_polling()
+    except Exception as e:
+        logger.critical(f"Bot failed to start or crashed: {e}", exc_info=True)
+    finally:
+        logger.info("Bot is shutting down...")
+        close_db_connection()
+        if ssh_manager:
+            asyncio.run(ssh_manager.close_all_connections())
 
 if __name__ == "__main__":
     main()
