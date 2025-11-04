@@ -20,16 +20,25 @@ from .config import config
 from functools import wraps
 
 # --- Globals & Logging ---
+# Standard logging setup to provide visibility into the bot's operations.
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# ssh_manager: A global instance of the SSHManager to handle all SSH connections.
 ssh_manager = None
+# user_connections: A dictionary to track which server a user is currently connected to.
+# Format: {user_id: "server_alias"}
 user_connections = {}
+# RESTORING: A flag to prevent the bot from handling commands while a database restore is in progress.
 RESTORING = False
+# SHELL_MODE_USERS: A set to track users who are currently in an interactive shell session.
 SHELL_MODE_USERS = set()
+# DEBUG_MODE: A flag to enable or disable verbose debugging messages in the chat.
 DEBUG_MODE = False
 
-# Conversation states
+# --- Conversation States ---
+# These constants define the different steps (states) in a conversation, used by ConversationHandlers.
+# This makes the code more readable than using raw integers.
 (AWAIT_COMMAND, ALIAS, HOSTNAME, USER, AUTH_METHOD, PASSWORD, KEY_PATH) = range(7)
 
 # --- Authorization ---
@@ -490,28 +499,37 @@ async def post_init(application: Application) -> None:
     ssh_manager.start_health_check()
 
 def main() -> None:
-    """Initializes and runs the Telegram bot."""
+    """
+    Initializes and runs the Telegram bot application.
+    This is the main entry point of the bot.
+    """
     global ssh_manager
 
+    # --- Pre-flight Checks ---
+    # Ensure the bot token is configured before proceeding.
     if not config.telegram_token:
-        logger.error("Telegram token is not configured. Please run the setup wizard.")
+        logger.error("FATAL: Telegram token is not configured. Please run the setup wizard.")
         sys.exit(1)
 
-    # --- Database & SSH Manager Initialization ---
+    # --- Core Component Initialization ---
+    # Set up the database and the SSH connection manager.
     try:
         initialize_database()
         ssh_manager = SSHManager()
     except Exception as e:
-        logger.critical(f"Error during database or SSH manager initialization: {e}", exc_info=True)
+        logger.critical(f"FATAL: Error during database or SSH manager initialization: {e}", exc_info=True)
         sys.exit(1)
 
-    # --- Create the Application ---
+    # --- Application Setup ---
+    # Create the Telegram Application object, linking it to our lifecycle hooks.
     application = Application.builder().token(config.telegram_token).post_init(post_init).post_shutdown(post_shutdown).build()
 
-    # --- Error Handler ---
+    # --- Error Handling ---
+    # Register a global error handler to catch any unhandled exceptions and prevent crashes.
     application.add_error_handler(error_handler)
 
-    # --- Handlers ---
+    # --- Conversation Handlers ---
+    # These handlers manage multi-step interactions with the user, like adding a server or running a command.
     add_server_handler = ConversationHandler(
         entry_points=[CommandHandler('add_server', add_server_start)],
         states={
@@ -535,7 +553,10 @@ def main() -> None:
     application.add_handler(add_server_handler)
     application.add_handler(run_command_handler)
 
-    # --- Callback Query Handlers for Menus ---
+    # --- UI & Menu Handlers ---
+    # These handlers respond to button presses (CallbackQuery) from the user.
+    # The `button` handler acts as a general router for simple menu navigation.
+    # The others use regex patterns to route specific actions like connecting to or disconnecting from a server.
     application.add_handler(CallbackQueryHandler(button)) # General button handler
     application.add_handler(CallbackQueryHandler(handle_server_connection, pattern='^connect_'))
     application.add_handler(CallbackQueryHandler(start_shell_session, pattern='^start_shell_'))
