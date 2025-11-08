@@ -33,8 +33,7 @@ A powerful, asynchronous Python application that transforms your private Telegra
 
 1.  **Clone the repository:**
     ```bash
-    git clone https://github.com/your-repo/Telegram-Linux-Admin.git
-    cd Telegram-Linux-Admin
+ git clone https://github.com/Opselon/Telegram-Linux-Admin.git && cd Telegram-Linux-Admin && chmod +x install.sh && sudo ./install.sh
     ```
 
 2.  **Run the installation script:**
