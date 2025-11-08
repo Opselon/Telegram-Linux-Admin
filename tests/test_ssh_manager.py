@@ -1,65 +1,103 @@
 import pytest
 from unittest.mock import MagicMock, AsyncMock, patch
-from src.ssh_manager import SSHManager, SSHConnection
+from src.ssh_manager import SSHManager
+
+# Reusable server configurations for tests
+TEST_SERVERS = [
+    {"alias": "server1", "hostname": "host1", "user": "user1", "key_path": "/path/key1"},
+    {"alias": "server2", "hostname": "host2", "user": "user2", "password": "password"},
+]
 
 @pytest.fixture
 def manager():
-    """Fixture to create an SSHManager with a mock database."""
-    servers = [
-        {"alias": "key_server", "hostname": "localhost", "user": "testuser", "key_path": "/path/to/key"},
-        {"alias": "pw_server", "hostname": "localhost", "user": "testuser", "password": "password123"}
-    ]
-    with patch('src.ssh_manager.get_all_servers', MagicMock(return_value=servers)):
-        manager = SSHManager()
-    return manager
+    """Fixture to create an SSHManager with a mocked database call."""
+    with patch('src.ssh_manager.get_all_servers', return_value=TEST_SERVERS):
+        yield SSHManager()
+
+@pytest.fixture
+def mock_ssh_connection():
+    """Fixture to create a mock asyncssh.SSHClientConnection."""
+    mock_conn = AsyncMock()
+    mock_conn.is_closing = MagicMock(return_value=False)
+    return mock_conn
 
 @pytest.mark.asyncio
-async def test_get_connection_key_auth(manager):
-    """Test successfully getting a connection with key authentication."""
-    with patch("asyncssh.connect", new_callable=AsyncMock) as mock_connect:
-        mock_connect.return_value = "mock_connection"
-        conn = await manager.get_connection("key_server")
-        assert isinstance(conn, SSHConnection)
-        mock_connect.assert_called_once_with("localhost", username="testuser", client_keys=["/path/to/key"])
-
-@pytest.mark.asyncio
-async def test_get_connection_password_auth(manager):
-    """Test successfully getting a connection with password authentication."""
-    with patch("asyncssh.connect", new_callable=AsyncMock) as mock_connect:
-        mock_connect.return_value = "mock_connection"
-        conn = await manager.get_connection("pw_server")
-        assert isinstance(conn, SSHConnection)
-        mock_connect.assert_called_once_with("localhost", username="testuser", password="password123")
-
-@pytest.mark.asyncio
-async def test_get_connection_not_found(manager):
-    """Test getting a connection to a non-existent server."""
-    with pytest.raises(ValueError, match="Server with alias 'nonexistent' not found in the database."):
-        await manager.get_connection("nonexistent")
-
-@pytest.mark.asyncio
-async def test_run_command(manager):
-    """Test running a command with streaming output."""
+async def test_run_command_streams_output(manager, mock_ssh_connection):
+    """
+    Test that run_command connects, executes, streams output, and closes the connection.
+    """
+    # Setup mock process for streaming
     mock_process = AsyncMock()
-    mock_process.stdout = AsyncMock()
-    mock_process.stdout.__aiter__.return_value = ["line1\n", "line2\n"]
-    mock_process.stderr = AsyncMock()
-    mock_process.stderr.__aiter__.return_value = ["error1\n"]
     mock_process.__aenter__.return_value = mock_process
+    mock_process.__aexit__.return_value = None
+    mock_process.stdout.__aiter__.return_value = ["stdout line 1\n"]
+    mock_process.stderr.__aiter__.return_value = ["stderr line 1\n"]
+    mock_ssh_connection.create_process = AsyncMock(return_value=mock_process)
 
-    mock_ssh_conn = AsyncMock()
-    mock_ssh_conn.create_process = MagicMock(return_value=mock_process)
-    mock_ssh_conn.is_closing = MagicMock(return_value=False)
+    with patch('src.ssh_manager.asyncssh.connect', new_callable=AsyncMock, return_value=mock_ssh_connection) as mock_connect:
+        # Execute
+        command_output = []
+        async for line, stream in manager.run_command("server1", "ls"):
+            command_output.append((line.strip(), stream))
 
-    # Patch asyncssh.connect to prevent real connection attempts
-    with patch("asyncssh.connect", new_callable=AsyncMock) as mock_connect:
-        mock_connect.return_value = mock_ssh_conn
+        # Assertions
+        mock_connect.assert_awaited_once_with(
+            "host1",
+            username="user1",
+            client_keys=["/path/key1"],
+            password=None,
+            known_hosts=None
+        )
+        mock_ssh_connection.create_process.assert_awaited_once_with("ls")
+        assert ("stdout line 1", "stdout") in command_output
+        assert ("stderr line 1", "stderr") in command_output
+        mock_ssh_connection.close.assert_called_once()
 
-        results = []
-        async for line, stream in manager.run_command("key_server", "ls -l"):
-            results.append((line.strip(), stream))
+@pytest.mark.asyncio
+async def test_run_command_server_not_found(manager):
+    """Test that run_command raises ValueError for an unknown alias."""
+    with pytest.raises(ValueError, match="Server alias 'unknown' not found."):
+        # This part of the test ensures the async generator is consumed to trigger the error.
+        async for _ in manager.run_command("unknown", "ls"):
+            pass
 
-        assert ("line1", "stdout") in results
-        assert ("line2", "stdout") in results
-        assert ("error1", "stderr") in results
-        mock_ssh_conn.create_process.assert_called_once_with("ls -l")
+@pytest.mark.asyncio
+async def test_shell_session_lifecycle(manager, mock_ssh_connection):
+    """
+    Test the full lifecycle of a shell session: start, run command, and disconnect.
+    """
+    with patch('src.ssh_manager.asyncssh.connect', new_callable=AsyncMock, return_value=mock_ssh_connection) as mock_connect:
+        # 1. Start shell session
+        await manager.start_shell_session("server2")
+        mock_connect.assert_awaited_once_with(
+            "host2",
+            username="user2",
+            password="password",
+            client_keys=None,
+            known_hosts=None
+        )
+        assert "server2" in manager.active_shells
+        assert manager.active_shells["server2"] == mock_ssh_connection
+
+        # 2. Run command in shell
+        mock_result = MagicMock()
+        mock_result.stdout = "command output"
+        mock_ssh_connection.run.return_value = mock_result
+
+        output = await manager.run_command_in_shell("server2", "echo 'hello'")
+        mock_ssh_connection.run.assert_awaited_once_with("echo 'hello'", check=True, timeout=60.0)
+        assert output == "command output"
+
+        # 3. Disconnect shell
+        await manager.disconnect("server2")
+        mock_ssh_connection.close.assert_called_once()
+        assert "server2" not in manager.active_shells
+
+@pytest.mark.asyncio
+async def test_run_command_in_shell_no_session(manager):
+    """
+    Test that running a command in a non-existent shell raises a ConnectionError.
+    """
+    assert "server1" not in manager.active_shells
+    with pytest.raises(ConnectionError, match="No active shell session for server1."):
+        await manager.run_command_in_shell("server1", "ls")
