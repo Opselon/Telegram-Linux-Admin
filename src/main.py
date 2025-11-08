@@ -30,6 +30,7 @@ RESTORING = False
 SHELL_MODE_USERS = set()
 DEBUG_MODE = False
 LOCK_FILE = "bot.lock"
+MONITORING_TASKS = {}
 
 # --- Conversation States ---
 (AWAIT_COMMAND, ALIAS, HOSTNAME, USER, AUTH_METHOD, PASSWORD, KEY_PATH) = range(7)
@@ -266,6 +267,7 @@ async def handle_server_connection(update: Update, context: ContextTypes.DEFAULT
         keyboard = [
             [InlineKeyboardButton("▶️ Run a Command", callback_data=f"run_command_{alias}")],
             [InlineKeyboardButton("🖥️ Open Interactive Shell", callback_data=f"start_shell_{alias}")],
+            [InlineKeyboardButton("📊 Server Status", callback_data=f"server_status_menu_{alias}")],
             [InlineKeyboardButton("🔌 Disconnect", callback_data=f"disconnect_{alias}")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -457,6 +459,150 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 @authorized
+async def server_status_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Displays the server status menu."""
+    query = update.callback_query
+    await query.answer()
+    alias = query.data.split('_', 3)[3]
+
+    keyboard = [
+        [InlineKeyboardButton("ℹ️ System Info", callback_data=f"static_info_{alias}")],
+        [InlineKeyboardButton("📈 Resource Usage", callback_data=f"resource_usage_{alias}")],
+        [InlineKeyboardButton("🔴 Live Monitoring", callback_data=f"live_monitoring_{alias}")],
+        [InlineKeyboardButton("🔙 Back to Server Menu", callback_data=f"connect_{alias}")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(
+        f"**📊 Server Status for {alias}**\n\nSelect an option:",
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
+
+@authorized
+async def get_static_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Gets static system information from the server."""
+    query = update.callback_query
+    await query.answer()
+    alias = query.data.split('_', 2)[2]
+
+    commands = {
+        "Kernel": "uname -a",
+        "Distro": "lsb_release -a",
+        "Uptime": "uptime"
+    }
+
+    info_message = f"**ℹ️ System Information for {alias}**\n\n"
+
+    for key, command in commands.items():
+        output = ""
+        try:
+            async_generator = ssh_manager.run_command(alias, command)
+            async for line, stream in async_generator:
+                output += line
+            info_message += f"**{key}:**\n`{output.strip()}`\n\n"
+        except Exception as e:
+            info_message += f"**{key}:**\n`Error fetching info: {e}`\n\n"
+
+    keyboard = [[InlineKeyboardButton("🔙 Back to Status Menu", callback_data=f"server_status_menu_{alias}")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await query.edit_message_text(info_message, reply_markup=reply_markup, parse_mode='Markdown')
+
+@authorized
+async def get_resource_usage(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Gets a snapshot of the server's resource usage."""
+    query = update.callback_query
+    await query.answer()
+    alias = query.data.split('_', 2)[2]
+
+    commands = {
+        "Memory Usage": "free -m",
+        "CPU Usage": "top -bn1 | head -n 5"
+    }
+
+    usage_message = f"**📈 Resource Usage for {alias}**\n\n"
+
+    for key, command in commands.items():
+        output = ""
+        try:
+            async_generator = ssh_manager.run_command(alias, command)
+            async for line, stream in async_generator:
+                output += line
+            usage_message += f"**{key}:**\n`{output.strip()}`\n\n"
+        except Exception as e:
+            usage_message += f"**{key}:**\n`Error fetching info: {e}`\n\n"
+
+    keyboard = [[InlineKeyboardButton("🔙 Back to Status Menu", callback_data=f"server_status_menu_{alias}")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await query.edit_message_text(usage_message, reply_markup=reply_markup, parse_mode='Markdown')
+
+
+@authorized
+async def live_monitoring(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Starts live monitoring of the server's resource usage."""
+    query = update.callback_query
+    await query.answer()
+    alias = query.data.split('_', 2)[2]
+    user_id = update.effective_user.id
+
+    if user_id in MONITORING_TASKS:
+        MONITORING_TASKS[user_id].cancel()
+
+    keyboard = [[InlineKeyboardButton("⏹️ Stop Monitoring", callback_data=f"stop_live_monitoring_{alias}")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    message = await query.edit_message_text(
+        f"**🔴 Live Monitoring for {alias}**\n\nStarting...",
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
+
+    async def _update_stats():
+        while True:
+            command = "top -bn1 | head -n 5"
+            output = ""
+            try:
+                async_generator = ssh_manager.run_command(alias, command)
+                async for line, stream in async_generator:
+                    output += line
+
+                await message.edit_text(
+                    f"**🔴 Live Monitoring for {alias}**\n\n`{output.strip()}`",
+                    reply_markup=reply_markup,
+                    parse_mode='Markdown'
+                )
+            except Exception as e:
+                await message.edit_text(
+                    f"**🔴 Live Monitoring for {alias}**\n\n`Error fetching info: {e}`",
+                    reply_markup=reply_markup,
+                    parse_mode='Markdown'
+                )
+            await asyncio.sleep(5)
+
+    MONITORING_TASKS[user_id] = asyncio.create_task(_update_stats())
+
+@authorized
+async def stop_live_monitoring(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Stops the live monitoring task."""
+    query = update.callback_query
+    await query.answer()
+    alias = query.data.split('_', 3)[3]
+    user_id = update.effective_user.id
+
+    if user_id in MONITORING_TASKS:
+        MONITORING_TASKS[user_id].cancel()
+        del MONITORING_TASKS[user_id]
+
+    keyboard = [[InlineKeyboardButton("🔙 Back to Status Menu", callback_data=f"server_status_menu_{alias}")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await query.edit_message_text(
+        f"**🔴 Live Monitoring for {alias}**\n\nMonitoring stopped.",
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
+
 async def disconnect(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Disconnects the user from the server."""
     query = update.callback_query
@@ -616,6 +762,11 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(update_bot_command, pattern='^update_bot$'))
     application.add_handler(CallbackQueryHandler(handle_server_connection, pattern='^connect_'))
     application.add_handler(CallbackQueryHandler(start_shell_session, pattern='^start_shell_'))
+    application.add_handler(CallbackQueryHandler(server_status_menu, pattern='^server_status_menu_'))
+    application.add_handler(CallbackQueryHandler(get_static_info, pattern='^static_info_'))
+    application.add_handler(CallbackQueryHandler(get_resource_usage, pattern='^resource_usage_'))
+    application.add_handler(CallbackQueryHandler(live_monitoring, pattern='^live_monitoring_'))
+    application.add_handler(CallbackQueryHandler(stop_live_monitoring, pattern='^stop_live_monitoring_'))
     application.add_handler(CallbackQueryHandler(disconnect, pattern='^disconnect_'))
     application.add_handler(CallbackQueryHandler(remove_server_confirm, pattern='^remove_'))
 
