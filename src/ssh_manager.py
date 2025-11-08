@@ -1,6 +1,9 @@
 import asyncio
 import asyncssh
 import logging
+import async_timeout
+from asyncssh import PermissionDenied
+from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_type
 from .database import get_all_servers
 
 # --- Constants ---
@@ -41,6 +44,11 @@ class SSHManager:
         except Exception as e:
             logger.error(f"Failed to refresh server configs: {e}", exc_info=True)
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_fixed(2),
+        retry=retry_if_exception_type((OSError, asyncssh.PermissionDenied, ConnectionRefusedError))
+    )
     async def _create_connection(self, alias: str):
         """Establishes a new SSH connection."""
         if alias not in self.server_configs:
@@ -60,9 +68,9 @@ class SSHManager:
             logger.error(f"Failed to connect to {alias}: {e}")
             raise  # Re-raise the exception to be handled by the caller
 
-    async def run_command(self, alias: str, command: str):
+    async def run_command(self, alias: str, command: str, timeout: float = COMMAND_TIMEOUT):
         """
-        Connects to a server, runs a single command, and disconnects.
+        Connects to a server, runs a single command with a timeout, and disconnects.
 
         This method streams the output of the command in real-time.
 
@@ -71,13 +79,14 @@ class SSHManager:
         """
         conn = await self._create_connection(alias)
         try:
-            # create_process is a coroutine that returns an object that is an async context manager.
-            # We must await it first to get the context manager.
-            async with (await conn.create_process(command)) as process:
-                async for line in process.stdout:
-                    yield line, 'stdout'
-                async for line in process.stderr:
-                    yield line, 'stderr'
+            async with async_timeout.timeout(timeout):
+                async with (await conn.create_process(command)) as process:
+                    async for line in process.stdout:
+                        yield line, 'stdout'
+                    async for line in process.stderr:
+                        yield line, 'stderr'
+        except asyncio.TimeoutError:
+            yield "Error: Command timed out.", 'stderr'
         finally:
             conn.close()
 
