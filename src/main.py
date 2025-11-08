@@ -337,7 +337,8 @@ async def execute_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     output = ""
     last_output = ""
     try:
-        async for line, stream in ssh_manager.run_command(alias, command):
+        async_generator = ssh_manager.run_command(alias, command)
+        async for line, stream in async_generator:
             output += line
             # To avoid hitting Telegram's rate limits and API errors, edit the message only periodically and if it has changed
             if len(output) % 100 == 0 and output != last_output:
