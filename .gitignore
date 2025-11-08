@@ -16,3 +16,4 @@ database.db
 
 # Other
 .DS_Store
+src/telegram_linux_admin.egg-info

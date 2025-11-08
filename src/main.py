@@ -21,25 +21,16 @@ from functools import wraps
 from typing import Optional
 
 # --- Globals & Logging ---
-# Standard logging setup to provide visibility into the bot's operations.
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ssh_manager: A global instance of the SSHManager to handle all SSH connections.
 ssh_manager = None
-# user_connections: A dictionary to track which server a user is currently connected to.
-# Format: {user_id: "server_alias"}
 user_connections = {}
-# RESTORING: A flag to prevent the bot from handling commands while a database restore is in progress.
 RESTORING = False
-# SHELL_MODE_USERS: A set to track users who are currently in an interactive shell session.
 SHELL_MODE_USERS = set()
-# DEBUG_MODE: A flag to enable or disable verbose debugging messages in the chat.
 DEBUG_MODE = False
 
 # --- Conversation States ---
-# These constants define the different steps (states) in a conversation, used by ConversationHandlers.
-# This makes the code more readable than using raw integers.
 (AWAIT_COMMAND, ALIAS, HOSTNAME, USER, AUTH_METHOD, PASSWORD, KEY_PATH) = range(7)
 
 # --- Authorization ---
@@ -47,22 +38,16 @@ def _extract_user_id(update: Update) -> Optional[int]:
     """Safely extract a user id from any kind of update."""
     if update is None:
         return None
-
     if update.effective_user:
         return update.effective_user.id
-
     if update.callback_query and update.callback_query.from_user:
         return update.callback_query.from_user.id
-
     if update.message and update.message.from_user:
         return update.message.from_user.id
-
     return None
-
 
 def authorized(func):
     """Decorator to check if the user is authorized."""
-
     @wraps(func)
     async def wrapped(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
         user_id = _extract_user_id(update)
@@ -71,34 +56,24 @@ def authorized(func):
             if update and update.callback_query:
                 await update.callback_query.answer("🚫 Unable to identify user.", show_alert=True)
             elif update and update.effective_chat:
-                await update.effective_chat.send_message(
-                    "🚫 **Access Denied**\nWe could not verify your identity for this request.",
-                    parse_mode='Markdown'
-                )
+                await update.effective_chat.send_message("🚫 **Access Denied**\nWe could not verify your identity.", parse_mode='Markdown')
             return
 
         await send_debug_message(update, f"Checking authorization for user_id: {user_id}...")
-
         if user_id not in config.whitelisted_users:
             logger.warning(f"Unauthorized access denied for user_id: {user_id}")
             await send_debug_message(update, f"Unauthorized access denied for user_id: {user_id}.")
             if update.callback_query:
                 await update.callback_query.answer("🚫 You are not authorized to use this bot.", show_alert=True)
             elif update.effective_message:
-                await update.effective_message.reply_text(
-                    "🚫 **Access Denied**\nYou are not authorized to use this bot.",
-                    parse_mode='Markdown'
-                )
+                await update.effective_message.reply_text("🚫 **Access Denied**\nYou are not authorized.", parse_mode='Markdown')
             return
 
         await send_debug_message(update, "Authorization successful.")
         return await func(update, context, *args, **kwargs)
-
     return wrapped
 
-
 def _resolve_message(update: Update):
-    """Return the message associated with an update, falling back to callback messages."""
     if update.message:
         return update.message
     if update.callback_query:
@@ -109,22 +84,6 @@ def _resolve_message(update: Update):
 @authorized
 async def add_server_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Starts the conversation to add a new server."""
-<<<<<<< ours
-<<<<<<< ours
-    if (query := update.callback_query) is not None:
-        await query.answer()
-    message = _resolve_message(update)
-    if message is None:
-        logger.warning("Add server requested but no message context is available.")
-        return ConversationHandler.END
-
-    await message.reply_text(
-        "🖥️ **Add a New Server**\n\nLet's add a new server. "
-        "First, what is the short alias for this server? (e.g., 'webserver')"
-    )
-=======
-=======
->>>>>>> theirs
     prompt = (
         "🖥️ **Add a New Server**\n\n"
         "Let's add a new server. First, what is the short alias for this server? (e.g., `webserver`)"
@@ -136,11 +95,8 @@ async def add_server_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     else:
         await update.effective_message.reply_text(prompt, parse_mode='Markdown')
 
-<<<<<<< ours
->>>>>>> theirs
-=======
->>>>>>> theirs
     return ALIAS
+
 
 async def get_alias(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data['alias'] = update.message.text
@@ -206,31 +162,14 @@ async def cancel_add_server(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 @authorized
 async def remove_server_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Displays a menu of servers to remove."""
-    if (query := update.callback_query) is not None:
-        await query.answer()
-    message = _resolve_message(update)
-    if message is None:
-        logger.warning("Remove server menu requested but no message context is available.")
-        return
-
     servers = get_all_servers()
     if not servers:
-<<<<<<< ours
-<<<<<<< ours
-        await message.reply_text("No servers to remove.")
-=======
-=======
->>>>>>> theirs
         message = "🤷 **No servers to remove.**"
         if update.callback_query:
             await update.callback_query.answer()
             await update.callback_query.edit_message_text(message, parse_mode='Markdown')
         else:
             await update.effective_message.reply_text(message, parse_mode='Markdown')
-<<<<<<< ours
->>>>>>> theirs
-=======
->>>>>>> theirs
         return
 
     keyboard = [
@@ -240,12 +179,6 @@ async def remove_server_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
     keyboard.append([InlineKeyboardButton("Cancel", callback_data="main_menu")])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
-<<<<<<< ours
-<<<<<<< ours
-    await message.reply_text("Select a server to remove:", reply_markup=reply_markup)
-=======
-=======
->>>>>>> theirs
     if update.callback_query:
         await update.callback_query.answer()
         await update.callback_query.edit_message_text(
@@ -259,10 +192,6 @@ async def remove_server_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
             reply_markup=reply_markup,
             parse_mode='Markdown'
         )
-<<<<<<< ours
->>>>>>> theirs
-=======
->>>>>>> theirs
 
 # --- Navigation ---
 @authorized
@@ -324,8 +253,9 @@ async def handle_server_connection(update: Update, context: ContextTypes.DEFAULT
     try:
         await query.edit_message_text(f"🔌 **Connecting to {alias}...**", parse_mode='Markdown')
 
-        # Establish the SSH connection
-        await ssh_manager.get_connection(alias)
+        # Establish the SSH connection by running a simple command
+        async for _ in ssh_manager.run_command(alias, "echo 'Connection successful'"):
+            pass
 
         # Store the active connection alias for the user
         user_connections[user_id] = alias
@@ -361,32 +291,6 @@ async def handle_server_connection(update: Update, context: ContextTypes.DEFAULT
         await query.edit_message_text(f"❌ **An unexpected error occurred:**\n`{e}`", parse_mode='Markdown')
 
 
-@authorized
-<<<<<<< ours
-<<<<<<< ours
-async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Parses the CallbackQuery and updates the message text."""
-    query = update.callback_query
-    await query.answer()
-
-    logger.info(f"Button pressed with data: {query.data}")
-
-    if query.data == 'main_menu':
-        await main_menu(update, context)
-    elif query.data == 'connect_server_menu':
-        await connect_server_menu(update, context)
-    elif query.data == 'add_server_start':
-        await add_server_start(update, context)
-    elif query.data == 'remove_server_menu':
-        await remove_server_menu(update, context)
-    elif query.data == 'update_bot':
-        await update_bot_command(update, context)
-
-
-=======
->>>>>>> theirs
-=======
->>>>>>> theirs
 # --- Debugging ---
 async def send_debug_message(update: Update, text: str):
     """Sends a debug message to the user if debug mode is enabled."""
@@ -587,42 +491,13 @@ async def remove_server_confirm(update: Update, context: ContextTypes.DEFAULT_TY
 @authorized
 async def check_for_updates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Checks for updates and notifies the user."""
-<<<<<<< ours
-<<<<<<< ours
-    message = _resolve_message(update)
-    if message is None:
-        logger.warning("Check for updates command triggered without message context.")
-        return
-
-    await message.reply_text("Checking for updates...")
-    result = check_for_updates()
-    await message.reply_text(result["message"])
-=======
     await update.effective_message.reply_text("🔎 Checking for updates...")
     result = check_for_updates()
     await update.effective_message.reply_text(result["message"], disable_web_page_preview=True)
->>>>>>> theirs
-=======
-    await update.effective_message.reply_text("🔎 Checking for updates...")
-    result = check_for_updates()
-    await update.effective_message.reply_text(result["message"], disable_web_page_preview=True)
->>>>>>> theirs
 
 @authorized
 async def update_bot_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles the bot update process with real-time feedback."""
-<<<<<<< ours
-<<<<<<< ours
-    message = _resolve_message(update)
-    if message is None:
-        logger.warning("Update command triggered without message context.")
-        return
-
-    progress_message = await message.reply_text(
-        "Update initiated...\n\nThis may take a few minutes. The log will appear here once the process is complete.",
-=======
-=======
->>>>>>> theirs
     if update.callback_query:
         await update.callback_query.answer()
         base_message = update.callback_query.message
@@ -632,16 +507,15 @@ async def update_bot_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     message = await base_message.reply_text(
         "⏳ **Update initiated...**\n\nThis may take a few minutes. "
         "The log will appear here once the process is complete.",
->>>>>>> theirs
         parse_mode='Markdown'
     )
 
     try:
         update_log = apply_update()
-        await progress_message.edit_text(update_log, parse_mode='Markdown')
+        await message.edit_text(update_log, parse_mode='Markdown')
     except Exception as exc:
         logger.error("An error occurred in the update process: %s", exc, exc_info=True)
-        await progress_message.edit_text(
+        await message.edit_text(
             "An unexpected error occurred.\nCheck the logs for more details.\n\n`{}`".format(exc),
             parse_mode='Markdown'
         )
@@ -651,13 +525,9 @@ async def post_shutdown(application: Application) -> None:
     """Gracefully shuts down the SSH manager and database connections."""
     logger.info("Bot is shutting down...")
     if ssh_manager:
-        ssh_manager.stop_health_check()
         await ssh_manager.close_all_connections()
     close_db_connection()
 
-async def post_init(application: Application) -> None:
-    """Starts the SSH health check after the application has been initialized."""
-    ssh_manager.start_health_check()
 
 def main() -> None:
     """
@@ -667,13 +537,11 @@ def main() -> None:
     global ssh_manager
 
     # --- Pre-flight Checks ---
-    # Ensure the bot token is configured before proceeding.
     if not config.telegram_token:
         logger.error("FATAL: Telegram token is not configured. Please run the setup wizard.")
         sys.exit(1)
 
     # --- Core Component Initialization ---
-    # Set up the database and the SSH connection manager.
     try:
         initialize_database()
         ssh_manager = SSHManager()
@@ -682,15 +550,12 @@ def main() -> None:
         sys.exit(1)
 
     # --- Application Setup ---
-    # Create the Telegram Application object, linking it to our lifecycle hooks.
-    application = Application.builder().token(config.telegram_token).post_init(post_init).post_shutdown(post_shutdown).build()
+    application = Application.builder().token(config.telegram_token).post_shutdown(post_shutdown).build()
 
     # --- Error Handling ---
-    # Register a global error handler to catch any unhandled exceptions and prevent crashes.
     application.add_error_handler(error_handler)
 
     # --- Conversation Handlers ---
-    # These handlers manage multi-step interactions with the user, like adding a server or running a command.
     add_server_handler = ConversationHandler(
         entry_points=[
             CommandHandler('add_server', add_server_start),
@@ -718,8 +583,6 @@ def main() -> None:
     application.add_handler(run_command_handler)
 
     # --- UI & Menu Handlers ---
-    # These handlers respond to button presses (CallbackQuery) from the user.
-    # Specific callback handlers keep the routing explicit and easier to audit.
     application.add_handler(CallbackQueryHandler(main_menu, pattern='^main_menu$'))
     application.add_handler(CallbackQueryHandler(connect_server_menu, pattern='^connect_server_menu$'))
     application.add_handler(CallbackQueryHandler(remove_server_menu, pattern='^remove_server_menu$'))
@@ -736,13 +599,12 @@ def main() -> None:
     application.add_handler(CommandHandler('check_updates', check_for_updates_command))
     application.add_handler(CommandHandler('update_bot', update_bot_command))
 
-    # --- Start Health Check & Run Bot ---
+    # --- Start Bot ---
     logger.info("Bot is starting...")
 
     # Special mode for CI/CD smoke test
     if os.environ.get("SMOKE_TEST"):
         logger.info("Smoke test mode enabled. Bot will not connect to Telegram.")
-        # Keep the event loop running for a short time for the test
         loop = asyncio.get_event_loop()
         loop.run_until_complete(asyncio.sleep(15))
     else:
