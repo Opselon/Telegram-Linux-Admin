@@ -181,6 +181,7 @@ Environment="PYTHONPATH={os.getcwd()}"
 ExecStart={bot_command}
 Restart=always
 RestartSec=10
+TimeoutStopSec=5
 
 [Install]
 WantedBy=multi-user.target

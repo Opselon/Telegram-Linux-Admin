@@ -548,8 +548,16 @@ def main() -> None:
     This is the main entry point of the bot.
     """
     if os.path.exists(LOCK_FILE):
-        logger.error("Lock file exists. Another instance of the bot is likely running.")
-        sys.exit(1)
+        try:
+            with open(LOCK_FILE, "r") as f:
+                pid = int(f.read().strip())
+            # Check if the process is running
+            os.kill(pid, 0)
+            logger.error(f"Lock file exists and process {pid} is running. Another instance of the bot is likely running.")
+            sys.exit(1)
+        except (IOError, ValueError, OSError):
+            # Lock file is stale, remove it
+            remove_lock_file()
 
     create_lock_file()
 
