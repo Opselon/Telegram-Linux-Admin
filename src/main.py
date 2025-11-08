@@ -29,6 +29,7 @@ user_connections = {}
 RESTORING = False
 SHELL_MODE_USERS = set()
 DEBUG_MODE = False
+LOCK_FILE = "bot.lock"
 
 # --- Conversation States ---
 (AWAIT_COMMAND, ALIAS, HOSTNAME, USER, AUTH_METHOD, PASSWORD, KEY_PATH) = range(7)
@@ -521,9 +522,20 @@ async def update_bot_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
 
 
+def create_lock_file():
+    """Creates a lock file to prevent multiple instances."""
+    with open(LOCK_FILE, "w") as f:
+        f.write(str(os.getpid()))
+
+def remove_lock_file():
+    """Removes the lock file."""
+    if os.path.exists(LOCK_FILE):
+        os.remove(LOCK_FILE)
+
 async def post_shutdown(application: Application) -> None:
     """Gracefully shuts down the SSH manager and database connections."""
     logger.info("Bot is shutting down...")
+    remove_lock_file()
     if ssh_manager:
         await ssh_manager.close_all_connections()
     close_db_connection()
@@ -534,6 +546,12 @@ def main() -> None:
     Initializes and runs the Telegram bot application.
     This is the main entry point of the bot.
     """
+    if os.path.exists(LOCK_FILE):
+        logger.error("Lock file exists. Another instance of the bot is likely running.")
+        sys.exit(1)
+
+    create_lock_file()
+
     global ssh_manager
 
     # --- Pre-flight Checks ---
