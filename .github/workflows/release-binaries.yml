@@ -1,14 +1,13 @@
 name: Release Binaries
 
-# لازم است دسترسی write به contents برای ایجاد Release داشته باشیم
 permissions:
   contents: write
 
 on:
   push:
     tags:
-      - 'v*'           # وقتی تگ با پیش‌وند v زده شد (مثلاً v1.0.0)
-  workflow_dispatch:   # برای اجرای دستی (اختیاری)
+      - 'v*'
+  workflow_dispatch:
 
 jobs:
   build:
@@ -34,7 +33,6 @@ jobs:
             arch: arm64
             python_arch: arm64
             binary_name: telegram-linux-admin-macos-arm64
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -53,6 +51,7 @@ jobs:
 
       - name: Build executable
         run: |
+          rm -rf dist || true
           pyinstaller --onefile --name "${{ matrix.binary_name }}" src/main.py
 
       - name: Upload artifact
@@ -84,4 +83,4 @@ jobs:
           draft: false
           prerelease: false
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
