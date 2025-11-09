@@ -40,8 +40,8 @@ MONITORING_TASKS = {}
 (
     AWAIT_COMMAND, ALIAS, HOSTNAME, USER, AUTH_METHOD, PASSWORD, KEY_PATH,
     AWAIT_RESTORE_CONFIRMATION, AWAIT_RESTORE_FILE, AWAIT_SERVICE_NAME, AWAIT_PACKAGE_NAME, AWAIT_CONTAINER_NAME,
-    AWAIT_FILE_PATH, AWAIT_UPLOAD_FILE
-) = range(14)
+    AWAIT_FILE_PATH, AWAIT_UPLOAD_FILE, AWAIT_PID
+) = range(15)
 
 # --- Authorization ---
 def _extract_user_id(update: Update) -> Optional[int]:
@@ -284,6 +284,7 @@ async def handle_server_connection(update: Update, context: ContextTypes.DEFAULT
             [InlineKeyboardButton("📦 Package Management", callback_data=f"package_management_menu_{alias}")],
             [InlineKeyboardButton("🐳 Docker Management", callback_data=f"docker_management_menu_{alias}")],
             [InlineKeyboardButton("📁 File Manager", callback_data=f"file_manager_menu_{alias}")],
+            [InlineKeyboardButton("⚙️ Process Management", callback_data=f"process_management_menu_{alias}")],
             [InlineKeyboardButton("⚙️ System Commands", callback_data=f"system_commands_menu_{alias}")],
             [InlineKeyboardButton("🔌 Disconnect", callback_data=f"disconnect_{alias}")]
         ]
@@ -355,14 +356,22 @@ async def execute_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     output = ""
     last_output = ""
+    pid = None
     try:
         async_generator = ssh_manager.run_command(alias, command)
-        async for line, stream in async_generator:
-            output += line
+        async for item, stream in async_generator:
+            if stream == 'pid':
+                pid = item.pid
+                keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_command_{alias}_{pid}")]]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await result_message.edit_reply_markup(reply_markup)
+                continue
+
+            output += item
             # To avoid hitting Telegram's rate limits and API errors, edit the message only periodically and if it has changed
             if len(output) % 100 == 0 and output != last_output:
                 try:
-                    await result_message.edit_text(f"```\n{output}\n```", parse_mode='Markdown')
+                    await result_message.edit_text(f"```\n{output}\n```", parse_mode='Markdown', reply_markup=result_message.reply_markup)
                     last_output = output
                 except BadRequest as e:
                     if "Message is not modified" not in str(e):
@@ -386,10 +395,18 @@ async def execute_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     return ConversationHandler.END
 
-async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Cancels the command execution."""
-    await update.message.reply_text("Command cancelled.")
-    return ConversationHandler.END
+@authorized
+async def cancel_command_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Cancels a running command."""
+    query = update.callback_query
+    await query.answer()
+    _, alias, pid = query.data.split('_', 2)
+
+    try:
+        await ssh_manager.kill_process(alias, int(pid))
+        await query.edit_message_text(f"✅ **Command (PID: {pid}) cancelled on `{alias}`.**", parse_mode='Markdown')
+    except Exception as e:
+        await query.edit_message_text(f"❌ **Error:** Could not cancel command.\n`{e}`", parse_mode='Markdown')
 
 
 # --- Interactive Shell ---
@@ -980,6 +997,99 @@ async def cancel_file_manager_action(update: Update, context: ContextTypes.DEFAU
 
 
 @authorized
+async def process_management_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Displays the process management menu."""
+    query = update.callback_query
+    await query.answer()
+    alias = query.data.split('_', 3)[3]
+
+    keyboard = [
+        [InlineKeyboardButton("📜 List Processes", callback_data=f"ps_aux_{alias}")],
+        [InlineKeyboardButton("❌ Kill Process", callback_data=f"kill_process_{alias}")],
+        [InlineKeyboardButton("🔙 Back to Server Menu", callback_data=f"connect_{alias}")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(
+        f"**⚙️ Process Management for {alias}**\n\nSelect an action:",
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
+
+
+@authorized
+async def list_processes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Lists running processes on the server."""
+    query = update.callback_query
+    await query.answer()
+    alias = query.data.split('_', 2)[2]
+
+    command = "ps aux"
+    result_message = await query.edit_message_text(f"Running `{command}` on `{alias}`...", parse_mode='Markdown')
+
+    output = ""
+    try:
+        async_generator = ssh_manager.run_command(alias, command)
+        async for line, stream in async_generator:
+            output += line
+
+        final_message = f"✅ **Command completed on `{alias}`**\n\n```{output.strip()}```"
+        if len(final_message) > 4096:
+            with tempfile.NamedTemporaryFile(mode="w+", delete=False, suffix=".txt") as f:
+                f.write(output)
+                f.flush()
+            await result_message.delete()
+            await query.message.reply_document(document=open(f.name, "rb"), caption=f"Command output for `{command}`")
+            os.remove(f.name)
+        else:
+            await result_message.edit_text(final_message, parse_mode='Markdown')
+    except Exception as e:
+        await result_message.edit_text(f"❌ **Error:**\n`{e}`", parse_mode='Markdown')
+
+
+@authorized
+async def kill_process_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Starts the conversation to kill a process."""
+    query = update.callback_query
+    await query.answer()
+
+    alias = query.data.split('_', 2)[2]
+    context.user_data['alias'] = alias
+
+    await query.edit_message_text(f"Please enter the PID of the process to kill on `{alias}`.", parse_mode='Markdown')
+    return AWAIT_PID
+
+
+async def execute_kill_process(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Executes the kill command."""
+    pid = shlex.quote(update.message.text)
+    alias = context.user_data['alias']
+
+    command = f"kill -9 {pid}"
+
+    result_message = await update.message.reply_text(f"Running `{command}` on `{alias}`...", parse_mode='Markdown')
+
+    output = ""
+    try:
+        async_generator = ssh_manager.run_command(alias, command)
+        async for line, stream in async_generator:
+            output += line
+
+        await result_message.edit_text(f"✅ **Command completed on `{alias}`**\n\n```{output.strip()}```", parse_mode='Markdown')
+    except Exception as e:
+        await result_message.edit_text(f"❌ **Error:**\n`{e}`", parse_mode='Markdown')
+
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
+async def cancel_kill_process(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Cancels the kill process conversation."""
+    await update.message.reply_text("Kill process cancelled.")
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
+@authorized
 async def service_management_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Displays the service management menu."""
     query = update.callback_query
@@ -1399,7 +1509,7 @@ def main() -> None:
         states={
             AWAIT_COMMAND: [MessageHandler(filters.TEXT & ~filters.COMMAND, execute_command)],
         },
-        fallbacks=[CommandHandler('cancel', cancel_command)],
+        fallbacks=[],
     )
     application.add_handler(add_server_handler)
     application.add_handler(run_command_handler)
@@ -1464,6 +1574,15 @@ def main() -> None:
     )
     application.add_handler(file_manager_handler)
 
+    kill_process_handler = ConversationHandler(
+        entry_points=[CallbackQueryHandler(kill_process_start, pattern='^kill_process_')],
+        states={
+            AWAIT_PID: [MessageHandler(filters.TEXT & ~filters.COMMAND, execute_kill_process)],
+        },
+        fallbacks=[CommandHandler('cancel', cancel_kill_process)],
+    )
+    application.add_handler(kill_process_handler)
+
     # --- UI & Menu Handlers ---
     application.add_handler(CallbackQueryHandler(main_menu, pattern='^main_menu$'))
     application.add_handler(CallbackQueryHandler(connect_server_menu, pattern='^connect_server_menu$'))
@@ -1484,6 +1603,9 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(docker_management_menu, pattern='^docker_management_menu_'))
     application.add_handler(CallbackQueryHandler(docker_ps, pattern='^docker_ps_'))
     application.add_handler(CallbackQueryHandler(file_manager_menu, pattern='^file_manager_menu_'))
+    application.add_handler(CallbackQueryHandler(process_management_menu, pattern='^process_management_menu_'))
+    application.add_handler(CallbackQueryHandler(list_processes, pattern='^ps_aux_'))
+    application.add_handler(CallbackQueryHandler(cancel_command_callback, pattern='^cancel_command_'))
     application.add_handler(CallbackQueryHandler(system_commands_menu, pattern='^system_commands_menu_'))
     application.add_handler(CallbackQueryHandler(confirm_system_command, pattern='^reboot_'))
     application.add_handler(CallbackQueryHandler(confirm_system_command, pattern='^shutdown_'))
