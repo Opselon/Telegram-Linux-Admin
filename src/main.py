@@ -7,6 +7,7 @@ import zipfile
 import tempfile
 import shlex
 import subprocess
+import socket
 from datetime import datetime
 from telegram import BotCommand, Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -322,20 +323,20 @@ async def handle_server_connection(update: Update, context: ContextTypes.DEFAULT
         )
 
     except asyncssh.PermissionDenied:
-        error_message = "❌ **Authentication Failed:**\nPermission denied. Please check your username, password, or SSH key."
+        error_message = "❌ **Authentication Failed:**\nPermission denied. This is likely due to an incorrect username, password, or SSH key."
         logger.error(f"Authentication failed for {alias}")
         await query.edit_message_text(error_message, parse_mode='Markdown')
     except ConnectionRefusedError:
-        error_message = f"❌ **Connection Refused:**\nCould not connect to `{alias}`. Please ensure the server is running and the port is correct."
+        error_message = f"❌ **Connection Refused:**\nCould not connect to `{alias}`. The server may be down or the port may be incorrect."
         logger.error(f"Connection refused for {alias}")
         await query.edit_message_text(error_message, parse_mode='Markdown')
-    except (OSError, asyncssh.misc.gaierror):
-        error_message = f"❌ **Host Not Found:**\nCould not resolve hostname `{alias}`. Please check the server address."
+    except (socket.gaierror, OSError) as e:
+        error_message = f"❌ **Host Not Found:**\nCould not resolve hostname `{alias}`. Please check the server address.\n\n`{e}`"
         logger.error(f"Hostname could not be resolved for {alias}")
         await query.edit_message_text(error_message, parse_mode='Markdown')
     except Exception as e:
         logger.error(f"An unexpected error occurred while connecting to {alias}: {e}", exc_info=True)
-        await query.edit_message_text(f"❌ **An unexpected error occurred:**\n`{e}`", parse_mode='Markdown')
+        await query.edit_message_text(f"❌ **An unexpected error occurred:**\n\n`{e}`", parse_mode='Markdown')
 
 
 # --- Debugging ---
