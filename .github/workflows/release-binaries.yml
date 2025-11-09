@@ -14,8 +14,12 @@
   },
   "on": {
     "push": {
-      "branches": ["main"],
-      "tags": ["v*"]
+      "branches": [
+        "main"
+      ],
+      "tags": [
+        "v*"
+      ]
     },
     "workflow_dispatch": {
       "inputs": {
@@ -82,52 +86,97 @@
             "architecture": "${{ matrix.python_arch }}"
           }
         },
-      {
-    "name": "🧹 Clean dist",
-    "shell": "bash",
-    "run": "rm -rf dist build .nuitka-cache || true\nmkdir -p dist\n"
-  },
-  {
-    "name": "Install dependencies (Nuitka for Windows)",
-    "if": "runner.os == 'Windows'",
-    "run": "python -m pip install --upgrade pip\npip install .\npip install nuitka zstandard pefile\n"
-  },
-  {
-    "name": "Install dependencies (PyInstaller for others)",
-    "if": "runner.os != 'Windows'",
-    "run": "python -m pip install --upgrade pip\npip install .\npip install pyinstaller\n"
-  },
-  {
-    "name": "Build executable (Nuitka for Windows)",
-    "if": "runner.os == 'Windows'",
-    "run": "python -m nuitka \\\n  --onefile \\\n  --standalone \\\n  --assume-yes-for-downloads \\\n  --output-filename=${{ matrix.binary_name }} \\\n  src/main.py\n"
-  },
-  {
-    "name": "Build executable (PyInstaller for others)",
-    "if": "runner.os != 'Windows'",
-    "run": "pyinstaller --clean --noconfirm --onefile --name \"${{ matrix.binary_name }}\" src/main.py\n"
-  },
-  {
-    "name": "Move Windows executable",
-    "if": "runner.os == 'Windows'",
-    "shell": "pwsh",
-    "run": "New-Item -ItemType Directory -Force -Path dist | Out-Null\nMove-Item -Path \"./${{ matrix.binary_name }}\" -Destination ./dist/\n"
-  },
-  {
-    "name": "🔍 Verify dist contents",
-    "shell": "bash",
-    "run": "set -euo pipefail\necho \"== dist tree ==\"\ntest -d dist || { echo \"dist/ not found\"; exit 1; }\nls -lah dist || true\ntest -s \"dist/${{ matrix.binary_name }}\" || { echo \"expected file not found: dist/${{ matrix.binary_name }}\"; exit 1; }\n"
-  },
-  {
-    "name": "⬆️ Upload artifact",
-    "uses": "actions/upload-artifact@v4",
-    "with": {
-      "name": "bin-${{ matrix.os }}-${{ matrix.arch }}",
-      "path": "dist/${{ matrix.binary_name }}",
-      "if-no-files-found": "error",
-      "retention-days": 7
-    }
-  }
+        {
+          "name": "📦 Cache pip (Windows)",
+          "if": "runner.os == 'Windows'",
+          "uses": "actions/cache@v4",
+          "with": {
+            "path": "~\\AppData\\Local\\pip\\Cache",
+            "key": "pip-${{ runner.os }}-${{ hashFiles('**/pyproject.toml', '**/setup.cfg', '**/requirements*.txt') }}",
+            "restore-keys": "pip-${{ runner.os }}-"
+          }
+        },
+        {
+          "name": "🗃️ Cache Nuitka (Windows)",
+          "if": "runner.os == 'Windows'",
+          "uses": "actions/cache@v4",
+          "with": {
+            "path": ".nuitka-cache",
+            "key": "nuitka-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('src/**/*.py') }}",
+            "restore-keys": "nuitka-${{ runner.os }}-${{ matrix.arch }}-"
+          }
+        },
+        {
+          "name": "🧹 Clean dist (Windows)",
+          "if": "runner.os == 'Windows'",
+          "shell": "pwsh",
+          "run": "Remove-Item -Recurse -Force dist,build,.nuitka-cache -ErrorAction SilentlyContinue; New-Item -ItemType Directory -Path dist | Out-Null"
+        },
+        {
+          "name": "🧹 Clean dist (Others)",
+          "if": "runner.os != 'Windows'",
+          "shell": "bash",
+          "run": "rm -rf dist build .nuitka-cache || true\nmkdir -p dist\n"
+        },
+        {
+          "name": "📦 Install dependencies (Windows/Nuitka)",
+          "if": "runner.os == 'Windows'",
+          "shell": "pwsh",
+          "run": "python -m pip install --upgrade pip; pip install .; pip install nuitka zstandard pefile"
+        },
+        {
+          "name": "Install dependencies (PyInstaller for others)",
+          "if": "runner.os != 'Windows'",
+          "run": "python -m pip install --upgrade pip\npip install .\npip install pyinstaller\n"
+        },
+        {
+          "name": "🛠️ Setup MSVC env (x64)",
+          "if": "runner.os == 'Windows'",
+          "uses": "ilammy/msvc-dev-cmd@v1",
+          "with": {
+            "arch": "x64"
+          }
+        },
+        {
+          "name": "🏗️ Build executable (Nuitka + progress + parallel)",
+          "if": "runner.os == 'Windows'",
+          "shell": "pwsh",
+          "timeout-minutes": 30,
+          "run": "python -m nuitka --msvc=latest --onefile --standalone --assume-yes-for-downloads --show-progress --jobs=$env:NUMBER_OF_PROCESSORS --output-filename=${{ matrix.binary_name }} src/main.py"
+        },
+        {
+          "name": "Build executable (PyInstaller for others)",
+          "if": "runner.os != 'Windows'",
+          "run": "pyinstaller --clean --noconfirm --onefile --name \"${{ matrix.binary_name }}\" src/main.py\n"
+        },
+        {
+          "name": "📦 Move Windows executable",
+          "if": "runner.os == 'Windows'",
+          "shell": "pwsh",
+          "run": "Move-Item -Path \"./${{ matrix.binary_name }}\" -Destination ./dist/"
+        },
+        {
+          "name": "🔍 Verify dist (Windows)",
+          "if": "runner.os == 'Windows'",
+          "shell": "pwsh",
+          "run": "Write-Host '== dist tree =='; Get-ChildItem -Recurse -Force dist; if (!(Test-Path \"dist/${{ matrix.binary_name }}\")) { throw \"expected file not found: dist/${{ matrix.binary_name }}\" }"
+        },
+        {
+          "name": "🔍 Verify dist contents (Others)",
+          "if": "runner.os != 'Windows'",
+          "shell": "bash",
+          "run": "set -euo pipefail\necho \"== dist tree ==\"\ntest -d dist || { echo \"dist/ not found\"; exit 1; }\nls -lah dist || true\ntest -s \"dist/${{ matrix.binary_name }}\" || { echo \"expected file not found: dist/${{ matrix.binary_name }}\"; exit 1; }\n"
+        },
+        {
+          "name": "⬆️ Upload artifact",
+          "uses": "actions/upload-artifact@v4",
+          "with": {
+            "name": "bin-${{ matrix.os }}-${{ matrix.arch }}",
+            "path": "dist/${{ matrix.binary_name }}",
+            "if-no-files-found": "error",
+            "retention-days": 7
+          }
+        }
       ]
     },
     "release": {
