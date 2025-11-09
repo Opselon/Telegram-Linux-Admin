@@ -87,85 +87,31 @@
           }
         },
         {
-          "name": "📦 Cache pip (Windows)",
-          "if": "runner.os == 'Windows'",
+          "name": "📦 Cache pip",
           "uses": "actions/cache@v4",
           "with": {
-            "path": "~\\AppData\\Local\\pip\\Cache",
+            "path": "${{ runner.os == 'Windows' && '~\\AppData\\Local\\pip\\Cache' || runner.os == 'Linux' && '~/.cache/pip' || '~/Library/Caches/pip' }}",
             "key": "pip-${{ runner.os }}-${{ hashFiles('**/pyproject.toml', '**/setup.cfg', '**/requirements*.txt') }}",
             "restore-keys": "pip-${{ runner.os }}-"
           }
         },
         {
-          "name": "🗃️ Cache Nuitka (Windows)",
-          "if": "runner.os == 'Windows'",
-          "uses": "actions/cache@v4",
-          "with": {
-            "path": ".nuitka-cache",
-            "key": "nuitka-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('src/**/*.py') }}",
-            "restore-keys": "nuitka-${{ runner.os }}-${{ matrix.arch }}-"
-          }
-        },
-        {
-          "name": "🧹 Clean dist (Windows)",
-          "if": "runner.os == 'Windows'",
-          "shell": "pwsh",
-          "run": "Remove-Item -Recurse -Force dist,build,.nuitka-cache -ErrorAction SilentlyContinue; New-Item -ItemType Directory -Path dist | Out-Null"
-        },
-        {
-          "name": "🧹 Clean dist (Others)",
-          "if": "runner.os != 'Windows'",
+          "name": "🧹 Clean dist",
           "shell": "bash",
-          "run": "rm -rf dist build .nuitka-cache || true\nmkdir -p dist\n"
+          "run": "rm -rf dist build\nmkdir -p dist\n"
         },
         {
-          "name": "📦 Install dependencies (Windows/Nuitka)",
-          "if": "runner.os == 'Windows'",
-          "shell": "pwsh",
-          "run": "python -m pip install --upgrade pip; pip install .; pip install nuitka zstandard pefile"
-        },
-        {
-          "name": "Install dependencies (PyInstaller for others)",
-          "if": "runner.os != 'Windows'",
+          "name": "📦 Install dependencies (PyInstaller for all)",
           "run": "python -m pip install --upgrade pip\npip install .\npip install pyinstaller\n"
         },
         {
-          "name": "🛠️ Setup MSVC env (x64)",
-          "if": "runner.os == 'Windows'",
-          "uses": "ilammy/msvc-dev-cmd@v1",
-          "with": {
-            "arch": "x64"
-          }
-        },
-        {
-          "name": "🏗️ Build executable (Nuitka + progress + parallel)",
-          "if": "runner.os == 'Windows'",
-          "shell": "pwsh",
-          "timeout-minutes": 30,
-          "run": "python -m nuitka --msvc=latest --onefile --standalone --assume-yes-for-downloads --show-progress --jobs=$env:NUMBER_OF_PROCESSORS --output-filename=${{ matrix.binary_name }} src/main.py"
-        },
-        {
-          "name": "Build executable (PyInstaller for others)",
-          "if": "runner.os != 'Windows'",
+          "name": "🏗️ Build executable (PyInstaller for all)",
           "run": "pyinstaller --clean --noconfirm --onefile --name \"${{ matrix.binary_name }}\" src/main.py\n"
         },
         {
-          "name": "📦 Move Windows executable",
-          "if": "runner.os == 'Windows'",
-          "shell": "pwsh",
-          "run": "Move-Item -Path \"./${{ matrix.binary_name }}\" -Destination ./dist/"
-        },
-        {
-          "name": "🔍 Verify dist (Windows)",
-          "if": "runner.os == 'Windows'",
-          "shell": "pwsh",
-          "run": "Write-Host '== dist tree =='; Get-ChildItem -Recurse -Force dist; if (!(Test-Path \"dist/${{ matrix.binary_name }}\")) { throw \"expected file not found: dist/${{ matrix.binary_name }}\" }"
-        },
-        {
-          "name": "🔍 Verify dist contents (Others)",
-          "if": "runner.os != 'Windows'",
+          "name": "🔍 Verify dist contents",
           "shell": "bash",
-          "run": "set -euo pipefail\necho \"== dist tree ==\"\ntest -d dist || { echo \"dist/ not found\"; exit 1; }\nls -lah dist || true\ntest -s \"dist/${{ matrix.binary_name }}\" || { echo \"expected file not found: dist/${{ matrix.binary_name }}\"; exit 1; }\n"
+          "run": "set -euo pipefail\necho \"== dist tree ==\"\nls -lah dist || true\ntest -s \"dist/${{ matrix.binary_name }}\" || { echo \"expected file not found: dist/${{ matrix.binary_name }}\"; exit 1; }\n"
         },
         {
           "name": "⬆️ Upload artifact",
@@ -206,7 +152,7 @@
           "env": {
             "GITHUB_TOKEN": "${{ secrets.GITHUB_TOKEN }}"
           },
-          "run": "set -euo pipefail\n\n# Non-empty TAG_NAME (real or synthetic) counts as tag-run\nIS_TAG_RUN=0\nif [[ -n \"${{ steps.tag.outputs.TAG_NAME }}\" ]]; then IS_TAG_RUN=1; fi\nif [[ \"${GITHUB_REF}\" == refs/tags/* ]]; then IS_TAG_RUN=1; fi\necho \"is_tag_run=$IS_TAG_RUN\" >> \"$GITHUB_OUTPUT\"\n\nAPI=\"${GITHUB_API_URL:-https://api.github.com}\"\nRUN_ID=\"${GITHUB_RUN_ID}\"\nRESP=\"$(curl -sS -H \"Authorization: Bearer $GITHUB_TOKEN\" -H \"Accept: application/vnd.github+json\" \"$API/repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts?per_page=100\")\"\nCOUNT=\"$(echo \"$RESP\" | jq -r '.total_count // 0')\"\necho \"artifact_count=$COUNT\" >> \"$GITHUB_OUTPUT\"\n\nEXPECTED=('bin-ubuntu-latest-amd64' 'bin-windows-latest-amd64' 'bin-macos-latest-amd64' 'bin-macos-latest-arm64')\nNAMES=\"$(echo \"$RESP\" | jq -r '.artifacts[].name')\"\nMISSING=()\nfor e in \"${EXPECTED[@]}\"; do\n  if ! grep -qx \"$e\" <<< \"$NAMES\"; then MISSING+=(\"$e\"); fi\ndone\necho \"missing=${MISSING[*]-}\" >> \"$GITHUB_OUTPUT\"\n\nif [[ \"$IS_TAG_RUN\" -eq 1 && \"${#MISSING[@]}\" -eq 0 ]]; then\n  echo \"run_release=true\"  >> \"$GITHUB_OUTPUT\"\n  echo \"decision=success\" >> \"$GITHUB_OUTPUT\"\nelse\n  echo \"run_release=false\" >> \"$GITHUB_OUTPUT\"\n  echo \"decision=failed\"  >> \"$GITHUB_OUTPUT\"\nfi\n"
+          "run": "set -euo pipefail\n\nIS_TAG_RUN=0\nif [[ -n \"${{ steps.tag.outputs.TAG_NAME }}\" ]]; then IS_TAG_RUN=1; fi\nif [[ \"${GITHUB_REF}\" == refs/tags/* ]]; then IS_TAG_RUN=1; fi\necho \"is_tag_run=$IS_TAG_RUN\" >> \"$GITHUB_OUTPUT\"\n\nAPI=\"${GITHUB_API_URL:-https://api.github.com}\"\nRUN_ID=\"${GITHUB_RUN_ID}\"\nRESP=\"$(curl -sS -H \"Authorization: Bearer $GITHUB_TOKEN\" -H \"Accept: application/vnd.github+json\" \"$API/repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts?per_page=100\")\"\nCOUNT=\"$(echo \"$RESP\" | jq -r '.total_count // 0')\"\necho \"artifact_count=$COUNT\" >> \"$GITHUB_OUTPUT\"\n\nEXPECTED=('bin-ubuntu-latest-amd64' 'bin-windows-latest-amd64' 'bin-macos-latest-amd64' 'bin-macos-latest-arm64')\nNAMES=\"$(echo \"$RESP\" | jq -r '.artifacts[].name')\"\nMISSING=()\nfor e in \"${EXPECTED[@]}\"; do\n  if ! grep -qx \"$e\" <<< \"$NAMES\"; then MISSING+=(\"$e\"); fi\ndone\necho \"missing=${MISSING[*]-}\" >> \"$GITHUB_OUTPUT\"\n\nif [[ \"$IS_TAG_RUN\" -eq 1 && \"${#MISSING[@]}\" -eq 0 ]]; then\n  echo \"run_release=true\"  >> \"$GITHUB_OUTPUT\"\n  echo \"decision=success\" >> \"$GITHUB_OUTPUT\"\nelse\n  echo \"run_release=false\" >> \"$GITHUB_OUTPUT\"\n  echo \"decision=failed\"  >> \"$GITHUB_OUTPUT\"\nfi\n"
         },
         {
           "name": "❌ Stop (gate failed → pick failed)",
