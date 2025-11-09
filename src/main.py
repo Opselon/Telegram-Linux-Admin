@@ -508,7 +508,7 @@ async def get_static_info(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             async_generator = ssh_manager.run_command(alias, command)
             async for line, stream in async_generator:
                 output += line
-            info_message += f"**{key}:**\n`{output.strip()}`\n\n"
+            info_message += f"**{key}:**\n```{output.strip()}```\n\n"
         except Exception as e:
             info_message += f"**{key}:**\n`Error fetching info: {e}`\n\n"
 
@@ -537,7 +537,7 @@ async def get_resource_usage(update: Update, context: ContextTypes.DEFAULT_TYPE)
             async_generator = ssh_manager.run_command(alias, command)
             async for line, stream in async_generator:
                 output += line
-            usage_message += f"**{key}:**\n`{output.strip()}`\n\n"
+            usage_message += f"**{key}:**\n```{output.strip()}```\n\n"
         except Exception as e:
             usage_message += f"**{key}:**\n`Error fetching info: {e}`\n\n"
 
@@ -577,7 +577,7 @@ async def live_monitoring(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     output += line
 
                 await message.edit_text(
-                    f"**🔴 Live Monitoring for {alias}**\n\n`{output.strip()}`",
+                    f"**🔴 Live Monitoring for {alias}**\n\n```{output.strip()}```",
                     reply_markup=reply_markup,
                     parse_mode='Markdown'
                 )
@@ -634,7 +634,6 @@ async def disconnect(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 @authorized
-@authorized
 async def backup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Creates a backup of the config and database files."""
     query = update.callback_query
@@ -654,7 +653,11 @@ async def backup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                     logger.warning(f"File {file} not found for backup.")
 
         with open(backup_filename, 'rb') as backup_file:
-            await context.bot.send_document(chat_id=query.effective_chat.id, document=backup_file)
+            await context.bot.send_document(chat_id=update.effective_chat.id, document=backup_file)
+
+        keyboard = [[InlineKeyboardButton("🔙 Back to Main Menu", callback_data='main_menu')]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.message.reply_text("Backup complete.", reply_markup=reply_markup)
 
     except Exception as e:
         logger.error(f"Error creating backup: {e}", exc_info=True)
@@ -662,10 +665,6 @@ async def backup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     finally:
         if os.path.exists(backup_filename):
             os.remove(backup_filename)
-
-    keyboard = [[InlineKeyboardButton("🔙 Back to Main Menu", callback_data='main_menu')]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.message.reply_text("Backup complete.", reply_markup=reply_markup)
 
 # --- Restore ---
 @authorized
