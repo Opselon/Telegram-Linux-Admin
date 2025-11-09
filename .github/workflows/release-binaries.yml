@@ -1,8 +1,7 @@
-name: Release Binaries
+name: 🚀 Release Binaries
 
 permissions:
-  contents: write   # سطح کلی
-  # (اختیاری) اگر نمی‌خواهی global بدهی، در هر job پایین تعریف شده است
+  contents: write
 
 on:
   push:
@@ -16,17 +15,19 @@ on:
         default: ""
 
 env:
+  # 💡 مدل LLM برای خلاصه‌سازی یادداشت‌های ریلیز
   MODEL_ID: deepseek/DeepSeek-V3-0324
 
 jobs:
   build:
-    # این دو خط، آپلود آرتیفکت را مجاز می‌کند
+    name: 🧱 Build ${{ matrix.os }} / ${{ matrix.arch }}
+    runs-on: ${{ matrix.os }}
+
+    # ✅ اجازه‌ی آپلود آرتیفکت
     permissions:
       contents: read
       actions: write
 
-    name: Build ${{ matrix.os }} / ${{ matrix.arch }}
-    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
@@ -37,41 +38,53 @@ jobs:
           - { os: macos-latest,  arch: arm64, python_arch: arm64, binary_name: telegram-linux-admin-macos-arm64 }
 
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: ⬇️ Checkout
+        uses: actions/checkout@v4
+
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           architecture: ${{ matrix.python_arch }}
 
-      - name: Clean dist (Windows)
+      - name: 🧹 Clean dist (Windows)
         if: ${{ runner.os == 'Windows' }}
         shell: pwsh
-        run: if (Test-Path dist) { Remove-Item -Recurse -Force dist }
+        run: |
+          if (Test-Path dist) { Remove-Item -Recurse -Force dist }
 
-      - name: Clean dist (*nix)
+      - name: 🧹 Clean dist (*nix)
         if: ${{ runner.os != 'Windows' }}
+        shell: bash
         run: rm -rf dist || true
 
-      - name: Install deps
+      - name: 📦 Install deps
+        shell: bash
         run: |
+          set -euo pipefail
           python -m pip install --upgrade pip
           pip install .
           pip install pyinstaller
 
-      - name: Build
-        shell: bash
-        run: pyinstaller --onefile --name "${{ matrix.binary_name }}" src/main.py
-
-      - name: Verify dist contents
+      - name: 🔧 Build (self-contained)
         shell: bash
         run: |
-         set -euo pipefail
-         echo "== dist tree =="
-         test -d dist || { echo "dist/ not found"; exit 1; }
-         ls -lah dist || true
-         test -n "$(ls -A dist 2>/dev/null || true)" || { echo "dist/ is empty"; exit 1; }
+          set -euo pipefail
+          pyinstaller --clean --noconfirm --onefile \
+            --name "${{ matrix.binary_name }}" \
+            --paths "src" \
+            src/main.py
 
-      - name: Upload artifact
+      - name: 🔍 Verify dist contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "== dist tree =="
+          test -d dist || { echo "dist/ not found"; exit 1; }
+          ls -lah dist || true
+          test -n "$(ls -A dist 2>/dev/null || true)" || { echo "dist/ is empty"; exit 1; }
+
+      - name: ⬆️ Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.binary_name }}
@@ -79,11 +92,11 @@ jobs:
           if-no-files-found: error
 
   release:
-    name: Release
+    name: 🚢 Release
     runs-on: ubuntu-latest
     needs: build
 
-    # این دو خط، دانلود آرتیفکت را مجاز می‌کند
+    # ✅ اجازه‌ی دانلود آرتیفکت و نوشتن ریلیز
     permissions:
       contents: write
       actions: read
@@ -92,21 +105,36 @@ jobs:
       MODELS_TOKEN: ${{ secrets.MODELS_TOKEN }}
 
     steps:
-      - name: Download artifacts (flatten)
+      - name: ⬇️ Download artifacts (flatten)
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-          merge-multiple: true   # همه را در یک پوشه می‌ریزد
+          merge-multiple: true
 
-      - name: Show downloaded artifacts
-        run: ls -R artifacts || true
+      - name: ✅ Validate artifacts exist
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "== downloaded artifacts =="
+          ls -lah artifacts || true
+          test -d artifacts || { echo "artifacts/ not found"; exit 1; }
+          test -n "$(ls -A artifacts 2>/dev/null || true)" || { echo "artifacts/ is empty"; exit 1; }
 
-      - name: Checkout (full history)
+      - name: 🧪 Debug artifacts glob
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "== matches for artifacts/** =="
+          printf '%s\n' artifacts/** || true
+          echo "== find files =="
+          find artifacts -type f -maxdepth 5 -print
+
+      - name: ⬇️ Checkout (full history)
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Compute tag
+      - name: 🏷️ Compute tag
         id: tag
         shell: bash
         run: |
@@ -118,16 +146,13 @@ jobs:
             echo "TAG_NAME=v0.0.0-manual-${{ github.run_number }}" >> "$GITHUB_OUTPUT"
           fi
 
-
-      - name: Determine range (handles synthetic/manual tag)
+      - name: 🔗 Determine range (handles synthetic/manual tag)
         id: range
         shell: bash
         run: |
           set -euo pipefail
           TAG="${{ steps.tag.outputs.TAG_NAME }}"
-
           if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
-            # Real tag exists -> compare to previous tag if present
             mapfile -t TAGS < <(git tag --sort=-creatordate)
             PREV=""
             for i in "${!TAGS[@]}"; do
@@ -144,20 +169,18 @@ jobs:
               echo "COMPARE=${{ github.server_url }}/${{ github.repository }}/releases/tag/$TAG" >> "$GITHUB_OUTPUT"
             fi
           else
-            # Synthetic/manual run -> use last commit range to HEAD
             HEAD_SHA="${GITHUB_SHA}"
             if git rev-parse -q --verify "${HEAD_SHA}^" >/dev/null; then
               BASE_SHA=$(git rev-parse "${HEAD_SHA}^")
               echo "RANGE=${BASE_SHA}..${HEAD_SHA}" >> "$GITHUB_OUTPUT"
               echo "COMPARE=${{ github.server_url }}/${{ github.repository }}/compare/${BASE_SHA}...${HEAD_SHA}" >> "$GITHUB_OUTPUT"
             else
-              # Initial commit
               echo "RANGE=${HEAD_SHA}" >> "$GITHUB_OUTPUT"
               echo "COMPARE=${{ github.server_url }}/${{ github.repository }}/commit/${HEAD_SHA}" >> "$GITHUB_OUTPUT"
             fi
           fi
 
-      - name: Collect commits
+      - name: 🧮 Collect commits
         id: changes
         shell: bash
         run: |
@@ -168,7 +191,7 @@ jobs:
           } > COMMITS.md
           echo "COMMITS=COMMITS.md" >> "$GITHUB_OUTPUT"
 
-      - name: Ensure jq
+      - name: 🧰 Ensure jq
         shell: bash
         run: |
           if ! command -v jq >/dev/null 2>&1; then
@@ -176,7 +199,7 @@ jobs:
             sudo apt-get install -y jq
           fi
 
-      - name: Build PR notes (merge descriptions first)
+      - name: 🧷 Build PR notes (merge descriptions first)
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -211,7 +234,7 @@ jobs:
             done < PRS.txt
           fi
 
-      - name: Build prompt and input
+      - name: 🧱 Build prompt and input for LLM
         id: prompt
         shell: bash
         run: |
@@ -239,13 +262,12 @@ jobs:
             cat "${{ steps.changes.outputs.COMMITS }}"
           } > INPUT.txt
 
-      - name: LLM summary (GitHub Models) - robust
+      - name: 🧠 LLM summary (GitHub Models)
         id: llm
         if: ${{ env.MODELS_TOKEN != '' }}
         shell: bash
         run: |
           set -euo pipefail
-          # Build correct chat payload
           jq -n \
             --arg model "${{ env.MODEL_ID }}" \
             --rawfile sys PROMPT.txt \
@@ -283,7 +305,7 @@ jobs:
             echo "No summary in JSON response; fallback will be used."
           fi
 
-      - name: Choose body (LLM > PR notes > commits)
+      - name: 📝 Choose body (LLM > PR notes > commits)
         id: body
         shell: bash
         run: |
@@ -304,17 +326,39 @@ jobs:
             echo "BODY_PATH=FALLBACK.md" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Create GitHub Release
+      # 🔖 آماده‌سازی لیست صریح فایل‌ها (بدون استفاده از glob تا ایراد نقل‌قول/الگو نخوریم)
+      - name: 📂 Prepare release files
+        id: relfiles
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t FILES < <(find artifacts -type f -maxdepth 5 -print | sort)
+          if [ "${#FILES[@]}" -eq 0 ]; then
+            echo "No files found in artifacts/"; exit 1
+          fi
+          echo "== file list =="; printf '%s\n' "${FILES[@]}"
+          echo "== sha256 =="
+          if command -v sha256sum >/dev/null 2>&1; then
+            printf '%s\0' "${FILES[@]}" | xargs -0 sha256sum
+          else
+            for f in "${FILES[@]}"; do shasum -a 256 "$f"; done
+          fi
+          {
+            echo "files<<__EOF__"
+            printf '%s\n' "${FILES[@]}"
+            echo "__EOF__"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: 🚀 Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.TAG_NAME }}
           name: Release ${{ steps.tag.outputs.TAG_NAME }}
-          # حتماً quote کن تا YAML با * بازی درنیارد
-          files: |
-            "artifacts/*"
+          body_path: ${{ steps.body.outputs.BODY_PATH }}
+          files: ${{ steps.relfiles.outputs.files }}
           draft: false
           prerelease: false
-          overwrite: true               # در rerun هم آپدیت می‌کند
-          fail_on_unmatched_files: true # اگر چیزی پیدا نشود، fail شود
+          overwrite_files: true
+          fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
