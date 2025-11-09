@@ -1,381 +1,248 @@
-name: 🚀 Release Binaries
-
-permissions:
-  contents: write
-
-concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: false
-
-defaults:
-  run:
-    shell: bash
-
-on:
-  push:
-    branches: [ "main" ]
-    tags:     [ "v*" ]
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: "Tag (optional, e.g., v1.0.0)"
-        required: false
-        default: ""
-
-env:
-  MODEL_ID: deepseek/DeepSeek-V3-0324
-
-jobs:
-  ###########################################################################
-  # 🧱 BUILD — matrixed, self-contained binaries
-  ###########################################################################
-  build:
-    name: 🧱 Build ${{ matrix.os }} / ${{ matrix.arch }}
-    runs-on: ${{ matrix.os }}
-    permissions:
-      contents: read
-      actions:  write
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { os: ubuntu-latest,  arch: amd64, python_arch: x64,  binary_name: telegram-linux-admin-linux-amd64 }
-          - { os: windows-latest, arch: amd64, python_arch: x64,  binary_name: telegram-linux-admin-windows-amd64.exe }
-          - { os: macos-latest,  arch: amd64, python_arch: x64,  binary_name: telegram-linux-admin-macos-amd64 }
-          - { os: macos-latest,  arch: arm64, python_arch: arm64, binary_name: telegram-linux-admin-macos-arm64 }
-
-    steps:
-      - name: ⬇️ Checkout
-        uses: actions/checkout@v4
-
-      - name: 🐍 Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          architecture: ${{ matrix.python_arch }}
-
-      - name: 🧹 Clean outputs
-        run: |
-          rm -rf dist build .pytest_cache || true
-          mkdir -p dist
-
-      - name: 📦 Install build deps
-        run: |
-          set -euo pipefail
-          python -m pip install --upgrade pip
-          pip install .
-          pip install pyinstaller
-
-      - name: 🔧 Build (self-contained)
-        run: |
-          set -euo pipefail
-          python -m PyInstaller \
-            --clean --noconfirm --onefile \
-            --name "${{ matrix.binary_name }}" \
-            --paths "src" \
-            --distpath "dist" \
-            --workpath "build" \
-            src/main.py
-          if [[ "$RUNNER_OS" != "Windows" ]]; then
-            chmod +x "dist/${{ matrix.binary_name }}"
-          fi
-
-      - name: 🔍 Verify dist contents
-        run: |
-          set -euo pipefail
-          echo "== dist tree =="
-          test -d dist || { echo "dist/ not found"; exit 1; }
-          ls -lah dist || true
-          test -s "dist/${{ matrix.binary_name }}" || {
-            echo "expected file not found: dist/${{ matrix.binary_name }}"; exit 1;
-          }
-
-      - name: ⬆️ Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          # یک آرتیفکت ثابت برای هر ورودی ماتریس
-          name: bin-${{ matrix.os }}-${{ matrix.arch }}
-          path: dist/${{ matrix.binary_name }}
-          if-no-files-found: error
-          retention-days: 7
-
-  ###########################################################################
-  # 🚢 RELEASE — gated: only run on tags AND when all artifacts exist
-  ###########################################################################
-  release:
-    name: 🚢 Release
-    runs-on: ubuntu-latest
-    needs: build
-    permissions:
-      contents: write
-      actions:  read
-    env:
-      MODELS_TOKEN: ${{ secrets.MODELS_TOKEN }}
-
-    steps:
-      - name: 🏷️ Compute tag
-        id: tag
-        run: |
-          if [ -n "${{ github.event.inputs.tag }}" ]; then
-            echo "TAG_NAME=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
-          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            echo "TAG_NAME=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "TAG_NAME=" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: 🧰 Ensure jq (for gate)
-        run: |
-          if ! command -v jq >/dev/null 2>&1; then
-            sudo apt-get update -y && sudo apt-get install -y jq
-          fi
-
-      - name: 🚧 Gate: require tag + all build artifacts
-        id: gate
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-
-          # 1) Is this a tag-triggered run (push tag or manual tag input)?
-          IS_TAG_RUN=0
-          if [[ -n "${{ steps.tag.outputs.TAG_NAME }}" ]]; then IS_TAG_RUN=1; fi
-          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then IS_TAG_RUN=1; fi
-          echo "is_tag_run=$IS_TAG_RUN" >> "$GITHUB_OUTPUT"
-
-          # 2) Fetch artifacts for THIS workflow run
-          API="${GITHUB_API_URL:-https://api.github.com}"
-          RUN_ID="${GITHUB_RUN_ID}"
-          RESP="$(curl -sS -H "Authorization: Bearer $GITHUB_TOKEN" \
-                         -H "Accept: application/vnd.github+json" \
-                         "$API/repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts?per_page=100")"
-          COUNT="$(echo "$RESP" | jq -r '.total_count // 0')"
-          echo "artifact_count=$COUNT" >> "$GITHUB_OUTPUT"
-
-          # 3) Expect these artifact names from build matrix
-          EXPECTED=('bin-ubuntu-latest-amd64' 'bin-windows-latest-amd64' 'bin-macos-latest-amd64' 'bin-macos-latest-arm64')
-          NAMES="$(echo "$RESP" | jq -r '.artifacts[].name')"
-          MISSING=()
-          for e in "${EXPECTED[@]}"; do
-            if ! grep -qx "$e" <<< "$NAMES"; then MISSING+=("$e"); fi
-          done
-          echo "missing=${MISSING[*]-}" >> "$GITHUB_OUTPUT"
-
-          if [[ "$IS_TAG_RUN" -eq 1 && "${#MISSING[@]}" -eq 0 ]]; then
-            echo "run_release=true"  >> "$GITHUB_OUTPUT"
-            echo "decision=success" >> "$GITHUB_OUTPUT"
-          else
-            echo "run_release=false" >> "$GITHUB_OUTPUT"
-            echo "decision=failed"  >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: ❌ Stop (gate failed → pick failed)
-        if: ${{ steps.gate.outputs.run_release != 'true' }}
-        run: |
-          echo "::error::Release gated: decision=${{ steps.gate.outputs.decision }}; is_tag=${{ steps.gate.outputs.is_tag_run }}; artifact_count=${{ steps.gate.outputs.artifact_count }}; missing='${{ steps.gate.outputs.missing }}'"
-          exit 1
-
-      - name: ✅ Gate passed (pick success)
-        if: ${{ steps.gate.outputs.run_release == 'true' }}
-        run: echo "Gate passed ✔ — proceeding."
-
-      # از اینجا به بعد فقط اگر Gate پاس شود
-      - name: ⬇️ Download artifacts (flatten)
-        if: ${{ steps.gate.outputs.run_release == 'true' }}
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-          merge-multiple: true
-
-      - name: ✅ Validate artifacts exist (post-download)
-        if: ${{ steps.gate.outputs.run_release == 'true' }}
-        run: |
-          set -euo pipefail
-          echo "== downloaded artifacts =="
-          test -d artifacts || { echo "artifacts/ not found"; exit 1; }
-          ls -lah artifacts || true
-          test -n "$(ls -A artifacts 2>/dev/null || true)" || { echo "artifacts/ is empty"; exit 1; }
-
-      - name: ⬇️ Checkout (full history)
-        if: ${{ steps.gate.outputs.run_release == 'true' }}
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: 🔗 Determine range
-        if: ${{ steps.gate.outputs.run_release == 'true' }}
-        id: range
-        run: |
-          set -euo pipefail
-          TAG="${{ steps.tag.outputs.TAG_NAME }}"
-          if [[ -z "$TAG" && "${GITHUB_REF}" == refs/tags/* ]]; then TAG="${GITHUB_REF#refs/tags/}"; fi
-
-          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null 2>&1; then
-            mapfile -t TAGS < <(git tag --sort=-creatordate)
-            PREV=""
-            for i in "${!TAGS[@]}"; do
-              if [[ "${TAGS[$i]}" == "$TAG" ]]; then
-                if [[ $((i+1)) -lt ${#TAGS[@]} ]]; then PREV="${TAGS[$((i+1))]}"; fi
-                break
-              fi
-            done
-            if [[ -n "$PREV" ]]; then
-              echo "RANGE=$PREV..$TAG" >> "$GITHUB_OUTPUT"
-              echo "COMPARE=${{ github.server_url }}/${{ github.repository }}/compare/$PREV...$TAG" >> "$GITHUB_OUTPUT"
-            else
-              echo "RANGE=$TAG" >> "$GITHUB_OUTPUT"
-              echo "COMPARE=${{ github.server_url }}/${{ github.repository }}/releases/tag/$TAG" >> "$GITHUB_OUTPUT"
-            fi
-          else
-            HEAD_SHA="${GITHUB_SHA}"
-            if git rev-parse -q --verify "${HEAD_SHA}^" >/dev/null 2>&1; then
-              BASE_SHA=$(git rev-parse "${HEAD_SHA}^")
-              echo "RANGE=${BASE_SHA}..${HEAD_SHA}" >> "$GITHUB_OUTPUT"
-              echo "COMPARE=${{ github.server_url }}/${{ github.repository }}/compare/${BASE_SHA}...${HEAD_SHA}" >> "$GITHUB_OUTPUT"
-            else
-              echo "RANGE=${HEAD_SHA}" >> "$GITHUB_OUTPUT"
-              echo "COMPARE=${{ github.server_url }}/${{ github.repository }}/commit/${HEAD_SHA}" >> "$GITHUB_OUTPUT"
-            fi
-          fi
-
-      - name: 🧮 Collect commits
-        if: ${{ steps.gate.outputs.run_release == 'true' }}
-        id: changes
-        run: |
-          git log ${{ steps.range.outputs.RANGE }} --pretty='format:%h|%an|%s' > COMMITS.txt || true
-          { echo "### Commits"; awk -F'|' '{printf "- (%s) %s - %s\n",$1,$3,$2}' COMMITS.txt; } > COMMITS.md
-          echo "COMMITS=COMMITS.md" >> "$GITHUB_OUTPUT"
-
-      - name: 🧰 Ensure jq (for LLM)
-        if: ${{ steps.gate.outputs.run_release == 'true' }}
-        run: |
-          if ! command -v jq >/dev/null 2>&1; then
-            sudo apt-get update -y && sudo apt-get install -y jq
-          fi
-
-      - name: 🧷 Build PR notes (merge descriptions first)
-        if: ${{ steps.gate.outputs.run_release == 'true' }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          git log ${{ steps.range.outputs.RANGE }} --merges --pretty='%s' | sed -n 's/.*#\([0-9]\+\).*/\1/p' | sort -u > PRS.txt || true
-          COUNT=$(grep -c '^[0-9]\+$' PRS.txt || true)
-          if [ "$COUNT" -gt 0 ]; then
-            API="${GITHUB_API_URL:-https://api.github.com}"
-            REPO_FULL="${GITHUB_REPOSITORY}"
-            : > PR_NOTES.md
-            echo "## What's Changed (PRs)" >> PR_NOTES.md
-            while read -r PR; do
-              [ -z "$PR" ] && continue
-              curl -sS -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" \
-                "$API/repos/$REPO_FULL/pulls/$PR" > "pr_$PR.json" || true
-              TITLE=$(jq -r '.title // ""' "pr_$PR.json")
-              URL=$(jq -r '.html_url // ""' "pr_$PR.json")
-              USER=$(jq -r '.user.login // ""' "pr_$PR.json")
-              echo "- #$PR: ${TITLE} (@${USER}) — ${URL}" >> PR_NOTES.md
-            done < PRS.txt
-
-            echo "" >> PR_NOTES.md
-            echo "## PR Descriptions (first lines)" >> PR_NOTES.md
-            while read -r PR; do
-              [ -z "$PR" ] && continue
-              TITLE=$(jq -r '.title // ""' "pr_$PR.json")
-              BODY=$(jq -r '.body // ""' "pr_$PR.json" | awk 'NR<=20')
-              if [ -n "$BODY" ]; then
-                printf "\n### PR #%s — %s\n\n%s\n" "$PR" "$TITLE" "$BODY" >> PR_NOTES.md
-              fi
-            done < PRS.txt
-          fi
-
-      - name: 🧱 Build prompt and input for LLM
-        if: ${{ steps.gate.outputs.run_release == 'true' }}
-        id: prompt
-        run: |
-          {
-            echo "You are a release-notes generator. Using the commit list, PR titles/bodies (if any), and compare link, produce a concise Markdown release summary with the following sections (omit empty ones):"
-            echo "- Features"; echo "- Fixes"; echo "- Performance"; echo "- Refactoring"; echo "- Docs"; echo "- Breaking Changes"
-            echo "Start with a one-paragraph highlights summary. Prefer PR descriptions (merge descriptions) when available; otherwise use commit messages. End with the Compare URL. Output Markdown only."
-          } > PROMPT.txt
-          {
-            echo "Tag: ${{ steps.tag.outputs.TAG_NAME }}"
-            echo "Range: ${{ steps.range.outputs.RANGE }}"
-            echo "Compare: ${{ steps.range.outputs.COMPARE }}"
-            echo
-            if [ -s PR_NOTES.md ]; then echo "=== PR NOTES ==="; cat PR_NOTES.md; echo; fi
-            echo "=== COMMITS ==="; cat "${{ steps.changes.outputs.COMMITS }}"
-          } > INPUT.txt
-
-      - name: 🧠 LLM summary (GitHub Models)
-        if: ${{ env.MODELS_TOKEN != '' && steps.gate.outputs.run_release == 'true' }}
-        id: llm
-        run: |
-          set -euo pipefail
-          jq -n --arg model "${{ env.MODEL_ID }}" --rawfile sys PROMPT.txt --rawfile usr INPUT.txt \
-            '{model:$model, messages:[{role:"system",content:$sys},{role:"user",content:$usr}]}' > payload.json
-          HTTP_CODE=$(curl -sS -o llm_raw.json -w "%{http_code}" \
-            -H "Accept: application/vnd.github+json" -H "Authorization: Bearer $MODELS_TOKEN" \
-            -H "Content-Type: application/json" -X POST \
-            "https://models.github.ai/inference/chat/completions" --data-binary @payload.json || echo "000")
-          echo "LLM HTTP code: $HTTP_CODE"
-          if [ "$HTTP_CODE" != "200" ] || ! jq -e . llm_raw.json >/dev/null 2>&1; then exit 0; fi
-          SUMMARY=$(
-            jq -r '(try .choices[0].message.content catch empty) //
-                   (try .output[0].content[0].text catch empty) //
-                   (try .output_text catch empty) //
-                   (try .choices[0].text catch empty) // empty' llm_raw.json
-          )
-          [ -n "$SUMMARY" ] && printf "%s\n" "$SUMMARY" > SUMMARY.md || echo "No summary in JSON response."
-
-      - name: 📝 Choose body (LLM > PR notes > commits)
-        if: ${{ steps.gate.outputs.run_release == 'true' }}
-        id: body
-        run: |
-          if [[ -s SUMMARY.md ]]; then
-            echo "BODY_PATH=SUMMARY.md" >> "$GITHUB_OUTPUT"
-          elif [[ -s PR_NOTES.md ]]; then
-            echo "BODY_PATH=PR_NOTES.md" >> "$GITHUB_OUTPUT"
-          else
+{
+  "name": "🚀 Release Binaries",
+  "permissions": {
+    "contents": "write"
+  },
+  "concurrency": {
+    "group": "release-${{ github.ref }}",
+    "cancel-in-progress": false
+  },
+  "defaults": {
+    "run": {
+      "shell": "bash"
+    }
+  },
+  "on": {
+    "push": {
+      "branches": [
+        "main"
+      ],
+      "tags": [
+        "v*"
+      ]
+    },
+    "workflow_dispatch": {
+      "inputs": {
+        "tag": {
+          "description": "Tag (optional, e.g., v1.0.0)",
+          "required": false,
+          "default": ""
+        }
+      }
+    }
+  },
+  "env": {
+    "MODEL_ID": "deepseek/DeepSeek-V3-0324"
+  },
+  "jobs": {
+    "build": {
+      "name": "🧱 Build ${{ matrix.os }} / ${{ matrix.arch }}",
+      "runs-on": "${{ matrix.os }}",
+      "permissions": {
+        "contents": "read",
+        "actions": "write"
+      },
+      "strategy": {
+        "fail-fast": false,
+        "matrix": {
+          "include": [
             {
-              echo "## Changes"; echo
-              echo "No detailed PR descriptions were found. This release includes the changes listed below."; echo
-              echo "Compare: ${{ steps.range.outputs.COMPARE }}"; echo
-              cat "${{ steps.changes.outputs.COMMITS }}"
-            } > FALLBACK.md
-            echo "BODY_PATH=FALLBACK.md" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: 📂 Prepare release files (explicit list)
-        if: ${{ steps.gate.outputs.run_release == 'true' }}
-        id: relfiles
-        run: |
-          set -euo pipefail
-          mapfile -t FILES < <(find artifacts -type f -maxdepth 5 -print | sort)
-          if [ "${#FILES[@]}" -eq 0 ]; then echo "No files found in artifacts/"; exit 1; fi
-          echo "== file list =="; printf '%s\n' "${FILES[@]}"
-          echo "== sha256 =="
-          if command -v sha256sum >/dev/null 2>&1; then
-            printf '%s\0' "${FILES[@]}" | xargs -0 sha256sum
-          else
-            for f in "${FILES[@]}"; do shasum -a 256 "$f"; done
-          fi
-          {
-            echo "files<<__EOF__"
-            printf '%s\n' "${FILES[@]}"
-            echo "__EOF__"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: 🚀 Create GitHub Release
-        if: ${{ steps.gate.outputs.run_release == 'true' }}
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name:  ${{ steps.tag.outputs.TAG_NAME || github.ref_name }}
-          name:      Release ${{ steps.tag.outputs.TAG_NAME || github.ref_name }}
-          body_path: ${{ steps.body.outputs.BODY_PATH }}
-          files:     ${{ steps.relfiles.outputs.files }}
-          draft: false
-          prerelease: false
-          overwrite_files: true
-          fail_on_unmatched_files: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              "os": "ubuntu-latest",
+              "arch": "amd64",
+              "python_arch": "x64",
+              "binary_name": "telegram-linux-admin-linux-amd64"
+            },
+            {
+              "os": "windows-latest",
+              "arch": "amd64",
+              "python_arch": "x64",
+              "binary_name": "telegram-linux-admin-windows-amd64.exe"
+            },
+            {
+              "os": "macos-latest",
+              "arch": "amd64",
+              "python_arch": "x64",
+              "binary_name": "telegram-linux-admin-macos-amd64"
+            },
+            {
+              "os": "macos-latest",
+              "arch": "arm64",
+              "python_arch": "arm64",
+              "binary_name": "telegram-linux-admin-macos-arm64"
+            }
+          ]
+        }
+      },
+      "steps": [
+        {
+          "name": "⬇️ Checkout",
+          "uses": "actions/checkout@v4"
+        },
+        {
+          "name": "🐍 Setup Python",
+          "uses": "actions/setup-python@v5",
+          "with": {
+            "python-version": "3.11",
+            "architecture": "${{ matrix.python_arch }}"
+          }
+        },
+        {
+          "name": "🧹 Clean outputs",
+          "run": "rm -rf dist build .pytest_cache || true\nmkdir -p dist\n"
+        },
+        {
+          "name": "📦 Install build deps",
+          "run": "set -euo pipefail\npython -m pip install --upgrade pip\npip install .\npip install pyinstaller\n"
+        },
+        {
+          "name": "🔧 Build (self-contained)",
+          "run": "set -euo pipefail\npython -m PyInstaller \\\n  --clean --noconfirm --onefile \\\n  --name \"${{ matrix.binary_name }}\" \\\n  --paths \"src\" \\\n  --distpath \"dist\" \\\n  --workpath \"build\" \\\n  src/main.py\nif [[ \"$RUNNER_OS\" != \"Windows\" ]]; then\n  chmod +x \"dist/${{ matrix.binary_name }}\"\nfi\n"
+        },
+        {
+          "name": "🔍 Verify dist contents",
+          "run": "set -euo pipefail\necho \"== dist tree ==\"\ntest -d dist || { echo \"dist/ not found\"; exit 1; }\nls -lah dist || true\ntest -s \"dist/${{ matrix.binary_name }}\" || { echo \"expected file not found: dist/${{ matrix.binary_name }}\"; exit 1; }\n"
+        },
+        {
+          "name": "⬆️ Upload artifact",
+          "uses": "actions/upload-artifact@v4",
+          "with": {
+            "name": "bin-${{ matrix.os }}-${{ matrix.arch }}",
+            "path": "dist/${{ matrix.binary_name }}",
+            "if-no-files-found": "error",
+            "retention-days": 7
+          }
+        }
+      ]
+    },
+    "release": {
+      "name": "🚢 Release",
+      "runs-on": "ubuntu-latest",
+      "needs": "build",
+      "permissions": {
+        "contents": "write",
+        "actions": "read"
+      },
+      "env": {
+        "MODELS_TOKEN": "${{ secrets.MODELS_TOKEN }}"
+      },
+      "steps": [
+        {
+          "name": "🏷️ Compute tag",
+          "id": "tag",
+          "run": "if [ -n \"${{ github.event.inputs.tag }}\" ]; then\n  echo \"TAG_NAME=${{ github.event.inputs.tag }}\" >> \"$GITHUB_OUTPUT\"\nelif [[ \"${{ github.ref }}\" == refs/tags/* ]]; then\n  echo \"TAG_NAME=${{ github.ref_name }}\" >> \"$GITHUB_OUTPUT\"\nelse\n  echo \"TAG_NAME=\" >> \"$GITHUB_OUTPUT\"\nfi\n"
+        },
+        {
+          "name": "🧰 Ensure jq (for gate)",
+          "run": "if ! command -v jq >/dev/null 2>&1; then\n  sudo apt-get update -y && sudo apt-get install -y jq\nfi\n"
+        },
+        {
+          "name": "🚧 Gate: require tag + all build artifacts",
+          "id": "gate",
+          "env": {
+            "GITHUB_TOKEN": "${{ secrets.GITHUB_TOKEN }}"
+          },
+          "run": "set -euo pipefail\n\nIS_TAG_RUN=0\nif [[ -n \"${{ steps.tag.outputs.TAG_NAME }}\" ]]; then IS_TAG_RUN=1; fi\nif [[ \"${GITHUB_REF}\" == refs/tags/* ]]; then IS_TAG_RUN=1; fi\necho \"is_tag_run=$IS_TAG_RUN\" >> \"$GITHUB_OUTPUT\"\n\nAPI=\"${GITHUB_API_URL:-https://api.github.com}\"\nRUN_ID=\"${GITHUB_RUN_ID}\"\nRESP=\"$(curl -sS -H \"Authorization: Bearer $GITHUB_TOKEN\" -H \"Accept: application/vnd.github+json\" \"$API/repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts?per_page=100\")\"\nCOUNT=\"$(echo \"$RESP\" | jq -r '.total_count // 0')\"\necho \"artifact_count=$COUNT\" >> \"$GITHUB_OUTPUT\"\n\nEXPECTED=('bin-ubuntu-latest-amd64' 'bin-windows-latest-amd64' 'bin-macos-latest-amd64' 'bin-macos-latest-arm64')\nNAMES=\"$(echo \"$RESP\" | jq -r '.artifacts[].name')\"\nMISSING=()\nfor e in \"${EXPECTED[@]}\"; do\n  if ! grep -qx \"$e\" <<< \"$NAMES\"; then MISSING+=(\"$e\"); fi\ndone\necho \"missing=${MISSING[*]-}\" >> \"$GITHUB_OUTPUT\"\n\nif [[ \"$IS_TAG_RUN\" -eq 1 && \"${#MISSING[@]}\" -eq 0 ]]; then\n  echo \"run_release=true\"  >> \"$GITHUB_OUTPUT\"\n  echo \"decision=success\" >> \"$GITHUB_OUTPUT\"\nelse\n  echo \"run_release=false\" >> \"$GITHUB_OUTPUT\"\n  echo \"decision=failed\"  >> \"$GITHUB_OUTPUT\"\nfi\n"
+        },
+        {
+          "name": "❌ Stop (gate failed → pick failed)",
+          "if": "${{ steps.gate.outputs.run_release != 'true' }}",
+          "run": "echo \"::error::Release gated: decision=${{ steps.gate.outputs.decision }}; is_tag=${{ steps.gate.outputs.is_tag_run }}; artifact_count=${{ steps.gate.outputs.artifact_count }}; missing='${{ steps.gate.outputs.missing }}'\"\nexit 1\n"
+        },
+        {
+          "name": "✅ Gate passed (pick success)",
+          "if": "${{ steps.gate.outputs.run_release == 'true' }}",
+          "run": "echo \"Gate passed ✔ — proceeding.\"\n"
+        },
+        {
+          "name": "⬇️ Download artifacts (flatten)",
+          "if": "${{ steps.gate.outputs.run_release == 'true' }}",
+          "uses": "actions/download-artifact@v4",
+          "with": {
+            "path": "artifacts",
+            "merge-multiple": true
+          }
+        },
+        {
+          "name": "✅ Validate artifacts exist (post-download)",
+          "if": "${{ steps.gate.outputs.run_release == 'true' }}",
+          "run": "set -euo pipefail\necho \"== downloaded artifacts ==\"\ntest -d artifacts || { echo \"artifacts/ not found\"; exit 1; }\nls -lah artifacts || true\ntest -n \"$(ls -A artifacts 2>/dev/null || true)\" || { echo \"artifacts/ is empty\"; exit 1; }\n"
+        },
+        {
+          "name": "⬇️ Checkout (full history)",
+          "if": "${{ steps.gate.outputs.run_release == 'true' }}",
+          "uses": "actions/checkout@v4",
+          "with": {
+            "fetch-depth": 0
+          }
+        },
+        {
+          "name": "🔗 Determine range",
+          "if": "${{ steps.gate.outputs.run_release == 'true' }}",
+          "id": "range",
+          "run": "set -euo pipefail\nTAG=\"${{ steps.tag.outputs.TAG_NAME }}\"\nif [[ -z \"$TAG\" && \"${GITHUB_REF}\" == refs/tags/* ]]; then TAG=\"${GITHUB_REF#refs/tags/}\"; fi\n\nif git rev-parse -q --verify \"refs/tags/$TAG\" >/dev/null 2>&1; then\n  mapfile -t TAGS < <(git tag --sort=-creatordate)\n  PREV=\"\"\n  for i in \"${!TAGS[@]}\"; do\n    if [[ \"${TAGS[$i]}\" == \"$TAG\" ]]; then\n      if [[ $((i+1)) -lt ${#TAGS[@]} ]]; then PREV=\"${TAGS[$((i+1))]}\"; fi\n      break\n    fi\n  done\n  if [[ -n \"$PREV\" ]]; then\n    echo \"RANGE=$PREV..$TAG\" >> \"$GITHUB_OUTPUT\"\n    echo \"COMPARE=${{ github.server_url }}/${{ github.repository }}/compare/$PREV...$TAG\" >> \"$GITHUB_OUTPUT\"\n  else\n    echo \"RANGE=$TAG\" >> \"$GITHUB_OUTPUT\"\n    echo \"COMPARE=${{ github.server_url }}/${{ github.repository }}/releases/tag/$TAG\" >> \"$GITHUB_OUTPUT\"\n  fi\nelse\n  HEAD_SHA=\"${GITHUB_SHA}\"\n  if git rev-parse -q --verify \"${HEAD_SHA}^\" >/dev/null 2>&1; then\n    BASE_SHA=$(git rev-parse \"${HEAD_SHA}^\")\n    echo \"RANGE=${BASE_SHA}..${HEAD_SHA}\" >> \"$GITHUB_OUTPUT\"\n    echo \"COMPARE=${{ github.server_url }}/${{ github.repository }}/compare/${BASE_SHA}...${HEAD_SHA}\" >> \"$GITHUB_OUTPUT\"\n  else\n    echo \"RANGE=${HEAD_SHA}\" >> \"$GITHUB_OUTPUT\"\n    echo \"COMPARE=${{ github.server_url }}/${{ github.repository }}/commit/${HEAD_SHA}\" >> \"$GITHUB_OUTPUT\"\n  fi\nfi\n"
+        },
+        {
+          "name": "🧮 Collect commits",
+          "if": "${{ steps.gate.outputs.run_release == 'true' }}",
+          "id": "changes",
+          "run": "git log ${{ steps.range.outputs.RANGE }} --pretty='format:%h|%an|%s' > COMMITS.txt || true\n{ echo \"### Commits\"; awk -F'|' '{printf \"- (%s) %s - %s\\n\",$1,$3,$2}' COMMITS.txt; } > COMMITS.md\necho \"COMMITS=COMMITS.md\" >> \"$GITHUB_OUTPUT\"\n"
+        },
+        {
+          "name": "🧰 Ensure jq (for LLM)",
+          "if": "${{ steps.gate.outputs.run_release == 'true' }}",
+          "run": "if ! command -v jq >/dev/null 2>&1; then\n  sudo apt-get update -y && sudo apt-get install -y jq\nfi\n"
+        },
+        {
+          "name": "🧷 Build PR notes (merge descriptions first)",
+          "if": "${{ steps.gate.outputs.run_release == 'true' }}",
+          "env": {
+            "GITHUB_TOKEN": "${{ secrets.GITHUB_TOKEN }}"
+          },
+          "run": "set -euo pipefail\ngit log ${{ steps.range.outputs.RANGE }} --merges --pretty='%s' | sed -n 's/.*#\\([0-9]\\+\\).*/\\1/p' | sort -u > PRS.txt || true\nCOUNT=$(grep -c '^[0-9]\\+$' PRS.txt || true)\nif [ \"$COUNT\" -gt 0 ]; then\n  API=\"${GITHUB_API_URL:-https://api.github.com}\"\n  REPO_FULL=\"${GITHUB_REPOSITORY}\"\n  : > PR_NOTES.md\n  echo \"## What's Changed (PRs)\" >> PR_NOTES.md\n  while read -r PR; do\n    [ -z \"$PR\" ] && continue\n    curl -sS -H \"Authorization: Bearer $GITHUB_TOKEN\" -H \"Accept: application/vnd.github+json\" \"$API/repos/$REPO_FULL/pulls/$PR\" > \"pr_$PR.json\" || true\n    TITLE=$(jq -r '.title // \"\"' \"pr_$PR.json\")\n    URL=$(jq -r '.html_url // \"\"' \"pr_$PR.json\")\n    USER=$(jq -r '.user.login // \"\"' \"pr_$PR.json\")\n    echo \"- #$PR: ${TITLE} (@${USER}) — ${URL}\" >> PR_NOTES.md\n  done < PRS.txt\n  echo \"\" >> PR_NOTES.md\n  echo \"## PR Descriptions (first lines)\" >> PR_NOTES.md\n  while read -r PR; do\n    [ -z \"$PR\" ] && continue\n    TITLE=$(jq -r '.title // \"\"' \"pr_$PR.json\")\n    BODY=$(jq -r '.body // \"\"' \"pr_$PR.json\" | awk 'NR<=20')\n    if [ -n \"$BODY\" ]; then\n      printf \"\\n### PR #%s — %s\\n\\n%s\\n\" \"$PR\" \"$TITLE\" \"$BODY\" >> PR_NOTES.md\n    fi\n  done < PRS.txt\nfi\n"
+        },
+        {
+          "name": "🧱 Build prompt and input for LLM",
+          "if": "${{ steps.gate.outputs.run_release == 'true' }}",
+          "id": "prompt",
+          "run": "{ echo \"You are a release-notes generator. Using the commit list, PR titles/bodies (if any), and compare link, produce a concise Markdown release summary with the following sections (omit empty ones):\"; echo \"- Features\"; echo \"- Fixes\"; echo \"- Performance\"; echo \"- Refactoring\"; echo \"- Docs\"; echo \"- Breaking Changes\"; echo \"Start with a one-paragraph highlights summary. Prefer PR descriptions (merge descriptions) when available; otherwise use commit messages. End with the Compare URL. Output Markdown only.\"; } > PROMPT.txt\n{ echo \"Tag: ${{ steps.tag.outputs.TAG_NAME }}\"; echo \"Range: ${{ steps.range.outputs.RANGE }}\"; echo \"Compare: ${{ steps.range.outputs.COMPARE }}\"; echo; if [ -s PR_NOTES.md ]; then echo \"=== PR NOTES ===\"; cat PR_NOTES.md; echo; fi; echo \"=== COMMITS ===\"; cat \"${{ steps.changes.outputs.COMMITS }}\"; } > INPUT.txt\n"
+        },
+        {
+          "name": "🧠 LLM summary (GitHub Models)",
+          "if": "${{ env.MODELS_TOKEN != '' && steps.gate.outputs.run_release == 'true' }}",
+          "id": "llm",
+          "run": "set -euo pipefail\njq -n --arg model \"${{ env.MODEL_ID }}\" --rawfile sys PROMPT.txt --rawfile usr INPUT.txt '{model:$model, messages:[{role:\"system\",content:$sys},{role:\"user\",content:$usr}]}' > payload.json\nHTTP_CODE=$(curl -sS -o llm_raw.json -w \"%{http_code}\" -H \"Accept: application/vnd.github+json\" -H \"Authorization: Bearer $MODELS_TOKEN\" -H \"Content-Type: application/json\" -X POST \"https://models.github.ai/inference/chat/completions\" --data-binary @payload.json || echo \"000\")\necho \"LLM HTTP code: $HTTP_CODE\"\nif [ \"$HTTP_CODE\" != \"200\" ] || ! jq -e . llm_raw.json >/dev/null 2>&1; then exit 0; fi\nSUMMARY=$(jq -r '(try .choices[0].message.content catch empty) // (try .output[0].content[0].text catch empty) // (try .output_text catch empty) // (try .choices[0].text catch empty) // empty' llm_raw.json)\nif [ -n \"$SUMMARY\" ]; then\n  printf \"%s\\n\" \"$SUMMARY\" > SUMMARY.md\nelse\n  echo \"No summary in JSON response.\"\nfi\n"
+        },
+        {
+          "name": "📝 Choose body (LLM > PR notes > commits)",
+          "if": "${{ steps.gate.outputs.run_release == 'true' }}",
+          "id": "body",
+          "run": "if [[ -s SUMMARY.md ]]; then\n  echo \"BODY_PATH=SUMMARY.md\" >> \"$GITHUB_OUTPUT\"\nelif [[ -s PR_NOTES.md ]]; then\n  echo \"BODY_PATH=PR_NOTES.md\" >> \"$GITHUB_OUTPUT\"\nelse\n  { echo \"## Changes\"; echo; echo \"No detailed PR descriptions were found. This release includes the changes listed below.\"; echo; echo \"Compare: ${{ steps.range.outputs.COMPARE }}\"; echo; cat \"${{ steps.changes.outputs.COMMITS }}\"; } > FALLBACK.md\n  echo \"BODY_PATH=FALLBACK.md\" >> \"$GITHUB_OUTPUT\"\nfi\n"
+        },
+        {
+          "name": "📂 Prepare release files (explicit list)",
+          "if": "${{ steps.gate.outputs.run_release == 'true' }}",
+          "id": "relfiles",
+          "run": "set -euo pipefail\nmapfile -t FILES < <(find artifacts -type f -maxdepth 5 -print | sort)\nif [ \"${#FILES[@]}\" -eq 0 ]; then echo \"No files found in artifacts/\"; exit 1; fi\necho \"== file list ==\"; printf '%s\\n' \"${FILES[@]}\"\necho \"== sha256 ==\"\nif command -v sha256sum >/dev/null 2>&1; then\n  printf '%s\\0' \"${FILES[@]}\" | xargs -0 sha256sum\nelse\n  for f in \"${FILES[@]}\"; do shasum -a 256 \"$f\"; done\nfi\n{\n  echo \"files<<__EOF__\"\n  printf '%s\\n' \"${FILES[@]}\"\n  echo \"__EOF__\"\n} >> \"$GITHUB_OUTPUT\"\n"
+        },
+        {
+          "name": "🚀 Create GitHub Release",
+          "if": "${{ steps.gate.outputs.run_release == 'true' }}",
+          "uses": "softprops/action-gh-release@v2",
+          "with": {
+            "tag_name": "${{ steps.tag.outputs.TAG_NAME || github.ref_name }}",
+            "name": "Release ${{ steps.tag.outputs.TAG_NAME || github.ref_name }}",
+            "body_path": "${{ steps.body.outputs.BODY_PATH }}",
+            "files": "${{ steps.relfiles.outputs.files }}",
+            "draft": false,
+            "prerelease": false,
+            "overwrite_files": true,
+            "fail_on_unmatched_files": true
+          },
+          "env": {
+            "GITHUB_TOKEN": "${{ secrets.GITHUB_TOKEN }}"
+          }
+        }
+      ]
+    }
+  }
+}
