@@ -15,7 +15,8 @@ on:
         default: ""
 
 env:
-  MODEL_ID: gpt-5-mini
+  # Pick a valid model id from the catalog, e.g. openai/gpt-4.1-mini or openai/gpt-4o-mini
+  MODEL_ID: deepseek/DeepSeek-V3-0324
 
 jobs:
   build:
@@ -57,15 +58,31 @@ jobs:
           pip install .
           pip install pyinstaller
 
-      - name: Build executable
+      - name: Build (Windows)
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        run: |
+          pyinstaller --onefile --name "${{ matrix.binary_name }}" src/main.py
+
+      - name: Build (*nix)
+        if: ${{ runner.os != 'Windows' }}
         shell: bash
-        run: pyinstaller --onefile --name "${{ matrix.binary_name }}" src/main.py
+        run: |
+          pyinstaller --onefile --name "${{ matrix.binary_name }}" src/main.py
+
+      - name: Verify dist contents
+        shell: bash
+        run: |
+          echo "== dist tree =="
+          ls -lah dist || true
+          test -n "$(ls -A dist 2>/dev/null || true)" || { echo "dist/ is empty"; exit 1; }
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.binary_name }}
           path: dist/${{ matrix.binary_name }}*
+          if-no-files-found: error
 
   release:
     name: Release
@@ -78,6 +95,10 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+
+      - name: Show downloaded artifacts
+        shell: bash
+        run: ls -R artifacts || true
 
       - name: Checkout (full history)
         uses: actions/checkout@v4
@@ -96,25 +117,42 @@ jobs:
             echo "TAG_NAME=v0.0.0-manual-${{ github.run_number }}" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Determine range
+      - name: Determine range (handles synthetic/manual tag)
         id: range
         shell: bash
         run: |
+          set -euo pipefail
           TAG="${{ steps.tag.outputs.TAG_NAME }}"
-          mapfile -t TAGS < <(git tag --sort=-creatordate)
-          PREV=""
-          for i in "${!TAGS[@]}"; do
-            if [[ "${TAGS[$i]}" == "$TAG" ]]; then
-              if [[ $((i+1)) -lt ${#TAGS[@]} ]]; then PREV="${TAGS[$((i+1))]}"; fi
-              break
+
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            # Real tag exists -> compare to previous tag if present
+            mapfile -t TAGS < <(git tag --sort=-creatordate)
+            PREV=""
+            for i in "${!TAGS[@]}"; do
+              if [[ "${TAGS[$i]}" == "$TAG" ]]; then
+                if [[ $((i+1)) -lt ${#TAGS[@]} ]]; then PREV="${TAGS[$((i+1))]}"; fi
+                break
+              fi
+            done
+            if [[ -n "$PREV" ]]; then
+              echo "RANGE=$PREV..$TAG" >> "$GITHUB_OUTPUT"
+              echo "COMPARE=${{ github.server_url }}/${{ github.repository }}/compare/$PREV...$TAG" >> "$GITHUB_OUTPUT"
+            else
+              echo "RANGE=$TAG" >> "$GITHUB_OUTPUT"
+              echo "COMPARE=${{ github.server_url }}/${{ github.repository }}/releases/tag/$TAG" >> "$GITHUB_OUTPUT"
             fi
-          done
-          if [[ -n "$PREV" ]]; then
-            echo "RANGE=$PREV..$TAG" >> "$GITHUB_OUTPUT"
-            echo "COMPARE=${{ github.server_url }}/${{ github.repository }}/compare/$PREV...$TAG" >> "$GITHUB_OUTPUT"
           else
-            echo "RANGE=$TAG" >> "$GITHUB_OUTPUT"
-            echo "COMPARE=${{ github.server_url }}/${{ github.repository }}/releases/tag/$TAG" >> "$GITHUB_OUTPUT"
+            # Synthetic/manual run -> use last commit range to HEAD
+            HEAD_SHA="${GITHUB_SHA}"
+            if git rev-parse -q --verify "${HEAD_SHA}^" >/dev/null; then
+              BASE_SHA=$(git rev-parse "${HEAD_SHA}^")
+              echo "RANGE=${BASE_SHA}..${HEAD_SHA}" >> "$GITHUB_OUTPUT"
+              echo "COMPARE=${{ github.server_url }}/${{ github.repository }}/compare/${BASE_SHA}...${HEAD_SHA}" >> "$GITHUB_OUTPUT"
+            else
+              # Initial commit
+              echo "RANGE=${HEAD_SHA}" >> "$GITHUB_OUTPUT"
+              echo "COMPARE=${{ github.server_url }}/${{ github.repository }}/commit/${HEAD_SHA}" >> "$GITHUB_OUTPUT"
+            fi
           fi
 
       - name: Collect commits
@@ -128,7 +166,7 @@ jobs:
           } > COMMITS.md
           echo "COMMITS=COMMITS.md" >> "$GITHUB_OUTPUT"
 
-      - name: Ensure jq (for API & LLM)
+      - name: Ensure jq
         shell: bash
         run: |
           if ! command -v jq >/dev/null 2>&1; then
@@ -205,13 +243,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cat PROMPT.txt INPUT.txt > LLM_INPUT.txt
-          jq -Rs --arg model "${{ env.MODEL_ID }}" '{model:$model, input:.}' LLM_INPUT.txt > payload.json
-          HTTP_CODE=$(curl -sS -o llm_raw.json -w "%{http_code}" https://models.github.ai/inference \
+          # Build correct chat payload
+          jq -n \
+            --arg model "${{ env.MODEL_ID }}" \
+            --rawfile sys PROMPT.txt \
+            --rawfile usr INPUT.txt \
+            '{model:$model, messages:[{role:"system",content:$sys},{role:"user",content:$usr}]}' > payload.json
+
+          HTTP_CODE=$(curl -sS -o llm_raw.json -w "%{http_code}" \
+            -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer $MODELS_TOKEN" \
             -H "Content-Type: application/json" \
+            -X POST "https://models.github.ai/inference/chat/completions" \
             --data-binary @payload.json || echo "000")
           echo "LLM HTTP code: $HTTP_CODE"
+
           if [ "$HTTP_CODE" != "200" ]; then
             echo "Skipping LLM summary due to HTTP $HTTP_CODE"
             exit 0
@@ -222,9 +268,9 @@ jobs:
           fi
           SUMMARY=$(
             jq -r '
+              (try .choices[0].message.content catch empty) //
               (try .output[0].content[0].text catch empty) //
               (try .output_text catch empty) //
-              (try .choices[0].message.content catch empty) //
               (try .choices[0].text catch empty) //
               empty
             ' llm_raw.json
