@@ -235,12 +235,6 @@
           "run": "if [[ \"${GITHUB_REF}\" == refs/tags/* ]]; then\n  echo \"PRERELEASE=false\" >> \"$GITHUB_OUTPUT\"\nelse\n  echo \"PRERELEASE=true\" >> \"$GITHUB_OUTPUT\"\nfi\n"
         },
         {
-          "name": "📂 Prepare release files (explicit list)",
-          "if": "${{ steps.gate.outputs.run_release == 'true' }}",
-          "id": "relfiles",
-          "run": "set -euo pipefail\nmapfile -t FILES < <(find artifacts -type f -maxdepth 5 -print | sort)\nif [ \"${#FILES[@]}\" -eq 0 ]; then echo \"No files found in artifacts/\"; exit 1; fi\necho \"== file list ==\"; printf '%s\\n' \"${FILES[@]}\"\necho \"== sha256 ==\"\nif command -v sha256sum >/dev/null 2>&1; then\n  printf '%s\\0' \"${FILES[@]}\" | xargs -0 sha256sum\nelse\n  for f in \"${FILES[@]}\"; do shasum -a 256 \"$f\"; done\nfi\n{\n  echo \"files<<__EOF__\"\n  printf '%s\\n' \"${FILES[@]}\"\n  echo \"__EOF__\"\n} >> \"$GITHUB_OUTPUT\"\n"
-        },
-        {
           "name": "🚀 Create GitHub Release",
           "if": "${{ steps.gate.outputs.run_release == 'true' }}",
           "uses": "softprops/action-gh-release@v2",
@@ -248,10 +242,9 @@
             "tag_name": "${{ steps.tag.outputs.TAG_NAME || github.ref_name }}",
             "name": "Release ${{ steps.tag.outputs.TAG_NAME || github.ref_name }}",
             "body_path": "${{ steps.body.outputs.BODY_PATH }}",
-            "files": "${{ steps.relfiles.outputs.files }}",
+            "files": "artifacts/*",
             "draft": false,
             "prerelease": "${{ steps.flags.outputs.PRERELEASE }}",
-            "overwrite_files": true,
             "fail_on_unmatched_files": true
           },
           "env": {
