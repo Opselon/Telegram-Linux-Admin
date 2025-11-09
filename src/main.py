@@ -13,7 +13,7 @@ from telegram.ext import (
     Application, CommandHandler, MessageHandler, filters, ContextTypes,
     CallbackQueryHandler, ConversationHandler
 )
-from telegram.error import BadRequest
+from telegram.error import BadRequest, InvalidToken
 import asyncssh
 from .ssh_manager import SSHManager
 from .database import (
@@ -293,7 +293,7 @@ async def handle_server_connection(update: Update, context: ContextTypes.DEFAULT
         await query.edit_message_text(f"🔌 **Connecting to {alias}...**", parse_mode='Markdown')
 
         # Establish the SSH connection by running a simple command
-        async for _ in ssh_manager.run_command(alias, "echo 'Connection successful'"):
+        async for _, __ in ssh_manager.run_command(alias, "echo 'Connection successful'"):
             pass
 
         # Store the active connection alias for the user
@@ -391,9 +391,8 @@ async def execute_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_command_{alias}_{pid}")]]
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 await result_message.edit_reply_markup(reply_markup)
-                continue
-
-            output += item
+            elif stream == 'stdout' or stream == 'stderr':
+                output += item
             # To avoid hitting Telegram's rate limits and API errors, edit the message only periodically and if it has changed
             if len(output) % 100 == 0 and output != last_output:
                 try:
@@ -558,12 +557,13 @@ async def get_static_info(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     for key, command in commands.items():
         output = ""
         try:
-            async_generator = ssh_manager.run_command(alias, command)
-            async for line, stream in async_generator:
-                output += line
+            output = ""
+            async for item, stream in ssh_manager.run_command(alias, command):
+                if stream in ('stdout', 'stderr'):
+                    output += item
             info_message += f"**{key}:**\n```{output.strip()}```\n\n"
         except Exception as e:
-            info_message += f"**{key}:**\n`Error fetching info: {e}`\n\n"
+            info_message += f"**{key}:**\n`Error fetching info: {str(e)}`\n\n"
 
     keyboard = [[InlineKeyboardButton("🔙 Back to Status Menu", callback_data=f"server_status_menu_{alias}")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -587,12 +587,13 @@ async def get_resource_usage(update: Update, context: ContextTypes.DEFAULT_TYPE)
     for key, command in commands.items():
         output = ""
         try:
-            async_generator = ssh_manager.run_command(alias, command)
-            async for line, stream in async_generator:
-                output += line
+            output = ""
+            async for item, stream in ssh_manager.run_command(alias, command):
+                if stream in ('stdout', 'stderr'):
+                    output += item
             usage_message += f"**{key}:**\n```{output.strip()}```\n\n"
         except Exception as e:
-            usage_message += f"**{key}:**\n`Error fetching info: {e}`\n\n"
+            usage_message += f"**{key}:**\n`Error fetching info: {str(e)}`\n\n"
 
     keyboard = [[InlineKeyboardButton("🔙 Back to Status Menu", callback_data=f"server_status_menu_{alias}")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -625,10 +626,10 @@ async def live_monitoring(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             command = "top -bn1 | head -n 5"
             output = ""
             try:
-                async_generator = ssh_manager.run_command(alias, command)
-                async for line, stream in async_generator:
-                    output += line
-
+                output = ""
+                async for item, stream in ssh_manager.run_command(alias, command):
+                    if stream in ('stdout', 'stderr'):
+                        output += item
                 await message.edit_text(
                     f"**🔴 Live Monitoring for {alias}**\n\n```{output.strip()}```",
                     reply_markup=reply_markup,
@@ -636,7 +637,7 @@ async def live_monitoring(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 )
             except Exception as e:
                 await message.edit_text(
-                    f"**🔴 Live Monitoring for {alias}**\n\n`Error fetching info: {e}`",
+                    f"**🔴 Live Monitoring for {alias}**\n\n`Error fetching info: {str(e)}`",
                     reply_markup=reply_markup,
                     parse_mode='Markdown'
                 )
@@ -704,10 +705,10 @@ async def package_manager_action(update: Update, context: ContextTypes.DEFAULT_T
 
     output = ""
     try:
-        async_generator = ssh_manager.run_command(alias, command)
-        async for line, stream in async_generator:
-            output += line
-
+        output = ""
+        async for item, stream in ssh_manager.run_command(alias, command):
+            if stream in ('stdout', 'stderr'):
+                output += item
         final_message = f"✅ **Command completed on `{alias}`**\n\n```\n{output.strip()}\n```"
         if len(final_message) > 4096:
             with tempfile.NamedTemporaryFile(mode="w+", delete=False, suffix=".txt") as f:
@@ -720,7 +721,7 @@ async def package_manager_action(update: Update, context: ContextTypes.DEFAULT_T
             await result_message.edit_text(final_message, parse_mode='Markdown')
 
     except Exception as e:
-        await result_message.edit_text(f"❌ **Error:**\n`{e}`", parse_mode='Markdown')
+        await result_message.edit_text(f"❌ **Error:**\n`{str(e)}`", parse_mode='Markdown')
 
 @authorized
 async def install_package_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -745,13 +746,13 @@ async def execute_install_package(update: Update, context: ContextTypes.DEFAULT_
 
     output = ""
     try:
-        async_generator = ssh_manager.run_command(alias, command)
-        async for line, stream in async_generator:
-            output += line
-
+        output = ""
+        async for item, stream in ssh_manager.run_command(alias, command):
+            if stream in ('stdout', 'stderr'):
+                output += item
         await result_message.edit_text(f"✅ **Command completed on `{alias}`**\n\n```{output.strip()}```", parse_mode='Markdown')
     except Exception as e:
-        await result_message.edit_text(f"❌ **Error:**\n`{e}`", parse_mode='Markdown')
+        await result_message.edit_text(f"❌ **Error:**\n`{str(e)}`", parse_mode='Markdown')
 
     context.user_data.clear()
     return ConversationHandler.END
@@ -814,10 +815,10 @@ async def execute_docker_action(update: Update, context: ContextTypes.DEFAULT_TY
 
     output = ""
     try:
-        async_generator = ssh_manager.run_command(alias, command)
-        async for line, stream in async_generator:
-            output += line
-
+        output = ""
+        async for item, stream in ssh_manager.run_command(alias, command):
+            if stream in ('stdout', 'stderr'):
+                output += item
         final_message = f"✅ **Command completed on `{alias}`**\n\n```{output.strip()}```"
         if len(final_message) > 4096:
             with tempfile.NamedTemporaryFile(mode="w+", delete=False, suffix=".txt") as f:
@@ -829,7 +830,7 @@ async def execute_docker_action(update: Update, context: ContextTypes.DEFAULT_TY
         else:
             await result_message.edit_text(final_message, parse_mode='Markdown')
     except Exception as e:
-        await result_message.edit_text(f"❌ **Error:**\n`{e}`", parse_mode='Markdown')
+        await result_message.edit_text(f"❌ **Error:**\n`{str(e)}`", parse_mode='Markdown')
 
     context.user_data.clear()
     return ConversationHandler.END
@@ -850,10 +851,10 @@ async def docker_ps(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     output = ""
     try:
-        async_generator = ssh_manager.run_command(alias, command)
-        async for line, stream in async_generator:
-            output += line
-
+        output = ""
+        async for item, stream in ssh_manager.run_command(alias, command):
+            if stream in ('stdout', 'stderr'):
+                output += item
         final_message = f"✅ **Command completed on `{alias}`**\n\n```{output.strip()}```"
         if len(final_message) > 4096:
             with tempfile.NamedTemporaryFile(mode="w+", delete=False, suffix=".txt") as f:
@@ -865,7 +866,7 @@ async def docker_ps(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         else:
             await result_message.edit_text(final_message, parse_mode='Markdown')
     except Exception as e:
-        await result_message.edit_text(f"❌ **Error:**\n`{e}`", parse_mode='Markdown')
+        await result_message.edit_text(f"❌ **Error:**\n`{str(e)}`", parse_mode='Markdown')
 
 
 async def cancel_docker_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -943,10 +944,10 @@ async def list_files(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
     output = ""
     try:
-        async_generator = ssh_manager.run_command(alias, command)
-        async for line, stream in async_generator:
-            output += line
-
+        output = ""
+        async for item, stream in ssh_manager.run_command(alias, command):
+            if stream in ('stdout', 'stderr'):
+                output += item
         final_message = f"✅ **Files in `{path}` on `{alias}`**\n\n```{output.strip()}```"
         if len(final_message) > 4096:
             with tempfile.NamedTemporaryFile(mode="w+", delete=False, suffix=".txt") as f:
@@ -958,7 +959,7 @@ async def list_files(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         else:
             await result_message.edit_text(final_message, parse_mode='Markdown')
     except Exception as e:
-        await result_message.edit_text(f"❌ **Error:**\n`{e}`", parse_mode='Markdown')
+        await result_message.edit_text(f"❌ **Error:**\n`{str(e)}`", parse_mode='Markdown')
 
     context.user_data.clear()
     return ConversationHandler.END
@@ -1054,10 +1055,10 @@ async def list_processes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     output = ""
     try:
-        async_generator = ssh_manager.run_command(alias, command)
-        async for line, stream in async_generator:
-            output += line
-
+        output = ""
+        async for item, stream in ssh_manager.run_command(alias, command):
+            if stream in ('stdout', 'stderr'):
+                output += item
         final_message = f"✅ **Command completed on `{alias}`**\n\n```{output.strip()}```"
         if len(final_message) > 4096:
             with tempfile.NamedTemporaryFile(mode="w+", delete=False, suffix=".txt") as f:
@@ -1069,7 +1070,7 @@ async def list_processes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         else:
             await result_message.edit_text(final_message, parse_mode='Markdown')
     except Exception as e:
-        await result_message.edit_text(f"❌ **Error:**\n`{e}`", parse_mode='Markdown')
+        await result_message.edit_text(f"❌ **Error:**\n`{str(e)}`", parse_mode='Markdown')
 
 
 @authorized
@@ -1096,13 +1097,13 @@ async def execute_kill_process(update: Update, context: ContextTypes.DEFAULT_TYP
 
     output = ""
     try:
-        async_generator = ssh_manager.run_command(alias, command)
-        async for line, stream in async_generator:
-            output += line
-
+        output = ""
+        async for item, stream in ssh_manager.run_command(alias, command):
+            if stream in ('stdout', 'stderr'):
+                output += item
         await result_message.edit_text(f"✅ **Command completed on `{alias}`**\n\n```{output.strip()}```", parse_mode='Markdown')
     except Exception as e:
-        await result_message.edit_text(f"❌ **Error:**\n`{e}`", parse_mode='Markdown')
+        await result_message.edit_text(f"❌ **Error:**\n`{str(e)}`", parse_mode='Markdown')
 
     context.user_data.clear()
     return ConversationHandler.END
@@ -1146,15 +1147,15 @@ async def firewall_status(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     command = "sudo ufw status verbose"
     output = ""
     try:
-        async_generator = ssh_manager.run_command(alias, command)
-        async for line, stream in async_generator:
-            output += line
-
+        output = ""
+        async for item, stream in ssh_manager.run_command(alias, command):
+            if stream in ('stdout', 'stderr'):
+                output += item
         keyboard = [[InlineKeyboardButton("🔙 Back to Firewall Menu", callback_data=f"firewall_management_menu_{alias}")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(f"**🔥 Firewall Status for `{alias}`**\n\n```{output.strip()}```", reply_markup=reply_markup, parse_mode='Markdown')
     except Exception as e:
-        await query.edit_message_text(f"❌ **Error:**\n`{e}`", parse_mode='Markdown')
+        await query.edit_message_text(f"❌ **Error:**\n`{str(e)}`", parse_mode='Markdown')
 
 
 # --- Firewall Management ---
@@ -1190,13 +1191,13 @@ async def execute_firewall_action(update: Update, context: ContextTypes.DEFAULT_
 
     output = ""
     try:
-        async_generator = ssh_manager.run_command(alias, command)
-        async for line, stream in async_generator:
-            output += line
-
+        output = ""
+        async for item, stream in ssh_manager.run_command(alias, command):
+            if stream in ('stdout', 'stderr'):
+                output += item
         await result_message.edit_text(f"✅ **Command completed on `{alias}`**\n\n```{output.strip()}```", parse_mode='Markdown')
     except Exception as e:
-        await result_message.edit_text(f"❌ **Error:**\n`{e}`", parse_mode='Markdown')
+        await result_message.edit_text(f"❌ **Error:**\n`{str(e)}`", parse_mode='Markdown')
 
     context.user_data.clear()
     return ConversationHandler.END
@@ -1257,13 +1258,13 @@ async def execute_service_action(update: Update, context: ContextTypes.DEFAULT_T
 
     output = ""
     try:
-        async_generator = ssh_manager.run_command(alias, command)
-        async for line, stream in async_generator:
-            output += line
-
+        output = ""
+        async for item, stream in ssh_manager.run_command(alias, command):
+            if stream in ('stdout', 'stderr'):
+                output += item
         await result_message.edit_text(f"✅ **Command completed on `{alias}`**\n\n```{output.strip()}```", parse_mode='Markdown')
     except Exception as e:
-        await result_message.edit_text(f"❌ **Error:**\n`{e}`", parse_mode='Markdown')
+        await result_message.edit_text(f"❌ **Error:**\n`{str(e)}`", parse_mode='Markdown')
 
     context.user_data.clear()
     return ConversationHandler.END
@@ -1284,6 +1285,7 @@ async def system_commands_menu(update: Update, context: ContextTypes.DEFAULT_TYP
     keyboard = [
         [InlineKeyboardButton("💾 Disk Usage", callback_data=f"disk_usage_{alias}")],
         [InlineKeyboardButton("🌐 Network Info", callback_data=f"network_info_{alias}")],
+        [InlineKeyboardButton("🔌 Open Ports", callback_data=f"open_ports_{alias}")],
         [InlineKeyboardButton("🔄 Reboot", callback_data=f"reboot_{alias}")],
         [InlineKeyboardButton(" Shutdown", callback_data=f"shutdown_{alias}")],
         [InlineKeyboardButton("🔙 Back to Server Menu", callback_data=f"connect_{alias}")],
@@ -1350,15 +1352,15 @@ async def get_disk_usage(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     command = "df -h"
     output = ""
     try:
-        async_generator = ssh_manager.run_command(alias, command)
-        async for line, stream in async_generator:
-            output += line
-
+        output = ""
+        async for item, stream in ssh_manager.run_command(alias, command):
+            if stream in ('stdout', 'stderr'):
+                output += item
         keyboard = [[InlineKeyboardButton("🔙 Back to System Commands", callback_data=f"system_commands_menu_{alias}")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(f"**💾 Disk Usage for `{alias}`**\n\n```{output.strip()}```", reply_markup=reply_markup, parse_mode='Markdown')
     except Exception as e:
-        await query.edit_message_text(f"❌ **Error:**\n`{e}`", parse_mode='Markdown')
+        await query.edit_message_text(f"❌ **Error:**\n`{str(e)}`", parse_mode='Markdown')
 
 @authorized
 async def get_network_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1370,15 +1372,36 @@ async def get_network_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     command = "ip a"
     output = ""
     try:
-        async_generator = ssh_manager.run_command(alias, command)
-        async for line, stream in async_generator:
-            output += line
-
+        output = ""
+        async for item, stream in ssh_manager.run_command(alias, command):
+            if stream in ('stdout', 'stderr'):
+                output += item
         keyboard = [[InlineKeyboardButton("🔙 Back to System Commands", callback_data=f"system_commands_menu_{alias}")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(f"**🌐 Network Info for `{alias}`**\n\n```{output.strip()}```", reply_markup=reply_markup, parse_mode='Markdown')
     except Exception as e:
-        await query.edit_message_text(f"❌ **Error:**\n`{e}`", parse_mode='Markdown')
+        await query.edit_message_text(f"❌ **Error:**\n`{str(e)}`", parse_mode='Markdown')
+
+@authorized
+async def get_open_ports(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Gets open ports from the server."""
+    query = update.callback_query
+    await query.answer()
+    alias = query.data.split('_', 2)[2]
+
+    command = "ss -tuln"
+    output = ""
+    try:
+        output = ""
+        async for item, stream in ssh_manager.run_command(alias, command):
+            if stream in ('stdout', 'stderr'):
+                output += item
+        keyboard = [[InlineKeyboardButton("🔙 Back to System Commands", callback_data=f"system_commands_menu_{alias}")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(f"**🔌 Open Ports for `{alias}`**\n\n```{output.strip()}```", reply_markup=reply_markup, parse_mode='Markdown')
+    except Exception as e:
+        await query.edit_message_text(f"❌ **Error:**\n`{str(e)}`", parse_mode='Markdown')
+
 
 async def disconnect(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Disconnects the user from the server."""
@@ -1628,6 +1651,7 @@ def main() -> None:
             CommandHandler('add_server', add_server_start),
             CallbackQueryHandler(add_server_start, pattern='^add_server_start$')
         ],
+        per_message=False,
         states={
             ALIAS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_alias)],
             HOSTNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_hostname)],
@@ -1645,6 +1669,7 @@ def main() -> None:
             AWAIT_COMMAND: [MessageHandler(filters.TEXT & ~filters.COMMAND, execute_command)],
         },
         fallbacks=[],
+        per_message=False,
     )
     application.add_handler(add_server_handler)
     application.add_handler(run_command_handler)
@@ -1656,6 +1681,7 @@ def main() -> None:
             AWAIT_RESTORE_FILE: [MessageHandler(filters.ATTACHMENT, restore_file)],
         },
         fallbacks=[CommandHandler('cancel', cancel_restore)],
+        per_message=False,
     )
     application.add_handler(restore_handler)
 
@@ -1670,6 +1696,7 @@ def main() -> None:
             AWAIT_SERVICE_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, execute_service_action)],
         },
         fallbacks=[CommandHandler('cancel', cancel_service_action)],
+        per_message=False,
     )
     application.add_handler(service_management_handler)
 
@@ -1679,6 +1706,7 @@ def main() -> None:
             AWAIT_PACKAGE_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, execute_install_package)],
         },
         fallbacks=[CommandHandler('cancel', cancel_install_package)],
+        per_message=False,
     )
     application.add_handler(install_package_handler)
 
@@ -1692,6 +1720,7 @@ def main() -> None:
             AWAIT_CONTAINER_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, execute_docker_action)],
         },
         fallbacks=[CommandHandler('cancel', cancel_docker_action)],
+        per_message=False,
     )
     application.add_handler(docker_action_handler)
 
@@ -1706,6 +1735,7 @@ def main() -> None:
             AWAIT_UPLOAD_FILE: [MessageHandler(filters.ATTACHMENT, upload_file)],
         },
         fallbacks=[CommandHandler('cancel', cancel_file_manager_action)],
+        per_message=False,
     )
     application.add_handler(file_manager_handler)
 
@@ -1715,6 +1745,7 @@ def main() -> None:
             AWAIT_PID: [MessageHandler(filters.TEXT & ~filters.COMMAND, execute_kill_process)],
         },
         fallbacks=[CommandHandler('cancel', cancel_kill_process)],
+        per_message=False,
     )
     application.add_handler(kill_process_handler)
 
@@ -1728,6 +1759,7 @@ def main() -> None:
             AWAIT_FIREWALL_RULE: [MessageHandler(filters.TEXT & ~filters.COMMAND, execute_firewall_action)],
         },
         fallbacks=[CommandHandler('cancel', cancel_firewall_action)],
+        per_message=False,
     )
     application.add_handler(firewall_management_handler)
 
@@ -1762,6 +1794,7 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(execute_system_command, pattern='^execute_'))
     application.add_handler(CallbackQueryHandler(get_disk_usage, pattern='^disk_usage_'))
     application.add_handler(CallbackQueryHandler(get_network_info, pattern='^network_info_'))
+    application.add_handler(CallbackQueryHandler(get_open_ports, pattern='^open_ports_'))
     application.add_handler(CallbackQueryHandler(disconnect, pattern='^disconnect_'))
     application.add_handler(CallbackQueryHandler(remove_server_confirm, pattern='^remove_'))
 
@@ -1780,7 +1813,14 @@ def main() -> None:
         loop = asyncio.get_event_loop()
         loop.run_until_complete(asyncio.sleep(15))
     else:
-        application.run_polling()
+        try:
+            application.run_polling()
+        except InvalidToken:
+            logger.critical(
+                "FATAL: The Telegram token is invalid. "
+                "Please run the setup wizard again to configure your bot with a valid token."
+            )
+            sys.exit(1)
 
 if __name__ == "__main__":
     main()

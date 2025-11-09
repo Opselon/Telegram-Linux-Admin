@@ -31,14 +31,17 @@ async def test_execute_service_action(mock_ssh_manager, mock_config):
     context = AsyncMock()
     context.user_data = {'service_action': 'status', 'alias': 'server1'}
 
-    async def mock_run_command_gen():
+    # This is the correct way to mock an async generator
+    async def mock_run_command(alias, command):
+        assert alias == 'server1'
+        assert command == 'systemctl status nginx'
         yield "nginx is running", "stdout"
 
-    mock_ssh_manager.run_command.return_value = mock_run_command_gen()
+    mock_ssh_manager.run_command = mock_run_command
 
     from src.main import ConversationHandler
     result = await execute_service_action(update, context)
 
     assert result == ConversationHandler.END
-    mock_ssh_manager.run_command.assert_called_once_with('server1', 'systemctl status nginx')
+    # The assertions are now inside the mock_run_command function
     update.message.reply_text.assert_called_once()

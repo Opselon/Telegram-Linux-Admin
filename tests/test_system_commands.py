@@ -29,11 +29,13 @@ async def test_system_commands_menu(mock_config, authorized_update):
     reply_markup = call_args[1]['reply_markup']
     assert isinstance(reply_markup, InlineKeyboardMarkup)
     buttons = reply_markup.inline_keyboard
-    assert len(buttons) == 5
+    assert len(buttons) == 6
     assert buttons[0][0].text == "💾 Disk Usage"
     assert buttons[1][0].text == "🌐 Network Info"
-    assert buttons[2][0].text == "🔄 Reboot"
-    assert buttons[3][0].text == " Shutdown"
+    assert buttons[2][0].text == "🔌 Open Ports"
+    assert buttons[3][0].text == "🔄 Reboot"
+    assert buttons[4][0].text == " Shutdown"
+    assert buttons[5][0].text == "🔙 Back to Server Menu"
 
 @pytest.mark.asyncio
 @patch('src.main.config')

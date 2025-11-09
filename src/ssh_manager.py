@@ -93,7 +93,7 @@ class SSHManager:
         except asyncio.TimeoutError:
             yield "Error: Command timed out.", 'stderr'
         finally:
-            conn.close()
+            await conn.close()
 
     async def kill_process(self, alias: str, pid: int) -> None:
         """Kills a process on a remote server."""
@@ -101,7 +101,7 @@ class SSHManager:
         try:
             await conn.run(f"kill -9 {pid}")
         finally:
-            conn.close()
+            await conn.close()
 
     async def start_shell_session(self, alias: str) -> None:
         """
@@ -110,7 +110,7 @@ class SSHManager:
         """
         # If a shell already exists for this alias, close it before creating a new one.
         if alias in self.active_shells:
-            self.active_shells[alias].close()
+            await self.active_shells[alias].close()
 
         conn = await self._create_connection(alias)
         self.active_shells[alias] = conn
@@ -144,7 +144,7 @@ class SSHManager:
         """
         if alias in self.active_shells:
             logger.info(f"Closing interactive shell for {alias}.")
-            self.active_shells[alias].close()
+            await self.active_shells[alias].close()
             del self.active_shells[alias]
 
     async def close_all_connections(self):
@@ -160,7 +160,7 @@ class SSHManager:
             async with conn.start_sftp_client() as sftp:
                 await sftp.get(remote_path, local_path)
         finally:
-            conn.close()
+            await conn.close()
 
     async def upload_file(self, alias: str, local_path: str, remote_path: str) -> None:
         """Uploads a file to a remote server."""
@@ -169,7 +169,7 @@ class SSHManager:
             async with conn.start_sftp_client() as sftp:
                 await sftp.put(local_path, remote_path)
         finally:
-            conn.close()
+            await conn.close()
 
     # --- Health Check (No longer needed) ---
     # The start_health_check and stop_health_check methods are removed as they

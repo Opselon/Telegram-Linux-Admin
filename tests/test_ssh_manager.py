@@ -1,4 +1,5 @@
 import pytest
+import asyncio
 from unittest.mock import MagicMock, AsyncMock, patch
 from src.ssh_manager import SSHManager
 
@@ -16,9 +17,21 @@ def manager():
 
 @pytest.fixture
 def mock_ssh_connection():
-    """Fixture to create a mock asyncssh.SSHClientConnection."""
+    """
+    Fixture to create a mock asyncssh.SSHClientConnection.
+    The close method is a regular MagicMock returning a completed future
+    to avoid a "coroutine was never awaited" warning from the underlying
+    asyncio event loop that pytest uses.
+    """
     mock_conn = AsyncMock()
     mock_conn.is_closing = MagicMock(return_value=False)
+
+    # This is the key to fixing the final warning.
+    # We replace the AsyncMock's `close` with a regular MagicMock
+    # that returns a future, which satisfies the `await` call.
+    f = asyncio.Future()
+    f.set_result(None)
+    mock_conn.close = MagicMock(return_value=f)
     return mock_conn
 
 @pytest.mark.asyncio
