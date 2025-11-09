@@ -84,6 +84,9 @@ class SSHManager:
         conn = None
         try:
             conn = await self._create_connection(alias)
+            if not conn:
+                yield "Error: Could not establish SSH connection.", 'stderr'
+                return
             async with async_timeout.timeout(timeout):
                 process = await conn.create_process(command)
                 yield process, 'pid'
@@ -102,6 +105,8 @@ class SSHManager:
         conn = None
         try:
             conn = await self._create_connection(alias)
+            if not conn:
+                return
             await conn.run(f"kill -9 {pid}")
         finally:
             if conn:
@@ -162,6 +167,8 @@ class SSHManager:
         conn = None
         try:
             conn = await self._create_connection(alias)
+            if not conn:
+                return
             async with conn.start_sftp_client() as sftp:
                 await sftp.get(remote_path, local_path)
         finally:
@@ -173,6 +180,8 @@ class SSHManager:
         conn = None
         try:
             conn = await self._create_connection(alias)
+            if not conn:
+                return
             async with conn.start_sftp_client() as sftp:
                 await sftp.put(local_path, remote_path)
         finally:

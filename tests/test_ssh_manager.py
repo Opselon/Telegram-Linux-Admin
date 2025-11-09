@@ -114,3 +114,20 @@ async def test_run_command_in_shell_no_session(manager):
     assert "server1" not in manager.active_shells
     with pytest.raises(ConnectionError, match="No active shell session for server1."):
         await manager.run_command_in_shell("server1", "ls")
+
+
+@pytest.mark.asyncio
+@patch('src.ssh_manager.SSHManager._create_connection', new_callable=AsyncMock)
+async def test_run_command_handles_none_connection(mock_create_connection):
+    """
+    Test that run_command handles a None connection gracefully without TypeErrors.
+    """
+    mock_create_connection.return_value = None
+    manager = SSHManager()
+
+    # This should not raise a TypeError, even if the connection fails and returns None
+    try:
+        async for _ in manager.run_command("server1", "ls"):
+            pass
+    except TypeError:
+        pytest.fail("TypeError was raised when connection was None.")
