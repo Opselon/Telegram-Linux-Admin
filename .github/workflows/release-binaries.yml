@@ -1,7 +1,8 @@
 {
   "name": "🚀 Release Binaries",
   "permissions": {
-    "contents": "write"
+    "contents": "write",
+    "actions": "read"
   },
   "concurrency": {
     "group": "release-${{ github.ref }}",
@@ -39,8 +40,7 @@
       "name": "🧱 Build ${{ matrix.os }} / ${{ matrix.arch }}",
       "runs-on": "${{ matrix.os }}",
       "permissions": {
-        "contents": "read",
-        "actions": "write"
+        "contents": "read"
       },
       "strategy": {
         "fail-fast": false,
@@ -165,8 +165,9 @@
           "run": "echo \"Gate passed ✔ — proceeding.\"\n"
         },
         {
-          "name": "⬇️ Download artifacts (flatten)",
+          "name": "⬇️ Download artifacts (with retry)",
           "if": "${{ steps.gate.outputs.run_release == 'true' }}",
+          "id": "download",
           "uses": "actions/download-artifact@v4",
           "with": {
             "path": "artifacts",
@@ -174,9 +175,10 @@
           }
         },
         {
-          "name": "✅ Validate artifacts exist (post-download)",
+          "name": "🔁 Verify and Retry Download",
           "if": "${{ steps.gate.outputs.run_release == 'true' }}",
-          "run": "set -euo pipefail\necho \"== downloaded artifacts ==\"\ntest -d artifacts || { echo \"artifacts/ not found\"; exit 1; }\nls -lah artifacts || true\ntest -n \"$(ls -A artifacts 2>/dev/null || true)\" || { echo \"artifacts/ is empty\"; exit 1; }\n"
+          "shell": "bash",
+          "run": "set -euo pipefail\nATTEMPTS=0\nMAX_ATTEMPTS=3\nSLEEP_TIME=15\n\nwhile [ $ATTEMPTS -lt $MAX_ATTEMPTS ]; do\n  if [ -d artifacts ] && [ -n \"$(ls -A artifacts 2>/dev/null)\" ]; then\n    echo \"✅ Artifacts successfully downloaded and verified.\"\n    exit 0\n  fi\n\n  ATTEMPTS=$((ATTEMPTS + 1))\n  if [ $ATTEMPTS -lt $MAX_ATTEMPTS ]; then\n    echo \"⚠️ Artifacts directory is empty. Retrying in $SLEEP_TIME seconds... (Attempt $ATTEMPTS/$MAX_ATTEMPTS)\"\n    sleep $SLEEP_TIME\n    rm -rf artifacts/\n    curl -sS -X POST -H \"Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}\" \\\n      \"${{ steps.download.outputs.download-artifact-url }}\"\n  fi\ndone\n\necho \"::error::Failed to download artifacts after $MAX_ATTEMPTS attempts.\"\nexit 1\n"
         },
         {
           "name": "⬇️ Checkout (full history)",
