@@ -5,14 +5,14 @@ permissions:
 
 on:
   push:
-    branches: [ main ]
-    tags: [ 'v*' ]
+    branches: [ "main" ]
+    tags: [ "v*" ]
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag (optional, e.g., v1.0.0)'
+        description: "Tag (optional, e.g., v1.0.0)"
         required: false
-        default: ''
+        default: ""
 
 env:
   MODEL_ID: gpt-5-mini
@@ -42,11 +42,13 @@ jobs:
             python_arch: arm64
             binary_name: telegram-linux-admin-macos-arm64
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
           architecture: ${{ matrix.python_arch }}
 
       - name: Clean dist (Windows)
@@ -60,16 +62,19 @@ jobs:
         shell: bash
         run: rm -rf dist || true
 
-      - name: Install dependencies
+      - name: Install deps
+        shell: bash
         run: |
           python -m pip install --upgrade pip
           pip install .
           pip install pyinstaller
 
       - name: Build executable
+        shell: bash
         run: pyinstaller --onefile --name "${{ matrix.binary_name }}" src/main.py
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.binary_name }}
           path: dist/${{ matrix.binary_name }}*
@@ -81,11 +86,13 @@ jobs:
     env:
       MODELS_TOKEN: ${{ secrets.MODELS_TOKEN }}
     steps:
-      - uses: actions/download-artifact@v4
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
         with:
           path: artifacts
 
-      - uses: actions/checkout@v4
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
@@ -137,14 +144,14 @@ jobs:
         id: prompt
         shell: bash
         run: |
-          printf "%s\n" "شما مسئول ساخت خلاصهٔ انتشار هستید. از لیست کامیت‌ها و محدودهٔ مقایسه، یک خلاصهٔ Markdown به فارسی تولید کنید که شامل این بخش‌ها باشد (بخش‌های خالی را حذف کنید):
-- ویژگی‌ها
-- رفع باگ‌ها
-- بهبود کارایی
-- بازآرایی
-- اسناد
-- تغییرات ناسازگار
-در ابتدا یک خلاصهٔ یک‌پاراگرافی از مهم‌ترین تغییرات بیاورید. در انتها لینک Compare را اضافه کنید. فقط Markdown برگردان." > PROMPT.txt
+          printf "%s\n" "You are a release notes generator. Using the commit list and compare link, produce a concise Markdown release summary with these sections (omit empty ones):
+- Features
+- Fixes
+- Performance
+- Refactoring
+- Docs
+- Breaking Changes
+Start with a one-paragraph highlight summary. End with the Compare link. Output Markdown only." > PROMPT.txt
           {
             echo "Tag: ${{ steps.tag.outputs.TAG_NAME }}"
             echo "Range: ${{ steps.range.outputs.RANGE }}"
@@ -176,16 +183,17 @@ jobs:
             echo "BODY_PATH=SUMMARY.md" >> "$GITHUB_OUTPUT"
           else
             {
-              echo "## خلاصهٔ تغییرات"
+              echo "## Changes"
               echo
-              echo "🔗 Compare: ${{ steps.range.outputs.COMPARE }}"
+              echo "Compare: ${{ steps.range.outputs.COMPARE }}"
               echo
               cat "${{ steps.changes.outputs.COMMITS }}"
             } > FALLBACK.md
             echo "BODY_PATH=FALLBACK.md" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: softprops/action-gh-release@v2
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
           files: artifacts/**/*
           tag_name: ${{ steps.tag.outputs.TAG_NAME }}
