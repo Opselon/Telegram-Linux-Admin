@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import requests
 import zipfile
 from dataclasses import dataclass
@@ -95,17 +96,25 @@ def apply_update(is_auto: bool = False) -> str:
 
     log_message("[1/6] Starting update process.")
 
+    # Add a delay to allow the main bot process to fully terminate if it was triggered from there.
+    log_message("Waiting for 5 seconds before starting the update...")
+    time.sleep(5)
+
     backup_dir = REPO_ROOT / "backup"
     data_files = ["config.json", "database.db"]
 
     try:
+        # It's safer to stop the service before modifying files.
+        log_message("Stopping bot service...")
+        subprocess.run(["systemctl", "stop", "telegram_bot.service"], check=True, timeout=COMMAND_TIMEOUT)
+
         # Backup the current installation
         if backup_dir.exists():
             shutil.rmtree(backup_dir)
-        shutil.copytree(REPO_ROOT, backup_dir, ignore=shutil.ignore_patterns('backup', 'venv'))
+        shutil.copytree(REPO_ROOT, backup_dir, ignore=shutil.ignore_patterns('backup', 'venv', 'updater-logs', '*.pyc', '__pycache__'))
         log_message("[2/6] Current installation backed up.")
 
-        # Backup data files
+        # Backup data files separately to be sure.
         for file in data_files:
             if (REPO_ROOT / file).exists():
                 shutil.copy(REPO_ROOT / file, backup_dir / file)
@@ -122,14 +131,15 @@ def apply_update(is_auto: bool = False) -> str:
         log_message("[5/6] Data files restored.")
 
         # Install dependencies
-        subprocess.run([sys.executable, "-m", "pip", "install", "-e", "."], check=True)
+        subprocess.run([sys.executable, "-m", "pip", "install", "-e", "."], check=True, timeout=COMMAND_TIMEOUT)
         log_message("[6/6] Dependencies installed.")
 
-        # Restart the bot
-        subprocess.run(["systemctl", "restart", "telegram_bot.service"], check=True)
-        log_message("Bot restarted.")
+        # Start the bot service
+        log_message("Starting bot service...")
+        subprocess.run(["systemctl", "start", "telegram_bot.service"], check=True, timeout=COMMAND_TIMEOUT)
+        log_message("Bot service started.")
 
-        log_message("Update process completed!")
+        log_message("Update process completed successfully!")
 
     except Exception as e:
         log_message(f"Update Failed: {e}")
@@ -151,16 +161,16 @@ def rollback(backup_dir: Path) -> List[str]:
 
     try:
         append("Stopping bot service...")
-        subprocess.run(["systemctl", "stop", "telegram_bot.service"], check=True)
+        subprocess.run(["systemctl", "stop", "telegram_bot.service"], check=True, timeout=COMMAND_TIMEOUT)
 
         shutil.copytree(backup_dir, REPO_ROOT, dirs_exist_ok=True)
         append("Files restored from backup.")
 
-        subprocess.run([sys.executable, "-m", "pip", "install", "-e", "."], check=True)
+        subprocess.run([sys.executable, "-m", "pip", "install", "-e", "."], check=True, timeout=COMMAND_TIMEOUT)
         append("Dependencies re-installed.")
 
         append("Restarting bot service...")
-        subprocess.run(["systemctl", "start", "telegram_bot.service"], check=True)
+        subprocess.run(["systemctl", "start", "telegram_bot.service"], check=True, timeout=COMMAND_TIMEOUT)
 
         append("Rollback sequence finished.")
     except Exception as e:
