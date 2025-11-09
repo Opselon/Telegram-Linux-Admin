@@ -13,7 +13,7 @@ async def test_backup_command(mock_config):
 
     update = AsyncMock()
     update.effective_user.id = 12345
-    update.callback_query.effective_chat.id = 12345
+    update.effective_chat.id = 12345
     context = AsyncMock()
 
     # Create dummy files to be backed up
