@@ -171,20 +171,42 @@ jobs:
             sudo apt-get install -y jq
           fi
 
-      - name: LLM summary (GitHub Models)
+      - name: LLM summary (GitHub Models) - robust
         id: llm
         if: ${{ env.MODELS_TOKEN != '' }}
         shell: bash
         run: |
+          set -euo pipefail
           cat PROMPT.txt INPUT.txt > LLM_INPUT.txt
           jq -Rs --arg model "${{ env.MODEL_ID }}" '{model:$model, input:.}' LLM_INPUT.txt > payload.json
-          curl -sS https://models.github.ai/inference \
+          HTTP_CODE=$(curl -sS -o llm_raw.json -w "%{http_code}" https://models.github.ai/inference \
             -H "Authorization: Bearer $MODELS_TOKEN" \
             -H "Content-Type: application/json" \
-            --data-binary @payload.json \
-            | tee llm_raw.json >/dev/null
-          SUMMARY=$(jq -r '.output[0].content[0].text // .output_text // .choices[0].message.content // empty' llm_raw.json)
-          if [[ -n "$SUMMARY" ]]; then printf "%s\n" "$SUMMARY" > SUMMARY.md; fi
+            --data-binary @payload.json || echo "000")
+          echo "LLM HTTP code: $HTTP_CODE"
+          # If non-200 or invalid JSON, skip and let fallback handle it
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "Skipping LLM summary due to HTTP $HTTP_CODE"
+            exit 0
+          fi
+          if ! jq -e . llm_raw.json >/dev/null 2>&1; then
+            echo "Skipping LLM summary (response is not JSON)"
+            exit 0
+          fi
+          SUMMARY=$(
+            jq -r '
+              (try .output[0].content[0].text catch empty) //
+              (try .output_text catch empty) //
+              (try .choices[0].message.content catch empty) //
+              (try .choices[0].text catch empty) //
+              empty
+            ' llm_raw.json
+          )
+          if [ -n "$SUMMARY" ]; then
+            printf "%s\n" "$SUMMARY" > SUMMARY.md
+          else
+            echo "No summary in JSON response; fallback will be used."
+          fi
 
       - name: Choose body
         id: body
