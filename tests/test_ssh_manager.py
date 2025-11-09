@@ -24,7 +24,8 @@ def mock_ssh_connection():
     asyncio event loop that pytest uses.
     """
     mock_conn = AsyncMock()
-    mock_conn.is_closing = MagicMock(return_value=False)
+    # Replace the `is_closed` async mock with a sync mock to avoid RuntimeWarning
+    mock_conn.is_closed = MagicMock(return_value=False)
 
     # This is the key to fixing the final warning.
     # We replace the AsyncMock's `close` with a regular MagicMock

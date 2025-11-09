@@ -322,7 +322,8 @@ async def handle_server_connection(update: Update, context: ContextTypes.DEFAULT
             reply_markup=reply_markup,
             parse_mode='Markdown'
         )
-
+    # --- User-Friendly Error Handling ---
+    # Catch common, understandable errors and provide clear feedback to the user.
     except asyncssh.PermissionDenied:
         error_message = "❌ **Authentication Failed:**\nPermission denied. This is likely due to an incorrect username, password, or SSH key."
         logger.error(f"Authentication failed for {alias}")
@@ -335,9 +336,10 @@ async def handle_server_connection(update: Update, context: ContextTypes.DEFAULT
         error_message = f"❌ **Host Not Found:**\nCould not resolve hostname `{alias}`. Please check the server address.\n\n`{e}`"
         logger.error(f"Hostname could not be resolved for {alias}")
         await query.edit_message_text(error_message, parse_mode='Markdown')
-    except Exception as e:
-        logger.error(f"An unexpected error occurred while connecting to {alias}: {e}", exc_info=True)
-        await query.edit_message_text(f"❌ **An unexpected error occurred:**\n\n`{e}`", parse_mode='Markdown')
+    except Exception:
+        # For any other exception, defer to the global error handler to send the full traceback
+        logger.error(f"An unexpected error occurred while connecting to {alias}", exc_info=True)
+        raise
 
 
 # --- Debugging ---

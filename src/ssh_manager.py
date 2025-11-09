@@ -3,7 +3,7 @@ import asyncssh
 import logging
 import async_timeout
 from asyncssh import PermissionDenied
-from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_type
+from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception
 from .database import get_all_servers
 
 # --- Constants ---
@@ -12,6 +12,22 @@ COMMAND_TIMEOUT = 60.0 # 60 seconds
 
 # --- Logging ---
 logger = logging.getLogger(__name__)
+
+
+def _is_retryable_exception(e: Exception) -> bool:
+    """
+    Determines if an exception is retryable.
+
+    Returns True for transient network errors and False for permanent errors
+    like authentication failure.
+    """
+    # Don't retry on authentication errors
+    if isinstance(e, PermissionDenied):
+        return False
+    # Retry on common transient network and SSH errors
+    if isinstance(e, (ConnectionRefusedError, asyncssh.TimeoutError, OSError, asyncssh.Error)):
+        return True
+    return False
 
 
 class SSHManager:
@@ -44,17 +60,18 @@ class SSHManager:
         except Exception as e:
             logger.error(f"Failed to refresh server configs: {e}", exc_info=True)
 
+    # Use a retry decorator to handle transient network errors during connection.
+    # The _is_retryable_exception function provides fine-grained control over
+    # which exceptions should trigger a retry.
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_fixed(2),
-        retry=retry_if_exception_type((
-            ConnectionRefusedError,
-            asyncssh.TimeoutError,
-            asyncssh.Error
-        ))
+        retry=retry_if_exception(_is_retryable_exception)
     )
     async def _create_connection(self, alias: str):
-        """Establishes a new SSH connection."""
+        """
+        Establishes a new SSH connection with retry logic for transient errors.
+        """
         if alias not in self.server_configs:
             raise ValueError(f"Server alias '{alias}' not found.")
 
@@ -97,7 +114,7 @@ class SSHManager:
             # Re-raise the exception to be handled by the global error handler
             raise
         finally:
-            if conn and not conn.is_closing():
+            if conn and not conn.is_closed():
                 await conn.close()
 
     async def kill_process(self, alias: str, pid: int) -> None:
@@ -109,7 +126,7 @@ class SSHManager:
         except Exception:
             raise
         finally:
-            if conn and not conn.is_closing():
+            if conn and not conn.is_closed():
                 await conn.close()
 
     async def start_shell_session(self, alias: str) -> None:
@@ -130,7 +147,7 @@ class SSHManager:
         Runs a command within an existing interactive shell.
         If no shell is active, it will raise an exception.
         """
-        if alias not in self.active_shells or self.active_shells[alias].is_closing():
+        if alias not in self.active_shells or self.active_shells[alias].is_closed():
             raise ConnectionError(f"No active shell session for {alias}. Please start a new one.")
 
         conn = self.active_shells[alias]
@@ -172,7 +189,7 @@ class SSHManager:
         except Exception:
             raise
         finally:
-            if conn and not conn.is_closing():
+            if conn and not conn.is_closed():
                 await conn.close()
 
     async def upload_file(self, alias: str, local_path: str, remote_path: str) -> None:
@@ -185,7 +202,7 @@ class SSHManager:
         except Exception:
             raise
         finally:
-            if conn and not conn.is_closing():
+            if conn and not conn.is_closed():
                 await conn.close()
 
     # --- Health Check (No longer needed) ---
