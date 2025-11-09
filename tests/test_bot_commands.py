@@ -7,12 +7,13 @@ from src.main import backup
 @pytest.mark.asyncio
 @patch('src.main.config')
 async def test_backup_command(mock_config):
-    """Test the /backup command."""
+    """Test the backup command."""
     # Setup mock config for authorization
     mock_config.whitelisted_users = [12345]
 
     update = AsyncMock()
     update.effective_user.id = 12345
+    update.callback_query.effective_chat.id = 12345
     context = AsyncMock()
 
     # Create dummy files to be backed up
@@ -24,7 +25,7 @@ async def test_backup_command(mock_config):
     await backup(update, context)
 
     # Verify that the bot tried to send a document
-    update.effective_message.reply_document.assert_called_once()
+    context.bot.send_document.assert_called_once()
 
     # Clean up dummy files
     os.remove("config.json")
@@ -38,7 +39,7 @@ async def test_backup_command(mock_config):
 @patch('src.main.os.path.exists', return_value=True)
 @patch('src.main.os.remove')
 async def test_restore_command(mock_remove, mock_exists, mock_zipfile, mock_sys, mock_execv, mock_config):
-    """Test the /restore command."""
+    """Test the restore command."""
     mock_config.whitelisted_users = [12345]
     update = AsyncMock()
     update.effective_user.id = 12345
