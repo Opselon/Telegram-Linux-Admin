@@ -13,7 +13,7 @@ from telegram.ext import (
 from telegram.error import BadRequest
 import asyncssh
 from .ssh_manager import SSHManager
-from .updater import check_for_updates, apply_update
+from .updater import apply_update
 from .database import (
     get_all_servers, initialize_database,
     close_db_connection, add_server, remove_server
@@ -809,13 +809,6 @@ async def remove_server_confirm(update: Update, context: ContextTypes.DEFAULT_TY
 
 # --- Update ---
 @authorized
-async def check_for_updates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Checks for updates and notifies the user."""
-    await update.effective_message.reply_text("🔎 Checking for updates...")
-    result = check_for_updates()
-    await update.effective_message.reply_text(result["message"], disable_web_page_preview=True)
-
-@authorized
 async def update_bot_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles the bot update process with real-time feedback."""
     if update.callback_query:
@@ -984,7 +977,6 @@ def main() -> None:
     application.add_handler(CommandHandler('start', start))
     application.add_handler(CommandHandler('debug', toggle_debug_mode))
     application.add_handler(CommandHandler('exit_shell', exit_shell))
-    application.add_handler(CommandHandler('check_updates', check_for_updates_command))
     application.add_handler(CommandHandler('update_bot', update_bot_command))
 
     # --- Start Bot ---
