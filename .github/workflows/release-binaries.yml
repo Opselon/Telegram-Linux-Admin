@@ -139,7 +139,7 @@ jobs:
         shell: bash
         run: |
           cat > PROMPT.txt << 'EOF'
-شما مسئول ساخت خلاصهٔ انتشار هستید. از لیست کامیت‌ها و محدودهٔ مقایسه، یک خلاصهٔ Markdown به فارسی تولید کنید که شامل این بخش‌ها باشد (بخش‌هایی که خالی هستند را حذف کنید):
+شما مسئول ساخت خلاصهٔ انتشار هستید. از لیست کامیت‌ها و محدودهٔ مقایسه، یک خلاصهٔ Markdown به فارسی تولید کنید که شامل این بخش‌ها باشد (بخش‌های خالی را حذف کنید):
 - ویژگی‌ها
 - رفع باگ‌ها
 - بهبود کارایی
@@ -163,31 +163,30 @@ EOF
             --data-binary @payload.json \
             | tee llm_raw.json >/dev/null
           SUMMARY=$(jq -r '.output[0].content[0].text // .output_text // .choices[0].message.content // empty' llm_raw.json)
-          if [[ -z "$SUMMARY" ]]; then SUMMARY=""; fi
-          printf "%s\n" "$SUMMARY" > SUMMARY.md
-          echo "SUMMARY=SUMMARY.md" >> "$GITHUB_OUTPUT"
+          if [[ -n "$SUMMARY" ]]; then printf "%s\n" "$SUMMARY" > SUMMARY.md; fi
 
-      - name: Fallback summary
-        id: fallback
-        if: steps.llm.outputs.SUMMARY == '' || env.MODELS_TOKEN == ''
+      - name: Choose body
+        id: body
         shell: bash
         run: |
-          {
-            echo "## خلاصهٔ تغییرات"
-            echo
-            echo "🔗 Compare: ${{ steps.range.outputs.COMPARE }}"
-            echo
-            cat "${{ steps.changes.outputs.COMMITS }}"
-          } > SUMMARY.md
-          echo "SUMMARY=SUMMARY.md" >> "$GITHUB_OUTPUT"
+          if [[ -s SUMMARY.md ]]; then
+            echo "BODY_PATH=SUMMARY.md" >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo "## خلاصهٔ تغییرات"
+              echo
+              echo "🔗 Compare: ${{ steps.range.outputs.COMPARE }}"
+              echo
+              cat "${{ steps.changes.outputs.COMMITS }}"
+            } > FALLBACK.md
+            echo "BODY_PATH=FALLBACK.md" >> "$GITHUB_OUTPUT"
+          fi
 
       - uses: softprops/action-gh-release@v2
         with:
           files: artifacts/**/*
           tag_name: ${{ steps.tag.outputs.TAG_NAME }}
           name: Release ${{ steps.tag.outputs.TAG_NAME }}
-          body_path: ${{ steps.llm.outputs.SUMMARY || steps.fallback.outputs.SUMMARY }}
+          body_path: ${{ steps.body.outputs.BODY_PATH }}
           draft: false
           prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN != '' && secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
