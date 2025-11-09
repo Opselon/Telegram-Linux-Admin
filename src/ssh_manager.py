@@ -47,7 +47,11 @@ class SSHManager:
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_fixed(2),
-        retry=retry_if_exception_type((OSError, asyncssh.PermissionDenied, ConnectionRefusedError))
+        retry=retry_if_exception_type((
+            ConnectionRefusedError,
+            asyncssh.TimeoutError,
+            asyncssh.Error
+        ))
     )
     async def _create_connection(self, alias: str):
         """Establishes a new SSH connection."""
@@ -80,13 +84,22 @@ class SSHManager:
         conn = await self._create_connection(alias)
         try:
             async with async_timeout.timeout(timeout):
-                async with (await conn.create_process(command)) as process:
-                    async for line in process.stdout:
-                        yield line, 'stdout'
-                    async for line in process.stderr:
-                        yield line, 'stderr'
+                process = await conn.create_process(command)
+                yield process, 'pid'
+                async for line in process.stdout:
+                    yield line, 'stdout'
+                async for line in process.stderr:
+                    yield line, 'stderr'
         except asyncio.TimeoutError:
             yield "Error: Command timed out.", 'stderr'
+        finally:
+            conn.close()
+
+    async def kill_process(self, alias: str, pid: int) -> None:
+        """Kills a process on a remote server."""
+        conn = await self._create_connection(alias)
+        try:
+            await conn.run(f"kill -9 {pid}")
         finally:
             conn.close()
 
