@@ -114,8 +114,14 @@ class SSHManager:
             # Re-raise the exception to be handled by the global error handler
             raise
         finally:
+            logger.debug(f"In finally block for run_command. Connection object is: {conn}")
             if conn and not conn.is_closed():
+                logger.debug("Connection is valid and not closed, closing now.")
                 await conn.close()
+            elif conn:
+                logger.debug("Connection is already closed or closing.")
+            else:
+                logger.debug("Connection is None, nothing to close.")
 
     async def kill_process(self, alias: str, pid: int) -> None:
         """Kills a process on a remote server."""
@@ -126,8 +132,14 @@ class SSHManager:
         except Exception:
             raise
         finally:
+            logger.debug(f"In finally block for kill_process. Connection object is: {conn}")
             if conn and not conn.is_closed():
+                logger.debug("Connection is valid and not closed, closing now.")
                 await conn.close()
+            elif conn:
+                logger.debug("Connection is already closed or closing.")
+            else:
+                logger.debug("Connection is None, nothing to close.")
 
     async def start_shell_session(self, alias: str) -> None:
         """
@@ -189,8 +201,14 @@ class SSHManager:
         except Exception:
             raise
         finally:
+            logger.debug(f"In finally block for download_file. Connection object is: {conn}")
             if conn and not conn.is_closed():
+                logger.debug("Connection is valid and not closed, closing now.")
                 await conn.close()
+            elif conn:
+                logger.debug("Connection is already closed or closing.")
+            else:
+                logger.debug("Connection is None, nothing to close.")
 
     async def upload_file(self, alias: str, local_path: str, remote_path: str) -> None:
         """Uploads a file to a remote server."""
@@ -202,8 +220,14 @@ class SSHManager:
         except Exception:
             raise
         finally:
+            logger.debug(f"In finally block for upload_file. Connection object is: {conn}")
             if conn and not conn.is_closed():
+                logger.debug("Connection is valid and not closed, closing now.")
                 await conn.close()
+            elif conn:
+                logger.debug("Connection is already closed or closing.")
+            else:
+                logger.debug("Connection is None, nothing to close.")
 
     # --- Health Check (No longer needed) ---
     # The start_health_check and stop_health_check methods are removed as they
