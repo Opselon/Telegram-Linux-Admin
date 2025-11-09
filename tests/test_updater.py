@@ -1,6 +1,6 @@
 import pytest
-from unittest.mock import patch, MagicMock
-from src.updater import apply_update
+from unittest.mock import patch, MagicMock, call
+from src.updater import apply_update, rollback
 
 @patch('src.updater.shutil.rmtree')
 @patch('src.updater.shutil.copy')
@@ -29,3 +29,20 @@ def test_apply_update_failure_and_rollback(mock_rollback, mock_download, mock_co
     assert "Update Failed: Download failed" in result
     assert "Attempting to roll back..." in result
     mock_rollback.assert_called_once()
+
+@patch('src.updater.shutil.copytree')
+@patch('src.updater.subprocess.run')
+def test_rollback(mock_run, mock_copytree):
+    """Test the rollback function."""
+    backup_dir = MagicMock()
+
+    rollback(backup_dir)
+
+    import sys
+    expected_calls = [
+        call(["systemctl", "stop", "telegram_bot.service"], check=True),
+        call([sys.executable, '-m', 'pip', 'install', '-e', '.'], check=True),
+        call(["systemctl", "start", "telegram_bot.service"], check=True)
+    ]
+    mock_run.assert_has_calls(expected_calls)
+    mock_copytree.assert_called_once()

@@ -278,6 +278,7 @@ async def handle_server_connection(update: Update, context: ContextTypes.DEFAULT
             [InlineKeyboardButton("🖥️ Open Interactive Shell", callback_data=f"start_shell_{alias}")],
             [InlineKeyboardButton("📊 Server Status", callback_data=f"server_status_menu_{alias}")],
             [InlineKeyboardButton("🔧 Service Management", callback_data=f"service_management_menu_{alias}")],
+            [InlineKeyboardButton("⚙️ System Commands", callback_data=f"system_commands_menu_{alias}")],
             [InlineKeyboardButton("🔌 Disconnect", callback_data=f"disconnect_{alias}")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -679,6 +680,112 @@ async def cancel_service_action(update: Update, context: ContextTypes.DEFAULT_TY
     context.user_data.clear()
     return ConversationHandler.END
 
+@authorized
+async def system_commands_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Displays the system commands menu."""
+    query = update.callback_query
+    await query.answer()
+    alias = query.data.split('_', 3)[3]
+
+    keyboard = [
+        [InlineKeyboardButton("💾 Disk Usage", callback_data=f"disk_usage_{alias}")],
+        [InlineKeyboardButton("🌐 Network Info", callback_data=f"network_info_{alias}")],
+        [InlineKeyboardButton("🔄 Reboot", callback_data=f"reboot_{alias}")],
+        [InlineKeyboardButton(" Shutdown", callback_data=f"shutdown_{alias}")],
+        [InlineKeyboardButton("🔙 Back to Server Menu", callback_data=f"connect_{alias}")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(
+        f"**⚙️ System Commands for {alias}**\n\nSelect an action:",
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
+
+@authorized
+async def confirm_system_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Asks for confirmation before executing a system command."""
+    query = update.callback_query
+    await query.answer()
+
+    action = query.data.split('_')[0]
+    alias = query.data.split('_', 1)[1]
+
+    keyboard = [
+        [
+            InlineKeyboardButton(f"✅ Yes, {action}", callback_data=f"execute_{action}_{alias}"),
+            InlineKeyboardButton("❌ No", callback_data=f"system_commands_menu_{alias}")
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(
+        f"**⚠️ Are you sure you want to {action} the server `{alias}`?**",
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
+
+@authorized
+async def execute_system_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Executes a system command (reboot, shutdown) after confirmation."""
+    query = update.callback_query
+    await query.answer()
+
+    _, action, alias = query.data.split('_', 2)
+
+    if action == "reboot":
+        command = "reboot"
+    elif action == "shutdown":
+        command = "shutdown now"
+    else:
+        return
+
+    try:
+        # We only need to start the command, not wait for output
+        async for _, __ in ssh_manager.run_command(alias, f"sudo {command}"):
+            pass
+        await query.edit_message_text(f"✅ **Command `{command}` sent to `{alias}` successfully.**", parse_mode='Markdown')
+    except Exception as e:
+        await query.edit_message_text(f"❌ **Error:**\n`{e}`", parse_mode='Markdown')
+
+@authorized
+async def get_disk_usage(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Gets disk usage information from the server."""
+    query = update.callback_query
+    await query.answer()
+    alias = query.data.split('_', 2)[2]
+
+    command = "df -h"
+    output = ""
+    try:
+        async_generator = ssh_manager.run_command(alias, command)
+        async for line, stream in async_generator:
+            output += line
+
+        keyboard = [[InlineKeyboardButton("🔙 Back to System Commands", callback_data=f"system_commands_menu_{alias}")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(f"**💾 Disk Usage for `{alias}`**\n\n```{output.strip()}```", reply_markup=reply_markup, parse_mode='Markdown')
+    except Exception as e:
+        await query.edit_message_text(f"❌ **Error:**\n`{e}`", parse_mode='Markdown')
+
+@authorized
+async def get_network_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Gets network information from the server."""
+    query = update.callback_query
+    await query.answer()
+    alias = query.data.split('_', 2)[2]
+
+    command = "ip a"
+    output = ""
+    try:
+        async_generator = ssh_manager.run_command(alias, command)
+        async for line, stream in async_generator:
+            output += line
+
+        keyboard = [[InlineKeyboardButton("🔙 Back to System Commands", callback_data=f"system_commands_menu_{alias}")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(f"**🌐 Network Info for `{alias}`**\n\n```{output.strip()}```", reply_markup=reply_markup, parse_mode='Markdown')
+    except Exception as e:
+        await query.edit_message_text(f"❌ **Error:**\n`{e}`", parse_mode='Markdown')
+
 async def disconnect(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Disconnects the user from the server."""
     query = update.callback_query
@@ -970,6 +1077,12 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(stop_live_monitoring, pattern='^stop_live_monitoring_'))
     application.add_handler(CallbackQueryHandler(backup, pattern='^backup$'))
     application.add_handler(CallbackQueryHandler(service_management_menu, pattern='^service_management_menu_'))
+    application.add_handler(CallbackQueryHandler(system_commands_menu, pattern='^system_commands_menu_'))
+    application.add_handler(CallbackQueryHandler(confirm_system_command, pattern='^reboot_'))
+    application.add_handler(CallbackQueryHandler(confirm_system_command, pattern='^shutdown_'))
+    application.add_handler(CallbackQueryHandler(execute_system_command, pattern='^execute_'))
+    application.add_handler(CallbackQueryHandler(get_disk_usage, pattern='^disk_usage_'))
+    application.add_handler(CallbackQueryHandler(get_network_info, pattern='^network_info_'))
     application.add_handler(CallbackQueryHandler(disconnect, pattern='^disconnect_'))
     application.add_handler(CallbackQueryHandler(remove_server_confirm, pattern='^remove_'))
 
