@@ -25,22 +25,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            arch: amd64
-            python_arch: x64
-            binary_name: telegram-linux-admin-linux-amd64
-          - os: windows-latest
-            arch: amd64
-            python_arch: x64
-            binary_name: telegram-linux-admin-windows-amd64.exe
-          - os: macos-latest
-            arch: amd64
-            python_arch: x64
-            binary_name: telegram-linux-admin-macos-amd64
-          - os: macos-latest
-            arch: arm64
-            python_arch: arm64
-            binary_name: telegram-linux-admin-macos-arm64
+          - { os: ubuntu-latest,  arch: amd64, python_arch: x64,  binary_name: telegram-linux-admin-linux-amd64 }
+          - { os: windows-latest, arch: amd64, python_arch: x64,  binary_name: telegram-linux-admin-windows-amd64.exe }
+          - { os: macos-latest,  arch: amd64, python_arch: x64,  binary_name: telegram-linux-admin-macos-amd64 }
+          - { os: macos-latest,  arch: arm64, python_arch: arm64, binary_name: telegram-linux-admin-macos-arm64 }
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -140,36 +128,76 @@ jobs:
           } > COMMITS.md
           echo "COMMITS=COMMITS.md" >> "$GITHUB_OUTPUT"
 
-      - name: Build prompt and input
-        id: prompt
-        shell: bash
-        run: |
-          {
-            echo "You are a release-notes generator. Using the commit list and compare link, produce a concise Markdown release summary with the following sections (omit empty ones):"
-            echo "- Features"
-            echo "- Fixes"
-            echo "- Performance"
-            echo "- Refactoring"
-            echo "- Docs"
-            echo "- Breaking Changes"
-            echo "Start with a one-paragraph highlights summary. End with the Compare URL. Output Markdown only."
-          } > PROMPT.txt
-          {
-            echo "Tag: ${{ steps.tag.outputs.TAG_NAME }}"
-            echo "Range: ${{ steps.range.outputs.RANGE }}"
-            echo "Compare: ${{ steps.range.outputs.COMPARE }}"
-            echo
-            cat "${{ steps.changes.outputs.COMMITS }}"
-          } > INPUT.txt
-
-      - name: Ensure jq
-        if: ${{ env.MODELS_TOKEN != '' }}
+      - name: Ensure jq (for API & LLM)
         shell: bash
         run: |
           if ! command -v jq >/dev/null 2>&1; then
             sudo apt-get update -y
             sudo apt-get install -y jq
           fi
+
+      - name: Build PR notes (merge descriptions first)
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git log ${{ steps.range.outputs.RANGE }} --merges --pretty='%s' | sed -n 's/.*#\([0-9]\+\).*/\1/p' | sort -u > PRS.txt || true
+          COUNT=$(grep -c '^[0-9]\+$' PRS.txt || true)
+          if [ "$COUNT" -gt 0 ]; then
+            API="${GITHUB_API_URL:-https://api.github.com}"
+            REPO_FULL="${GITHUB_REPOSITORY}"
+            : > PR_NOTES.md
+            echo "## What's Changed (PRs)" >> PR_NOTES.md
+            while read -r PR; do
+              [ -z "$PR" ] && continue
+              curl -sS -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" \
+                "$API/repos/$REPO_FULL/pulls/$PR" > "pr_$PR.json" || true
+              TITLE=$(jq -r '.title // ""' "pr_$PR.json")
+              URL=$(jq -r '.html_url // ""' "pr_$PR.json")
+              USER=$(jq -r '.user.login // ""' "pr_$PR.json")
+              echo "- #$PR: ${TITLE} (@${USER}) — ${URL}" >> PR_NOTES.md
+            done < PRS.txt
+
+            echo "" >> PR_NOTES.md
+            echo "## PR Descriptions (first lines)" >> PR_NOTES.md
+            while read -r PR; do
+              [ -z "$PR" ] && continue
+              TITLE=$(jq -r '.title // ""' "pr_$PR.json")
+              BODY=$(jq -r '.body // ""' "pr_$PR.json" | awk 'NR<=20')
+              if [ -n "$BODY" ]; then
+                printf "\n### PR #%s — %s\n\n%s\n" "$PR" "$TITLE" "$BODY" >> PR_NOTES.md
+              fi
+            done < PRS.txt
+          fi
+
+      - name: Build prompt and input
+        id: prompt
+        shell: bash
+        run: |
+          {
+            echo "You are a release-notes generator. Using the commit list, PR titles/bodies (if any), and compare link, produce a concise Markdown release summary with the following sections (omit empty ones):"
+            echo "- Features"
+            echo "- Fixes"
+            echo "- Performance"
+            echo "- Refactoring"
+            echo "- Docs"
+            echo "- Breaking Changes"
+            echo "Start with a one-paragraph highlights summary. Prefer PR descriptions (merge descriptions) when available; otherwise use commit messages. End with the Compare URL. Output Markdown only."
+          } > PROMPT.txt
+          {
+            echo "Tag: ${{ steps.tag.outputs.TAG_NAME }}"
+            echo "Range: ${{ steps.range.outputs.RANGE }}"
+            echo "Compare: ${{ steps.range.outputs.COMPARE }}"
+            echo
+            if [ -s PR_NOTES.md ]; then
+              echo "=== PR NOTES ==="
+              cat PR_NOTES.md
+              echo
+            fi
+            echo "=== COMMITS ==="
+            cat "${{ steps.changes.outputs.COMMITS }}"
+          } > INPUT.txt
 
       - name: LLM summary (GitHub Models) - robust
         id: llm
@@ -184,7 +212,6 @@ jobs:
             -H "Content-Type: application/json" \
             --data-binary @payload.json || echo "000")
           echo "LLM HTTP code: $HTTP_CODE"
-          # If non-200 or invalid JSON, skip and let fallback handle it
           if [ "$HTTP_CODE" != "200" ]; then
             echo "Skipping LLM summary due to HTTP $HTTP_CODE"
             exit 0
@@ -208,15 +235,19 @@ jobs:
             echo "No summary in JSON response; fallback will be used."
           fi
 
-      - name: Choose body
+      - name: Choose body (LLM > PR notes > commits)
         id: body
         shell: bash
         run: |
           if [[ -s SUMMARY.md ]]; then
             echo "BODY_PATH=SUMMARY.md" >> "$GITHUB_OUTPUT"
+          elif [[ -s PR_NOTES.md ]]; then
+            echo "BODY_PATH=PR_NOTES.md" >> "$GITHUB_OUTPUT"
           else
             {
               echo "## Changes"
+              echo
+              echo "No detailed PR descriptions were found. This release includes the changes listed below."
               echo
               echo "Compare: ${{ steps.range.outputs.COMPARE }}"
               echo
