@@ -23,6 +23,7 @@ dependencies = [
     "pytest-asyncio",
     "tenacity",
     "async-timeout",
+    "requests",
 ]
 
 [project.scripts]
