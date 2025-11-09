@@ -231,7 +231,7 @@
         {
           "name": "🧱 Build prompt and input for LLM (Enhanced)",
           "id": "prompt",
-          "run": "PROMPT_TEXT=\"You are a highly-detailed release notes author for a technical audience. Your task is to create comprehensive, well-structured release notes in Markdown format.\\n\\n**Instructions:**\\n1.  **Start with 'Key Highlights':** A 2-3 sentence executive summary explaining the most important changes and their benefits.\\n2.  **Create 'Detailed Changes by Category':** Use the provided commit list and PR details to create detailed lists under these headings (omit if empty): \\`🚀 Features\\`, \\`🐛 Fixes\\`, \\`⚡️ Performance Improvements\\`, \\`🛠️ Refactoring & Internal Changes\\`, \\`📚 Documentation\\`, \\`⚠️ Breaking Changes\\`. For each item, be descriptive.\\n3.  **Style:** Use clear, professional language. Use Markdown formatting effectively.\\n4.  **Do not include the commit log or compare URL.** That will be added later by the workflow.\\n\"\n\n# Fix: Use printf to correctly handle multiline string and escaping\nprintf \"%s\" \"$PROMPT_TEXT\" > PROMPT.txt\n\n# Assemble INPUT.txt with all gathered data\n{ echo \"Tag: ${{ steps.tag.outputs.TAG_NAME }}\"; echo \"Range: ${{ steps.range.outputs.RANGE }}\"; echo \"Compare: ${{ steps.range.outputs.COMPARE }}\"; echo; if [ -s PR_NOTES.md ]; then echo \"=== PR NOTES ===\"; cat PR_NOTES.md; echo; fi; echo \"=== COMMITS ===\"; cat \"${{ steps.changes.outputs.COMMITS_PATH }}\"; } > INPUT.txt\n"
+          "run": "PROMPT_TEXT=\"You are a highly-detailed release notes author for a technical audience. Your task is to create comprehensive, well-structured release notes in Markdown format.\\n\\n**Instructions:**\\n1.  **Start with 'Key Highlights':** A 2-3 sentence executive summary explaining the most important changes and their benefits.\\n2.  **Create 'Detailed Changes by Category':** Use the provided commit list and PR details to create detailed lists under these headings (omit if empty): \\`🚀 Features\\`, \\`🐛 Fixes\\`, \\`⚡️ Performance Improvements\\`, \\`🛠️ Refactoring & Internal Changes\\`, \\`📚 Documentation\\`, \\`⚠️ Breaking Changes\\`. For each item, be descriptive.\\n3.  **Style:** Use clear, professional language. Use Markdown formatting effectively.\\n4.  **Do not include the commit log or compare URL.** That will be added later by the workflow.\\n\"\n\n# FIX: Use printf to correctly handle multiline string and escaping\nprintf \"%s\" \"$PROMPT_TEXT\" > PROMPT.txt\n\n# Assemble INPUT.txt with all gathered data\n{ echo \"Tag: ${{ steps.tag.outputs.TAG_NAME }}\"; echo \"Range: ${{ steps.range.outputs.RANGE }}\"; echo \"Compare: ${{ steps.range.outputs.COMPARE }}\"; echo; if [ -s PR_NOTES.md ]; then echo \"=== PR NOTES ===\"; cat PR_NOTES.md; echo; fi; echo \"=== COMMITS ===\"; cat \"${{ steps.changes.outputs.COMMITS_PATH }}\"; } > INPUT.txt\n"
         },
         {
           "name": "🧠 LLM summary (GitHub Models)",
@@ -254,7 +254,7 @@
             "files": "release-assets/**/*",
             "draft": false,
             "prerelease": "${{ github.event_name == 'workflow_dispatch' || contains(steps.tag.outputs.TAG_NAME, '-') }}",
-            "latest": "${{ github.event_name == 'push' && !contains(steps.tag.outputs.TAG_NAME, '-') }}"
+            "make_latest": "${{ github.event_name == 'push' && !contains(steps.tag.outputs.TAG_NAME, '-') }}"
           },
           "env": {
             "GITHUB_TOKEN": "${{ secrets.GITHUB_TOKEN }}"
