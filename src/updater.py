@@ -26,7 +26,7 @@ except ImportError:  # pragma: no cover
     Mock = None  # type: ignore
 
 COMMAND_TIMEOUT = 180
-GITHUB_REPO_URL = "https://github.com/jules-dot-dev/Telegram-Linux-Admin/archive/refs/heads/main.zip"
+GITHUB_REPO_URL = "https://github.com/Opselon/Telegram-Linux-Admin/archive/refs/heads/main.zip"
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LOG_DIR = REPO_ROOT / "var" / "log"
 try:
@@ -150,14 +150,17 @@ def rollback(backup_dir: Path) -> List[str]:
         rollback_log.append(message)
 
     try:
+        append("Stopping bot service...")
+        subprocess.run(["systemctl", "stop", "telegram_bot.service"], check=True)
+
         shutil.copytree(backup_dir, REPO_ROOT, dirs_exist_ok=True)
         append("Files restored from backup.")
 
         subprocess.run([sys.executable, "-m", "pip", "install", "-e", "."], check=True)
         append("Dependencies re-installed.")
 
-        subprocess.run(["systemctl", "restart", "telegram_bot.service"], check=True)
-        append("Bot service restarted.")
+        append("Restarting bot service...")
+        subprocess.run(["systemctl", "start", "telegram_bot.service"], check=True)
 
         append("Rollback sequence finished.")
     except Exception as e:
