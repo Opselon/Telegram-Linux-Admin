@@ -118,16 +118,17 @@ async def test_run_command_in_shell_no_session(manager):
 
 @pytest.mark.asyncio
 @patch('src.ssh_manager.SSHManager._create_connection', new_callable=AsyncMock)
-async def test_run_command_handles_none_connection(mock_create_connection):
+async def test_run_command_propagates_connection_error(mock_create_connection):
     """
-    Test that run_command handles a None connection gracefully without TypeErrors.
+    Test that run_command correctly propagates exceptions from _create_connection.
+    This ensures that connection errors are handled by the global error handler.
     """
-    mock_create_connection.return_value = None
+    # Configure the mock to raise a specific, identifiable exception
+    mock_create_connection.side_effect = ConnectionRefusedError("Mock connection failed")
     manager = SSHManager()
 
-    # This should not raise a TypeError, even if the connection fails and returns None
-    try:
+    # Assert that the specific exception is raised and bubbles up
+    with pytest.raises(ConnectionRefusedError, match="Mock connection failed"):
+        # We must attempt to consume the generator to execute the code
         async for _ in manager.run_command("server1", "ls"):
             pass
-    except TypeError:
-        pytest.fail("TypeError was raised when connection was None.")

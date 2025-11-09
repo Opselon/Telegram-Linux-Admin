@@ -8,6 +8,7 @@ import tempfile
 import shlex
 import subprocess
 import socket
+import traceback
 from datetime import datetime
 from telegram import BotCommand, Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -505,19 +506,33 @@ async def exit_shell(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 # --- Error Handling ---
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Log the error and send a telegram message to notify the user."""
+    """Log the error and send a detailed message to the user."""
     logger.error("Exception while handling an update:", exc_info=context.error)
 
-    # Try to send a user-friendly message
     if isinstance(update, Update) and update.effective_chat:
+        # Format the traceback
+        tb_list = traceback.format_exception(None, context.error, context.error.__traceback__)
+        tb_string = "".join(tb_list)
+
+        # Sanitize and prepare the message
+        error_message = f"❌ **An unexpected error occurred:**\n\n```\n{tb_string}\n```"
+
+        # Ensure the message is not too long
+        if len(error_message) > 4096:
+            error_message = error_message[:4090] + "\n...```"
+
         try:
-            await update.effective_chat.send_message(
-                "❌ **An unexpected error occurred.**\n"
-                "The technical details have been logged. If the problem persists, please check the bot's logs.",
-                parse_mode='Markdown'
-            )
+            await update.effective_chat.send_message(error_message, parse_mode='Markdown')
         except Exception as e:
-            logger.error(f"Failed to send error message to user: {e}", exc_info=True)
+            logger.error(f"Failed to send detailed error message to user: {e}", exc_info=True)
+            # Fallback to a simpler message if the detailed one fails
+            try:
+                await update.effective_chat.send_message(
+                    "❌ **An unexpected error occurred.**\nThe technical details have been logged.",
+                    parse_mode='Markdown'
+                )
+            except Exception as fallback_e:
+                logger.error(f"Failed to send even the fallback error message: {fallback_e}", exc_info=True)
 
 
 @authorized
