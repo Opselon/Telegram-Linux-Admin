@@ -133,30 +133,33 @@ jobs:
           } > COMMITS.md
           echo "COMMITS=COMMITS.md" >> "$GITHUB_OUTPUT"
 
-      - name: LLM summary
-        id: llm
-        if: env.MODELS_TOKEN != ''
+      - name: Build prompt and input
+        id: prompt
         shell: bash
         run: |
-          cat > PROMPT.txt << 'EOF'
-شما مسئول ساخت خلاصهٔ انتشار هستید. از لیست کامیت‌ها و محدودهٔ مقایسه، یک خلاصهٔ Markdown به فارسی تولید کنید که شامل این بخش‌ها باشد (بخش‌های خالی را حذف کنید):
+          printf "%s\n" "شما مسئول ساخت خلاصهٔ انتشار هستید. از لیست کامیت‌ها و محدودهٔ مقایسه، یک خلاصهٔ Markdown به فارسی تولید کنید که شامل این بخش‌ها باشد (بخش‌های خالی را حذف کنید):
 - ویژگی‌ها
 - رفع باگ‌ها
 - بهبود کارایی
 - بازآرایی
 - اسناد
 - تغییرات ناسازگار
-در ابتدا یک خلاصهٔ یک‌پاراگرافی از مهم‌ترین تغییرات بیاورید. در انتها لینک Compare را اضافه کنید. فقط Markdown برگردان.
-EOF
+در ابتدا یک خلاصهٔ یک‌پاراگرافی از مهم‌ترین تغییرات بیاورید. در انتها لینک Compare را اضافه کنید. فقط Markdown برگردان." > PROMPT.txt
           {
-            echo "ورودی:"
             echo "Tag: ${{ steps.tag.outputs.TAG_NAME }}"
             echo "Range: ${{ steps.range.outputs.RANGE }}"
             echo "Compare: ${{ steps.range.outputs.COMPARE }}"
             echo
             cat "${{ steps.changes.outputs.COMMITS }}"
           } > INPUT.txt
-          jq -Rs --arg model "${{ env.MODEL_ID }}" '{model:$model, input:.}' <(cat PROMPT.txt; echo; cat INPUT.txt) > payload.json
+
+      - name: LLM summary (GitHub Models)
+        id: llm
+        if: env.MODELS_TOKEN != ''
+        shell: bash
+        run: |
+          cat PROMPT.txt INPUT.txt > LLM_INPUT.txt
+          jq -Rs --arg model "${{ env.MODEL_ID }}" '{model:$model, input:.}' LLM_INPUT.txt > payload.json
           curl -sS https://models.github.ai/inference \
             -H "Authorization: Bearer $MODELS_TOKEN" \
             -H "Content-Type: application/json" \
@@ -190,3 +193,5 @@ EOF
           body_path: ${{ steps.body.outputs.BODY_PATH }}
           draft: false
           prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
