@@ -3,6 +3,8 @@ import json
 import asyncio
 import os
 import sys
+import zipfile
+from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, filters, ContextTypes,
@@ -33,7 +35,10 @@ LOCK_FILE = "bot.lock"
 MONITORING_TASKS = {}
 
 # --- Conversation States ---
-(AWAIT_COMMAND, ALIAS, HOSTNAME, USER, AUTH_METHOD, PASSWORD, KEY_PATH) = range(7)
+(
+    AWAIT_COMMAND, ALIAS, HOSTNAME, USER, AUTH_METHOD, PASSWORD, KEY_PATH,
+    AWAIT_RESTORE_CONFIRMATION, AWAIT_RESTORE_FILE
+) = range(9)
 
 # --- Authorization ---
 def _extract_user_id(update: Update) -> Optional[int]:
@@ -625,6 +630,93 @@ async def disconnect(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 @authorized
+@authorized
+async def backup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Creates a backup of the config and database files."""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_filename = f"tla_backup_{timestamp}.zip"
+
+    files_to_backup = ["config.json", "database.db"]
+
+    try:
+        with zipfile.ZipFile(backup_filename, 'w') as zipf:
+            for file in files_to_backup:
+                if os.path.exists(file):
+                    zipf.write(file)
+                else:
+                    logger.warning(f"File {file} not found for backup.")
+
+        with open(backup_filename, 'rb') as backup_file:
+            await update.effective_message.reply_document(backup_file)
+
+    except Exception as e:
+        logger.error(f"Error creating backup: {e}", exc_info=True)
+        await update.effective_message.reply_text(f"❌ **Error:** Could not create backup.\n`{e}`", parse_mode='Markdown')
+    finally:
+        if os.path.exists(backup_filename):
+            os.remove(backup_filename)
+
+# --- Restore ---
+@authorized
+async def restore_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Starts the restore process."""
+    keyboard = [[InlineKeyboardButton("⚠️ Yes, I'm sure", callback_data='restore_yes')]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.effective_message.reply_text(
+        "**⚠️ DANGER ZONE: RESTORE**\n\n"
+        "Restoring from a backup will overwrite your current configuration and database. "
+        "This action is irreversible. Are you sure you want to continue?",
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
+    return AWAIT_RESTORE_CONFIRMATION
+
+async def restore_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Confirms the restore and asks for the backup file."""
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == 'restore_yes':
+        await query.edit_message_text("Okay, please upload the backup file (`.zip`).")
+        return AWAIT_RESTORE_FILE
+    else:
+        await query.edit_message_text("Restore cancelled.")
+        return ConversationHandler.END
+
+async def restore_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Receives the backup file, validates it, and performs the restore."""
+    document = update.message.document
+    if not document.file_name.endswith('.zip'):
+        await update.message.reply_text("Invalid file format. Please upload a `.zip` file.")
+        return AWAIT_RESTORE_FILE
+
+    backup_file = await document.get_file()
+    await backup_file.download_to_drive(document.file_name)
+
+    try:
+        with zipfile.ZipFile(document.file_name, 'r') as zipf:
+            if "config.json" not in zipf.namelist() or "database.db" not in zipf.namelist():
+                raise ValueError("Backup file is missing required files.")
+            zipf.extractall()
+
+        await update.message.reply_text("✅ **Restore successful!**\n\nThe bot will now restart to apply the changes.", parse_mode='Markdown')
+
+        # This is a simplified restart. A more robust solution would use a process manager.
+        os.execv(sys.executable, ['python'] + sys.argv)
+
+    except Exception as e:
+        await update.message.reply_text(f"❌ **Error:** {e}", parse_mode='Markdown')
+    finally:
+        if os.path.exists(document.file_name):
+            os.remove(document.file_name)
+
+    return ConversationHandler.END
+
+async def cancel_restore(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Cancels the restore conversation."""
+    await update.message.reply_text("Restore cancelled.")
+    return ConversationHandler.END
+
 async def remove_server_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Removes a server after confirmation."""
     query = update.callback_query
@@ -755,6 +847,16 @@ def main() -> None:
     application.add_handler(add_server_handler)
     application.add_handler(run_command_handler)
 
+    restore_handler = ConversationHandler(
+        entry_points=[CommandHandler('restore', restore_start)],
+        states={
+            AWAIT_RESTORE_CONFIRMATION: [CallbackQueryHandler(restore_confirmation)],
+            AWAIT_RESTORE_FILE: [MessageHandler(filters.ATTACHMENT, restore_file)],
+        },
+        fallbacks=[CommandHandler('cancel', cancel_restore)],
+    )
+    application.add_handler(restore_handler)
+
     # --- UI & Menu Handlers ---
     application.add_handler(CallbackQueryHandler(main_menu, pattern='^main_menu$'))
     application.add_handler(CallbackQueryHandler(connect_server_menu, pattern='^connect_server_menu$'))
@@ -776,6 +878,7 @@ def main() -> None:
     application.add_handler(CommandHandler('exit_shell', exit_shell))
     application.add_handler(CommandHandler('check_updates', check_for_updates_command))
     application.add_handler(CommandHandler('update_bot', update_bot_command))
+    application.add_handler(CommandHandler('backup', backup))
 
     # --- Start Bot ---
     logger.info("Bot is starting...")
