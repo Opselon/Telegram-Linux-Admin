@@ -40,8 +40,8 @@ MONITORING_TASKS = {}
 (
     AWAIT_COMMAND, ALIAS, HOSTNAME, USER, AUTH_METHOD, PASSWORD, KEY_PATH,
     AWAIT_RESTORE_CONFIRMATION, AWAIT_RESTORE_FILE, AWAIT_SERVICE_NAME, AWAIT_PACKAGE_NAME, AWAIT_CONTAINER_NAME,
-    AWAIT_FILE_PATH, AWAIT_UPLOAD_FILE, AWAIT_PID
-) = range(15)
+    AWAIT_FILE_PATH, AWAIT_UPLOAD_FILE, AWAIT_PID, AWAIT_FIREWALL_RULE
+) = range(16)
 
 # --- Authorization ---
 def _extract_user_id(update: Update) -> Optional[int]:
@@ -83,6 +83,22 @@ def authorized(func):
         return await func(update, context, *args, **kwargs)
     return wrapped
 
+def admin_authorized(func):
+    """Decorator to check if the user is the admin (first whitelisted user)."""
+    @wraps(func)
+    async def wrapped(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+        user_id = _extract_user_id(update)
+        # Ensure there is a whitelist and the user is the first one in it
+        if not config.whitelisted_users or user_id != config.whitelisted_users[0]:
+            logger.warning(f"Admin access denied for user_id: {user_id}")
+            if update.callback_query:
+                await update.callback_query.answer("🚫 You are not authorized for this admin-only action.", show_alert=True)
+            elif update.effective_message:
+                await update.effective_message.reply_text("🚫 **Access Denied**\nThis is an admin-only feature.", parse_mode='Markdown')
+            return
+        return await func(update, context, *args, **kwargs)
+    return authorized(wrapped) # Chain with the general authorization check
+
 def _resolve_message(update: Update):
     if update.message:
         return update.message
@@ -91,7 +107,7 @@ def _resolve_message(update: Update):
     return None
 
 # --- Add/Remove Server ---
-@authorized
+@admin_authorized
 async def add_server_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Starts the conversation to add a new server."""
     prompt = (
@@ -169,7 +185,7 @@ async def cancel_add_server(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     context.user_data.clear()
     return ConversationHandler.END
 
-@authorized
+@admin_authorized
 async def remove_server_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Displays a menu of servers to remove."""
     servers = get_all_servers()
@@ -212,22 +228,31 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await main_menu(update, context)
 
 async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Displays the main menu with options."""
-    logger.info("Displaying main menu.")
+    """Displays the main menu with options, dynamically showing admin buttons."""
+    user_id = _extract_user_id(update)
+    logger.info(f"Displaying main menu for user_id: {user_id}.")
+
+    # Base keyboard for all users
     keyboard = [
         [InlineKeyboardButton("🔌 Connect to a Server", callback_data='connect_server_menu')],
-        [
-            InlineKeyboardButton("➕ Add Server", callback_data='add_server_start'),
-            InlineKeyboardButton("➖ Remove Server", callback_data='remove_server_menu')
-        ],
-        [
-            InlineKeyboardButton("💾 Backup", callback_data='backup'),
-            InlineKeyboardButton("🔄 Restore", callback_data='restore')
-        ],
-        [InlineKeyboardButton("🔄 Update Bot", callback_data='update_bot')],
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
 
+    # Admin-only buttons
+    if config.whitelisted_users and user_id == config.whitelisted_users[0]:
+        admin_buttons = [
+            [
+                InlineKeyboardButton("➕ Add Server", callback_data='add_server_start'),
+                InlineKeyboardButton("➖ Remove Server", callback_data='remove_server_menu')
+            ],
+            [
+                InlineKeyboardButton("💾 Backup", callback_data='backup'),
+                InlineKeyboardButton("🔄 Restore", callback_data='restore')
+            ],
+            [InlineKeyboardButton("🔄 Update Bot", callback_data='update_bot')],
+        ]
+        keyboard.extend(admin_buttons)
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
     menu_text = "🐧 **Welcome to your Linux Admin Bot!**\n\nWhat would you like to do?"
 
     if update.callback_query:
@@ -285,6 +310,7 @@ async def handle_server_connection(update: Update, context: ContextTypes.DEFAULT
             [InlineKeyboardButton("🐳 Docker Management", callback_data=f"docker_management_menu_{alias}")],
             [InlineKeyboardButton("📁 File Manager", callback_data=f"file_manager_menu_{alias}")],
             [InlineKeyboardButton("⚙️ Process Management", callback_data=f"process_management_menu_{alias}")],
+            [InlineKeyboardButton("🔥 Firewall Management", callback_data=f"firewall_management_menu_{alias}")],
             [InlineKeyboardButton("⚙️ System Commands", callback_data=f"system_commands_menu_{alias}")],
             [InlineKeyboardButton("🔌 Disconnect", callback_data=f"disconnect_{alias}")]
         ]
@@ -1090,6 +1116,99 @@ async def cancel_kill_process(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 @authorized
+async def firewall_management_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Displays the firewall management menu."""
+    query = update.callback_query
+    await query.answer()
+    alias = query.data.split('_', 3)[3]
+
+    keyboard = [
+        [InlineKeyboardButton("📜 View Rules", callback_data=f"fw_status_{alias}")],
+        [InlineKeyboardButton("➕ Allow Port", callback_data=f"fw_allow_{alias}")],
+        [InlineKeyboardButton("➖ Deny Port", callback_data=f"fw_deny_{alias}")],
+        [InlineKeyboardButton("🗑️ Delete Rule", callback_data=f"fw_delete_{alias}")],
+        [InlineKeyboardButton("🔙 Back to Server Menu", callback_data=f"connect_{alias}")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(
+        f"**🔥 Firewall Management for {alias}**\n\nSelect an action:",
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
+
+@authorized
+async def firewall_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Gets the firewall status from the server."""
+    query = update.callback_query
+    await query.answer()
+    alias = query.data.split('_', 2)[2]
+
+    command = "sudo ufw status verbose"
+    output = ""
+    try:
+        async_generator = ssh_manager.run_command(alias, command)
+        async for line, stream in async_generator:
+            output += line
+
+        keyboard = [[InlineKeyboardButton("🔙 Back to Firewall Menu", callback_data=f"firewall_management_menu_{alias}")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(f"**🔥 Firewall Status for `{alias}`**\n\n```{output.strip()}```", reply_markup=reply_markup, parse_mode='Markdown')
+    except Exception as e:
+        await query.edit_message_text(f"❌ **Error:**\n`{e}`", parse_mode='Markdown')
+
+
+# --- Firewall Management ---
+@authorized
+async def firewall_action_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Starts the firewall management conversation."""
+    query = update.callback_query
+    await query.answer()
+
+    action = query.data.split('_')[1]
+    alias = query.data.split('_', 2)[2]
+
+    context.user_data['firewall_action'] = action
+    context.user_data['alias'] = alias
+
+    if action == "delete":
+        prompt = f"Please enter the rule number to `{action}`."
+    else:
+        prompt = f"Please enter the port number to `{action}`."
+
+    await query.edit_message_text(prompt, parse_mode='Markdown')
+    return AWAIT_FIREWALL_RULE
+
+async def execute_firewall_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Executes the selected firewall action."""
+    rule = shlex.quote(update.message.text)
+    action = context.user_data['firewall_action']
+    alias = context.user_data['alias']
+
+    command = f"sudo ufw {action} {rule}"
+
+    result_message = await update.message.reply_text(f"Running `{command}` on `{alias}`...", parse_mode='Markdown')
+
+    output = ""
+    try:
+        async_generator = ssh_manager.run_command(alias, command)
+        async for line, stream in async_generator:
+            output += line
+
+        await result_message.edit_text(f"✅ **Command completed on `{alias}`**\n\n```{output.strip()}```", parse_mode='Markdown')
+    except Exception as e:
+        await result_message.edit_text(f"❌ **Error:**\n`{e}`", parse_mode='Markdown')
+
+    context.user_data.clear()
+    return ConversationHandler.END
+
+async def cancel_firewall_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Cancels the firewall management conversation."""
+    await update.message.reply_text("Firewall action cancelled.")
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
+@authorized
 async def service_management_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Displays the service management menu."""
     query = update.callback_query
@@ -1282,7 +1401,7 @@ async def disconnect(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await query.edit_message_text(f"❌ **Error:** Could not disconnect.\n`{e}`", parse_mode='Markdown')
 
 
-@authorized
+@admin_authorized
 async def backup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Creates a backup of the config and database files."""
     query = update.callback_query
@@ -1316,7 +1435,7 @@ async def backup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             os.remove(backup_filename)
 
 # --- Restore ---
-@authorized
+@admin_authorized
 async def restore_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Starts the restore process."""
     query = update.callback_query
@@ -1390,7 +1509,7 @@ async def remove_server_confirm(update: Update, context: ContextTypes.DEFAULT_TY
     await query.edit_message_text(f"✅ **Server '{alias}' removed successfully!**", parse_mode='Markdown')
 
 # --- Update ---
-@authorized
+@admin_authorized
 async def update_bot_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Handles the bot update process by launching the updater script in a detached process.
@@ -1599,6 +1718,19 @@ def main() -> None:
     )
     application.add_handler(kill_process_handler)
 
+    firewall_management_handler = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(firewall_action_start, pattern='^fw_allow_'),
+            CallbackQueryHandler(firewall_action_start, pattern='^fw_deny_'),
+            CallbackQueryHandler(firewall_action_start, pattern='^fw_delete_'),
+        ],
+        states={
+            AWAIT_FIREWALL_RULE: [MessageHandler(filters.TEXT & ~filters.COMMAND, execute_firewall_action)],
+        },
+        fallbacks=[CommandHandler('cancel', cancel_firewall_action)],
+    )
+    application.add_handler(firewall_management_handler)
+
     # --- UI & Menu Handlers ---
     application.add_handler(CallbackQueryHandler(main_menu, pattern='^main_menu$'))
     application.add_handler(CallbackQueryHandler(connect_server_menu, pattern='^connect_server_menu$'))
@@ -1621,6 +1753,8 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(file_manager_menu, pattern='^file_manager_menu_'))
     application.add_handler(CallbackQueryHandler(process_management_menu, pattern='^process_management_menu_'))
     application.add_handler(CallbackQueryHandler(list_processes, pattern='^ps_aux_'))
+    application.add_handler(CallbackQueryHandler(firewall_management_menu, pattern='^firewall_management_menu_'))
+    application.add_handler(CallbackQueryHandler(firewall_status, pattern='^fw_status_'))
     application.add_handler(CallbackQueryHandler(cancel_command_callback, pattern='^cancel_command_'))
     application.add_handler(CallbackQueryHandler(system_commands_menu, pattern='^system_commands_menu_'))
     application.add_handler(CallbackQueryHandler(confirm_system_command, pattern='^reboot_'))
