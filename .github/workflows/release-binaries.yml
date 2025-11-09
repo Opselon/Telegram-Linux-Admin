@@ -14,12 +14,8 @@
   },
   "on": {
     "push": {
-      "branches": [
-        "main"
-      ],
-      "tags": [
-        "v*"
-      ]
+      "branches": ["main"],
+      "tags": ["v*"]
     },
     "workflow_dispatch": {
       "inputs": {
@@ -87,19 +83,39 @@
           }
         },
         {
-          "name": "🧹 Clean outputs",
-          "run": "rm -rf dist build .pytest_cache || true\nmkdir -p dist\n"
+          "name": "🧹 Clean dist",
+          "shell": "bash",
+          "run": "rm -rf dist build .nuitka-cache .pytest_cache || true\nmkdir -p dist\n"
         },
         {
-          "name": "📦 Install build deps",
-          "run": "set -euo pipefail\npython -m pip install --upgrade pip\npip install .\npip install pyinstaller\n"
+          "name": "Install dependencies (Nuitka for Windows)",
+          "if": "runner.os == 'Windows'",
+          "run": "python -m pip install --upgrade pip\npip install .\npip install nuitka\n"
         },
         {
-          "name": "🔧 Build (self-contained)",
-          "run": "set -euo pipefail\npython -m PyInstaller \\\n  --clean --noconfirm --onefile \\\n  --name \"${{ matrix.binary_name }}\" \\\n  --paths \"src\" \\\n  --distpath \"dist\" \\\n  --workpath \"build\" \\\n  src/main.py\nif [[ \"$RUNNER_OS\" != \"Windows\" ]]; then\n  chmod +x \"dist/${{ matrix.binary_name }}\"\nfi\n"
+          "name": "Install dependencies (PyInstaller for others)",
+          "if": "runner.os != 'Windows'",
+          "run": "python -m pip install --upgrade pip\npip install .\npip install pyinstaller\n"
+        },
+        {
+          "name": "Build executable (Nuitka for Windows)",
+          "if": "runner.os == 'Windows'",
+          "run": "python -m nuitka \\\n  --onefile \\\n  --standalone \\\n  --assume-yes-for-downloads \\\n  --enable-plugin=pkg-resources \\\n  --output-filename=${{ matrix.binary_name }} \\\n  src/main.py\n"
+        },
+        {
+          "name": "Build executable (PyInstaller for others)",
+          "if": "runner.os != 'Windows'",
+          "run": "pyinstaller --clean --noconfirm --onefile --name \"${{ matrix.binary_name }}\" src/main.py\n"
+        },
+        {
+          "name": "Move Windows executable",
+          "if": "runner.os == 'Windows'",
+          "shell": "pwsh",
+          "run": "New-Item -ItemType Directory -Force -Path dist | Out-Null\nMove-Item -Path \"./${{ matrix.binary_name }}\" -Destination ./dist/\n"
         },
         {
           "name": "🔍 Verify dist contents",
+          "shell": "bash",
           "run": "set -euo pipefail\necho \"== dist tree ==\"\ntest -d dist || { echo \"dist/ not found\"; exit 1; }\nls -lah dist || true\ntest -s \"dist/${{ matrix.binary_name }}\" || { echo \"expected file not found: dist/${{ matrix.binary_name }}\"; exit 1; }\n"
         },
         {
@@ -127,21 +143,21 @@
       },
       "steps": [
         {
-          "name": "🏷️ Compute tag",
+          "name": "🏷️ Compute tag (with fallback)",
           "id": "tag",
-          "run": "if [ -n \"${{ github.event.inputs.tag }}\" ]; then\n  echo \"TAG_NAME=${{ github.event.inputs.tag }}\" >> \"$GITHUB_OUTPUT\"\nelif [[ \"${{ github.ref }}\" == refs/tags/* ]]; then\n  echo \"TAG_NAME=${{ github.ref_name }}\" >> \"$GITHUB_OUTPUT\"\nelse\n  echo \"TAG_NAME=\" >> \"$GITHUB_OUTPUT\"\nfi\n"
+          "run": "if [ -n \"${{ github.event.inputs.tag }}\" ]; then\n  echo \"TAG_NAME=${{ github.event.inputs.tag }}\" >> \"$GITHUB_OUTPUT\"\nelif [[ \"${{ github.ref }}\" == refs/tags/* ]]; then\n  echo \"TAG_NAME=${{ github.ref_name }}\" >> \"$GITHUB_OUTPUT\"\nelse\n  echo \"TAG_NAME=v0.0.0-manual-${{ github.run_number }}\" >> \"$GITHUB_OUTPUT\"\nfi\n"
         },
         {
           "name": "🧰 Ensure jq (for gate)",
           "run": "if ! command -v jq >/dev/null 2>&1; then\n  sudo apt-get update -y && sudo apt-get install -y jq\nfi\n"
         },
         {
-          "name": "🚧 Gate: require tag + all build artifacts",
+          "name": "🚧 Gate: require (computed) tag + all build artifacts",
           "id": "gate",
           "env": {
             "GITHUB_TOKEN": "${{ secrets.GITHUB_TOKEN }}"
           },
-          "run": "set -euo pipefail\n\nIS_TAG_RUN=0\nif [[ -n \"${{ steps.tag.outputs.TAG_NAME }}\" ]]; then IS_TAG_RUN=1; fi\nif [[ \"${GITHUB_REF}\" == refs/tags/* ]]; then IS_TAG_RUN=1; fi\necho \"is_tag_run=$IS_TAG_RUN\" >> \"$GITHUB_OUTPUT\"\n\nAPI=\"${GITHUB_API_URL:-https://api.github.com}\"\nRUN_ID=\"${GITHUB_RUN_ID}\"\nRESP=\"$(curl -sS -H \"Authorization: Bearer $GITHUB_TOKEN\" -H \"Accept: application/vnd.github+json\" \"$API/repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts?per_page=100\")\"\nCOUNT=\"$(echo \"$RESP\" | jq -r '.total_count // 0')\"\necho \"artifact_count=$COUNT\" >> \"$GITHUB_OUTPUT\"\n\nEXPECTED=('bin-ubuntu-latest-amd64' 'bin-windows-latest-amd64' 'bin-macos-latest-amd64' 'bin-macos-latest-arm64')\nNAMES=\"$(echo \"$RESP\" | jq -r '.artifacts[].name')\"\nMISSING=()\nfor e in \"${EXPECTED[@]}\"; do\n  if ! grep -qx \"$e\" <<< \"$NAMES\"; then MISSING+=(\"$e\"); fi\ndone\necho \"missing=${MISSING[*]-}\" >> \"$GITHUB_OUTPUT\"\n\nif [[ \"$IS_TAG_RUN\" -eq 1 && \"${#MISSING[@]}\" -eq 0 ]]; then\n  echo \"run_release=true\"  >> \"$GITHUB_OUTPUT\"\n  echo \"decision=success\" >> \"$GITHUB_OUTPUT\"\nelse\n  echo \"run_release=false\" >> \"$GITHUB_OUTPUT\"\n  echo \"decision=failed\"  >> \"$GITHUB_OUTPUT\"\nfi\n"
+          "run": "set -euo pipefail\n\n# Non-empty TAG_NAME (real or synthetic) counts as tag-run\nIS_TAG_RUN=0\nif [[ -n \"${{ steps.tag.outputs.TAG_NAME }}\" ]]; then IS_TAG_RUN=1; fi\nif [[ \"${GITHUB_REF}\" == refs/tags/* ]]; then IS_TAG_RUN=1; fi\necho \"is_tag_run=$IS_TAG_RUN\" >> \"$GITHUB_OUTPUT\"\n\nAPI=\"${GITHUB_API_URL:-https://api.github.com}\"\nRUN_ID=\"${GITHUB_RUN_ID}\"\nRESP=\"$(curl -sS -H \"Authorization: Bearer $GITHUB_TOKEN\" -H \"Accept: application/vnd.github+json\" \"$API/repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts?per_page=100\")\"\nCOUNT=\"$(echo \"$RESP\" | jq -r '.total_count // 0')\"\necho \"artifact_count=$COUNT\" >> \"$GITHUB_OUTPUT\"\n\nEXPECTED=('bin-ubuntu-latest-amd64' 'bin-windows-latest-amd64' 'bin-macos-latest-amd64' 'bin-macos-latest-arm64')\nNAMES=\"$(echo \"$RESP\" | jq -r '.artifacts[].name')\"\nMISSING=()\nfor e in \"${EXPECTED[@]}\"; do\n  if ! grep -qx \"$e\" <<< \"$NAMES\"; then MISSING+=(\"$e\"); fi\ndone\necho \"missing=${MISSING[*]-}\" >> \"$GITHUB_OUTPUT\"\n\nif [[ \"$IS_TAG_RUN\" -eq 1 && \"${#MISSING[@]}\" -eq 0 ]]; then\n  echo \"run_release=true\"  >> \"$GITHUB_OUTPUT\"\n  echo \"decision=success\" >> \"$GITHUB_OUTPUT\"\nelse\n  echo \"run_release=false\" >> \"$GITHUB_OUTPUT\"\n  echo \"decision=failed\"  >> \"$GITHUB_OUTPUT\"\nfi\n"
         },
         {
           "name": "❌ Stop (gate failed → pick failed)",
@@ -219,6 +235,11 @@
           "run": "if [[ -s SUMMARY.md ]]; then\n  echo \"BODY_PATH=SUMMARY.md\" >> \"$GITHUB_OUTPUT\"\nelif [[ -s PR_NOTES.md ]]; then\n  echo \"BODY_PATH=PR_NOTES.md\" >> \"$GITHUB_OUTPUT\"\nelse\n  { echo \"## Changes\"; echo; echo \"No detailed PR descriptions were found. This release includes the changes listed below.\"; echo; echo \"Compare: ${{ steps.range.outputs.COMPARE }}\"; echo; cat \"${{ steps.changes.outputs.COMMITS }}\"; } > FALLBACK.md\n  echo \"BODY_PATH=FALLBACK.md\" >> \"$GITHUB_OUTPUT\"\nfi\n"
         },
         {
+          "name": "⚑ Compute prerelease flag",
+          "id": "flags",
+          "run": "if [[ \"${GITHUB_REF}\" == refs/tags/* ]]; then\n  echo \"PRERELEASE=false\" >> \"$GITHUB_OUTPUT\"\nelse\n  echo \"PRERELEASE=true\" >> \"$GITHUB_OUTPUT\"\nfi\n"
+        },
+        {
           "name": "📂 Prepare release files (explicit list)",
           "if": "${{ steps.gate.outputs.run_release == 'true' }}",
           "id": "relfiles",
@@ -234,7 +255,7 @@
             "body_path": "${{ steps.body.outputs.BODY_PATH }}",
             "files": "${{ steps.relfiles.outputs.files }}",
             "draft": false,
-            "prerelease": false,
+            "prerelease": "${{ steps.flags.outputs.PRERELEASE }}",
             "overwrite_files": true,
             "fail_on_unmatched_files": true
           },
