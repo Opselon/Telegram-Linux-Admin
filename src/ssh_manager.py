@@ -81,8 +81,9 @@ class SSHManager:
         Yields:
             tuple[str, str]: A tuple containing the output line and the stream name ('stdout' or 'stderr').
         """
-        conn = await self._create_connection(alias)
+        conn = None
         try:
+            conn = await self._create_connection(alias)
             async with async_timeout.timeout(timeout):
                 process = await conn.create_process(command)
                 yield process, 'pid'
@@ -93,15 +94,18 @@ class SSHManager:
         except asyncio.TimeoutError:
             yield "Error: Command timed out.", 'stderr'
         finally:
-            await conn.close()
+            if conn:
+                await conn.close()
 
     async def kill_process(self, alias: str, pid: int) -> None:
         """Kills a process on a remote server."""
-        conn = await self._create_connection(alias)
+        conn = None
         try:
+            conn = await self._create_connection(alias)
             await conn.run(f"kill -9 {pid}")
         finally:
-            await conn.close()
+            if conn:
+                await conn.close()
 
     async def start_shell_session(self, alias: str) -> None:
         """
@@ -155,21 +159,25 @@ class SSHManager:
 
     async def download_file(self, alias: str, remote_path: str, local_path: str) -> None:
         """Downloads a file from a remote server."""
-        conn = await self._create_connection(alias)
+        conn = None
         try:
+            conn = await self._create_connection(alias)
             async with conn.start_sftp_client() as sftp:
                 await sftp.get(remote_path, local_path)
         finally:
-            await conn.close()
+            if conn:
+                await conn.close()
 
     async def upload_file(self, alias: str, local_path: str, remote_path: str) -> None:
         """Uploads a file to a remote server."""
-        conn = await self._create_connection(alias)
+        conn = None
         try:
+            conn = await self._create_connection(alias)
             async with conn.start_sftp_client() as sftp:
                 await sftp.put(local_path, remote_path)
         finally:
-            await conn.close()
+            if conn:
+                await conn.close()
 
     # --- Health Check (No longer needed) ---
     # The start_health_check and stop_health_check methods are removed as they

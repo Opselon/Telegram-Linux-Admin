@@ -325,7 +325,7 @@ async def handle_server_connection(update: Update, context: ContextTypes.DEFAULT
         error_message = "❌ **Authentication Failed:**\nPermission denied. Please check your username, password, or SSH key."
         logger.error(f"Authentication failed for {alias}")
         await query.edit_message_text(error_message, parse_mode='Markdown')
-    except asyncssh.ConnectionRefusedError:
+    except ConnectionRefusedError:
         error_message = f"❌ **Connection Refused:**\nCould not connect to `{alias}`. Please ensure the server is running and the port is correct."
         logger.error(f"Connection refused for {alias}")
         await query.edit_message_text(error_message, parse_mode='Markdown')
