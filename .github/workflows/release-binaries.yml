@@ -29,6 +29,7 @@ jobs:
           - { os: windows-latest, arch: amd64, python_arch: x64,  binary_name: telegram-linux-admin-windows-amd64.exe }
           - { os: macos-latest,  arch: amd64, python_arch: x64,  binary_name: telegram-linux-admin-macos-amd64 }
           - { os: macos-latest,  arch: arm64, python_arch: arm64, binary_name: telegram-linux-admin-macos-arm64 }
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -60,14 +61,12 @@ jobs:
       - name: Build (Windows)
         if: ${{ runner.os == 'Windows' }}
         shell: pwsh
-        run: |
-          pyinstaller --onefile --name "${{ matrix.binary_name }}" src/main.py
+        run: pyinstaller --onefile --name "${{ matrix.binary_name }}" src/main.py
 
       - name: Build (*nix)
         if: ${{ runner.os != 'Windows' }}
         shell: bash
-        run: |
-          pyinstaller --onefile --name "${{ matrix.binary_name }}" src/main.py
+        run: pyinstaller --onefile --name "${{ matrix.binary_name }}" src/main.py
 
       - name: Verify dist contents
         shell: bash
@@ -90,7 +89,7 @@ jobs:
     env:
       MODELS_TOKEN: ${{ secrets.MODELS_TOKEN }}
     steps:
-      - name: Download artifacts
+      - name: Download artifacts (flatten)
         uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -98,7 +97,7 @@ jobs:
 
       - name: Show downloaded artifacts
         shell: bash
-        run: ls -R artifacts || true
+        run: ls -lah artifacts || true
 
       - name: Checkout (full history)
         uses: actions/checkout@v4
@@ -117,13 +116,12 @@ jobs:
             echo "TAG_NAME=v0.0.0-manual-${{ github.run_number }}" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Determine range (handles synthetic/manual tag)
+      - name: Determine range
         id: range
         shell: bash
         run: |
           set -euo pipefail
           TAG="${{ steps.tag.outputs.TAG_NAME }}"
-
           if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
             mapfile -t TAGS < <(git tag --sort=-creatordate)
             PREV=""
@@ -163,15 +161,7 @@ jobs:
           } > COMMITS.md
           echo "COMMITS=COMMITS.md" >> "$GITHUB_OUTPUT"
 
-      - name: Ensure jq
-        shell: bash
-        run: |
-          if ! command -v jq >/dev/null 2>&1; then
-            sudo apt-get update -y
-            sudo apt-get install -y jq
-          fi
-
-      - name: Build PR notes (merge descriptions first)
+      - name: Build PR notes
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -191,7 +181,7 @@ jobs:
               TITLE=$(jq -r '.title // ""' "pr_$PR.json")
               URL=$(jq -r '.html_url // ""' "pr_$PR.json")
               USER=$(jq -r '.user.login // ""' "pr_$PR.json")
-              echo "- #$PR: ${TITLE} (@${USER}) — ${URL}" >> PR_NOTES.md
+              echo "- #$PR: ${TITLE} (@${USER}) - ${URL}" >> PR_NOTES.md
             done < PRS.txt
 
             echo "" >> PR_NOTES.md
@@ -201,7 +191,7 @@ jobs:
               TITLE=$(jq -r '.title // ""' "pr_$PR.json")
               BODY=$(jq -r '.body // ""' "pr_$PR.json" | awk 'NR<=20')
               if [ -n "$BODY" ]; then
-                printf "\n### PR #%s — %s\n\n%s\n" "$PR" "$TITLE" "$BODY" >> PR_NOTES.md
+                printf "\n### PR #%s - %s\n\n%s\n" "$PR" "$TITLE" "$BODY" >> PR_NOTES.md
               fi
             done < PRS.txt
           fi
@@ -218,7 +208,7 @@ jobs:
             echo "- Refactoring"
             echo "- Docs"
             echo "- Breaking Changes"
-            echo "Start with a one-paragraph highlights summary. Prefer PR descriptions (merge descriptions) when available; otherwise use commit messages. End with the Compare URL. Output Markdown only."
+            echo "Start with a one-paragraph highlights summary. Prefer PR descriptions when available; otherwise use commit messages. End with the Compare URL. Output Markdown only."
           } > PROMPT.txt
           {
             echo "Tag: ${{ steps.tag.outputs.TAG_NAME }}"
@@ -251,7 +241,7 @@ jobs:
         id: llm
         if: ${{ env.MODELS_TOKEN != '' }}
         env:
-          GITHUB_TOKEN: ${{ env.MODELS_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.MODELS_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
@@ -315,7 +305,7 @@ PY
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/**/*
+          files: artifacts/*
           tag_name: ${{ steps.tag.outputs.TAG_NAME }}
           name: Release ${{ steps.tag.outputs.TAG_NAME }}
           body_path: ${{ steps.body.outputs.BODY_PATH }}
