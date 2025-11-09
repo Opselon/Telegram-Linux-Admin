@@ -15,7 +15,6 @@ on:
         default: ""
 
 env:
-  # Pick a valid model id from the catalog, e.g. openai/gpt-4.1-mini or openai/gpt-4o-mini
   MODEL_ID: deepseek/DeepSeek-V3-0324
 
 jobs:
@@ -95,6 +94,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+          merge-multiple: true
 
       - name: Show downloaded artifacts
         shell: bash
@@ -125,7 +125,6 @@ jobs:
           TAG="${{ steps.tag.outputs.TAG_NAME }}"
 
           if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
-            # Real tag exists -> compare to previous tag if present
             mapfile -t TAGS < <(git tag --sort=-creatordate)
             PREV=""
             for i in "${!TAGS[@]}"; do
@@ -142,14 +141,12 @@ jobs:
               echo "COMPARE=${{ github.server_url }}/${{ github.repository }}/releases/tag/$TAG" >> "$GITHUB_OUTPUT"
             fi
           else
-            # Synthetic/manual run -> use last commit range to HEAD
             HEAD_SHA="${GITHUB_SHA}"
             if git rev-parse -q --verify "${HEAD_SHA}^" >/dev/null; then
               BASE_SHA=$(git rev-parse "${HEAD_SHA}^")
               echo "RANGE=${BASE_SHA}..${HEAD_SHA}" >> "$GITHUB_OUTPUT"
               echo "COMPARE=${{ github.server_url }}/${{ github.repository }}/compare/${BASE_SHA}...${HEAD_SHA}" >> "$GITHUB_OUTPUT"
             else
-              # Initial commit
               echo "RANGE=${HEAD_SHA}" >> "$GITHUB_OUTPUT"
               echo "COMPARE=${{ github.server_url }}/${{ github.repository }}/commit/${HEAD_SHA}" >> "$GITHUB_OUTPUT"
             fi
@@ -237,49 +234,62 @@ jobs:
             cat "${{ steps.changes.outputs.COMMITS }}"
           } > INPUT.txt
 
-      - name: LLM summary (GitHub Models) - robust
-        id: llm
+      - name: Setup Python (for LLM)
+        if: ${{ env.MODELS_TOKEN != '' }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install LLM SDK
         if: ${{ env.MODELS_TOKEN != '' }}
         shell: bash
         run: |
+          python -m pip install --upgrade pip
+          python -m pip install "azure-ai-inference>=1.0.0" "azure-core>=1.30.0"
+
+      - name: LLM summary (DeepSeek via GitHub Models)
+        id: llm
+        if: ${{ env.MODELS_TOKEN != '' }}
+        env:
+          GITHUB_TOKEN: ${{ env.MODELS_TOKEN }}
+        shell: bash
+        run: |
           set -euo pipefail
-          # Build correct chat payload
-          jq -n \
-            --arg model "${{ env.MODEL_ID }}" \
-            --rawfile sys PROMPT.txt \
-            --rawfile usr INPUT.txt \
-            '{model:$model, messages:[{role:"system",content:$sys},{role:"user",content:$usr}]}' > payload.json
+          python - <<'PY'
+import os, sys
+from azure.ai.inference import ChatCompletionsClient
+from azure.core.credentials import AzureKeyCredential
+from azure.ai.inference.models import SystemMessage, UserMessage
 
-          HTTP_CODE=$(curl -sS -o llm_raw.json -w "%{http_code}" \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer $MODELS_TOKEN" \
-            -H "Content-Type: application/json" \
-            -X POST "https://models.github.ai/inference/chat/completions" \
-            --data-binary @payload.json || echo "000")
-          echo "LLM HTTP code: $HTTP_CODE"
+endpoint = "https://models.github.ai"
+token = os.environ["GITHUB_TOKEN"]
+model = os.environ.get("MODEL_ID", "deepseek/DeepSeek-V3-0324")
 
-          if [ "$HTTP_CODE" != "200" ]; then
-            echo "Skipping LLM summary due to HTTP $HTTP_CODE"
-            exit 0
-          fi
-          if ! jq -e . llm_raw.json >/dev/null 2>&1; then
-            echo "Skipping LLM summary (response is not JSON)"
-            exit 0
-          fi
-          SUMMARY=$(
-            jq -r '
-              (try .choices[0].message.content catch empty) //
-              (try .output[0].content[0].text catch empty) //
-              (try .output_text catch empty) //
-              (try .choices[0].text catch empty) //
-              empty
-            ' llm_raw.json
-          )
-          if [ -n "$SUMMARY" ]; then
-            printf "%s\n" "$SUMMARY" > SUMMARY.md
-          else
-            echo "No summary in JSON response; fallback will be used."
-          fi
+with open("PROMPT.txt", "r", encoding="utf-8") as f:
+    sys_prompt = f.read()
+with open("INPUT.txt", "r", encoding="utf-8") as f:
+    user_input = f.read()
+
+client = ChatCompletionsClient(endpoint=endpoint, credential=AzureKeyCredential(token))
+resp = client.complete(
+    messages=[SystemMessage(content=sys_prompt), UserMessage(content=user_input)],
+    temperature=0.2,
+    top_p=0.9,
+    max_tokens=1200,
+    model=model,
+)
+
+text = ""
+try:
+    text = resp.choices[0].message.content or ""
+except Exception as e:
+    print("LLM parse warning:", e, file=sys.stderr)
+
+with open("SUMMARY.md", "w", encoding="utf-8") as f:
+    f.write(text)
+print("Summary length:", len(text))
+PY
+          test -s SUMMARY.md || true
 
       - name: Choose body (LLM > PR notes > commits)
         id: body
