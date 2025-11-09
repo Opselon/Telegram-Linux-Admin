@@ -6,6 +6,7 @@ import sys
 import zipfile
 import tempfile
 import shlex
+import subprocess
 from datetime import datetime
 from telegram import BotCommand, Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -15,7 +16,6 @@ from telegram.ext import (
 from telegram.error import BadRequest
 import asyncssh
 from .ssh_manager import SSHManager
-from .updater import apply_update
 from .database import (
     get_all_servers, initialize_database,
     close_db_connection, add_server, remove_server
@@ -1392,26 +1392,42 @@ async def remove_server_confirm(update: Update, context: ContextTypes.DEFAULT_TY
 # --- Update ---
 @authorized
 async def update_bot_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles the bot update process with real-time feedback."""
+    """
+    Handles the bot update process by launching the updater script in a detached process.
+    This ensures the update can proceed even after the main bot service is stopped.
+    """
     if update.callback_query:
         await update.callback_query.answer()
         base_message = update.callback_query.message
     else:
         base_message = update.effective_message
 
-    message = await base_message.reply_text(
-        "⏳ **Update initiated...**\n\nThis may take a few minutes. "
-        "The log will appear here once the process is complete.",
-        parse_mode='Markdown'
-    )
-
     try:
-        update_log = apply_update()
-        await message.edit_text(update_log, parse_mode='Markdown')
+        # Get the path to the current python interpreter and the updater script
+        python_executable = sys.executable
+        updater_script = os.path.join(os.path.dirname(__file__), 'updater.py')
+
+        # Use Popen to launch the updater in a new, detached process.
+        # This allows the updater to outlive the main bot process.
+        logger.info("Launching updater script in a detached process.")
+        if os.name == 'posix':
+            subprocess.Popen([python_executable, updater_script, "--auto"], start_new_session=True)
+        else: # For Windows, Popen is detached by default
+            subprocess.Popen([python_executable, updater_script, "--auto"])
+
+        await base_message.reply_text(
+            "✅ **Update process started successfully!**\n\n"
+            "The bot will restart shortly to apply the new version. "
+            "You can check `updater.log` for progress details.",
+            parse_mode='Markdown'
+        )
+
     except Exception as exc:
-        logger.error("An error occurred in the update process: %s", exc, exc_info=True)
-        await message.edit_text(
-            "An unexpected error occurred.\nCheck the logs for more details.\n\n`{}`".format(exc),
+        logger.error("Failed to launch the update process: %s", exc, exc_info=True)
+        await base_message.reply_text(
+            f"❌ **Failed to start the update process.**\n\n"
+            f"An error occurred: `{exc}`\n"
+            "Please check the bot's main log for more details.",
             parse_mode='Markdown'
         )
 
