@@ -118,6 +118,7 @@ jobs:
             echo "TAG_NAME=v0.0.0-manual-${{ github.run_number }}" >> "$GITHUB_OUTPUT"
           fi
 
+
       - name: Determine range (handles synthetic/manual tag)
         id: range
         shell: bash
