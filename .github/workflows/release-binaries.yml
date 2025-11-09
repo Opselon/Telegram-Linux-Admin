@@ -184,7 +184,7 @@
         {
           "name": "✅ Validate artifacts exist (post-download)",
           "if": "${{ steps.gate.outputs.run_release == 'true' }}",
-          "run": "set -euo pipefail\necho \"== downloaded artifacts ==\"\ntest -d artifacts || { echo \"artifacts/ not found\"; exit 1; }\nls -lah artifacts || true\ntest -n \"$(ls -A artifacts 2>/dev/null || true)\" || { echo \"artifacts/ is empty\"; exit 1; }\n"
+          "run": "set -euo pipefail\necho \"== downloaded artifacts ==\"\ntest -d artifacts || { echo \"artifacts/ not found\"; exit 1; }\nls -lahR artifacts || true\ntest -n \"$(ls -A artifacts 2>/dev/null || true)\" || { echo \"artifacts/ is empty\"; exit 1; }\n"
         },
         {
           "name": "🔗 Determine range",
@@ -242,7 +242,7 @@
             "tag_name": "${{ steps.tag.outputs.TAG_NAME || github.ref_name }}",
             "name": "Release ${{ steps.tag.outputs.TAG_NAME || github.ref_name }}",
             "body_path": "${{ steps.body.outputs.BODY_PATH }}",
-            "files": "artifacts/*",
+            "files": "artifacts/**/*",
             "draft": false,
             "prerelease": "${{ steps.flags.outputs.PRERELEASE }}",
             "fail_on_unmatched_files": true
