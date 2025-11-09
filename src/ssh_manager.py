@@ -140,6 +140,24 @@ class SSHManager:
         for alias in list(self.active_shells.keys()):
             await self.disconnect(alias)
 
+    async def download_file(self, alias: str, remote_path: str, local_path: str) -> None:
+        """Downloads a file from a remote server."""
+        conn = await self._create_connection(alias)
+        try:
+            async with conn.start_sftp_client() as sftp:
+                await sftp.get(remote_path, local_path)
+        finally:
+            conn.close()
+
+    async def upload_file(self, alias: str, local_path: str, remote_path: str) -> None:
+        """Uploads a file to a remote server."""
+        conn = await self._create_connection(alias)
+        try:
+            async with conn.start_sftp_client() as sftp:
+                await sftp.put(local_path, remote_path)
+        finally:
+            conn.close()
+
     # --- Health Check (No longer needed) ---
     # The start_health_check and stop_health_check methods are removed as they
     # are not required with the new just-in-time connection model.

@@ -4,6 +4,8 @@ import asyncio
 import os
 import sys
 import zipfile
+import tempfile
+import shlex
 from datetime import datetime
 from telegram import BotCommand, Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -37,8 +39,9 @@ MONITORING_TASKS = {}
 # --- Conversation States ---
 (
     AWAIT_COMMAND, ALIAS, HOSTNAME, USER, AUTH_METHOD, PASSWORD, KEY_PATH,
-    AWAIT_RESTORE_CONFIRMATION, AWAIT_RESTORE_FILE, AWAIT_SERVICE_NAME
-) = range(10)
+    AWAIT_RESTORE_CONFIRMATION, AWAIT_RESTORE_FILE, AWAIT_SERVICE_NAME, AWAIT_PACKAGE_NAME, AWAIT_CONTAINER_NAME,
+    AWAIT_FILE_PATH, AWAIT_UPLOAD_FILE
+) = range(14)
 
 # --- Authorization ---
 def _extract_user_id(update: Update) -> Optional[int]:
@@ -278,6 +281,9 @@ async def handle_server_connection(update: Update, context: ContextTypes.DEFAULT
             [InlineKeyboardButton("🖥️ Open Interactive Shell", callback_data=f"start_shell_{alias}")],
             [InlineKeyboardButton("📊 Server Status", callback_data=f"server_status_menu_{alias}")],
             [InlineKeyboardButton("🔧 Service Management", callback_data=f"service_management_menu_{alias}")],
+            [InlineKeyboardButton("📦 Package Management", callback_data=f"package_management_menu_{alias}")],
+            [InlineKeyboardButton("🐳 Docker Management", callback_data=f"docker_management_menu_{alias}")],
+            [InlineKeyboardButton("📁 File Manager", callback_data=f"file_manager_menu_{alias}")],
             [InlineKeyboardButton("⚙️ System Commands", callback_data=f"system_commands_menu_{alias}")],
             [InlineKeyboardButton("🔌 Disconnect", callback_data=f"disconnect_{alias}")]
         ]
@@ -365,11 +371,12 @@ async def execute_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         final_message = f"✅ **Command completed on `{alias}`**\n\n```\n{output}\n```"
         if len(final_message) > 4096:
             # If the message is too long, send it as a file
-            with open("output.txt", "w") as f:
+            with tempfile.NamedTemporaryFile(mode="w+", delete=False, suffix=".txt") as f:
                 f.write(output)
+                f.flush()
             await result_message.delete()
-            await update.message.reply_document(document=open("output.txt", "rb"), caption=f"Command output for `{command}`")
-            os.remove("output.txt")
+            await update.message.reply_document(document=open(f.name, "rb"), caption=f"Command output for `{command}`")
+            os.remove(f.name)
         else:
             await result_message.edit_text(final_message, parse_mode='Markdown')
 
@@ -427,10 +434,11 @@ async def handle_shell_command(update: Update, context: ContextTypes.DEFAULT_TYP
             output = "[No output]"
 
         if len(output) > 4000:
-            with open("shell_output.txt", "w") as f:
+            with tempfile.NamedTemporaryFile(mode="w+", delete=False, suffix=".txt") as f:
                 f.write(output)
-            await update.message.reply_document(document=open("shell_output.txt", "rb"), caption=f"Shell output for `{command}`")
-            os.remove("shell_output.txt")
+                f.flush()
+            await update.message.reply_document(document=open(f.name, "rb"), caption=f"Shell output for `{command}`")
+            os.remove(f.name)
         else:
             await update.message.reply_text(f"```\n{output}\n```", parse_mode='Markdown')
     except Exception as e:
@@ -613,6 +621,363 @@ async def stop_live_monitoring(update: Update, context: ContextTypes.DEFAULT_TYP
         reply_markup=reply_markup,
         parse_mode='Markdown'
     )
+
+@authorized
+async def package_management_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Displays the package management menu."""
+    query = update.callback_query
+    await query.answer()
+    alias = query.data.split('_', 3)[3]
+
+    keyboard = [
+        [InlineKeyboardButton("🔄 Update Package Lists", callback_data=f"pkg_update_{alias}")],
+        [InlineKeyboardButton("⬆️ Upgrade All Packages", callback_data=f"pkg_upgrade_{alias}")],
+        [InlineKeyboardButton("➕ Install a Package", callback_data=f"pkg_install_{alias}")],
+        [InlineKeyboardButton("🔙 Back to Server Menu", callback_data=f"connect_{alias}")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(
+        f"**📦 Package Management for {alias}**\n\nSelect an action:",
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
+
+@authorized
+async def package_manager_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles package management actions like update and upgrade."""
+    query = update.callback_query
+    await query.answer()
+
+    _, action, alias = query.data.split('_', 2)
+
+    if action == "update":
+        command = "sudo apt-get update"
+    elif action == "upgrade":
+        command = "sudo apt-get upgrade -y"
+    else:
+        return
+
+    result_message = await query.edit_message_text(f"Running `{command}` on `{alias}`...", parse_mode='Markdown')
+
+    output = ""
+    try:
+        async_generator = ssh_manager.run_command(alias, command)
+        async for line, stream in async_generator:
+            output += line
+
+        final_message = f"✅ **Command completed on `{alias}`**\n\n```\n{output.strip()}\n```"
+        if len(final_message) > 4096:
+            with tempfile.NamedTemporaryFile(mode="w+", delete=False, suffix=".txt") as f:
+                f.write(output)
+                f.flush()
+            await result_message.delete()
+            await query.message.reply_document(document=open(f.name, "rb"), caption=f"Command output for `{command}`")
+            os.remove(f.name)
+        else:
+            await result_message.edit_text(final_message, parse_mode='Markdown')
+
+    except Exception as e:
+        await result_message.edit_text(f"❌ **Error:**\n`{e}`", parse_mode='Markdown')
+
+@authorized
+async def install_package_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Starts the conversation to install a package."""
+    query = update.callback_query
+    await query.answer()
+
+    alias = query.data.split('_', 2)[2]
+    context.user_data['alias'] = alias
+
+    await query.edit_message_text(f"Please enter the name of the package to install on `{alias}`.", parse_mode='Markdown')
+    return AWAIT_PACKAGE_NAME
+
+async def execute_install_package(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Executes the package installation."""
+    package_name = shlex.quote(update.message.text)
+    alias = context.user_data['alias']
+
+    command = f"sudo apt-get install -y {package_name}"
+
+    result_message = await update.message.reply_text(f"Running `{command}` on `{alias}`...", parse_mode='Markdown')
+
+    output = ""
+    try:
+        async_generator = ssh_manager.run_command(alias, command)
+        async for line, stream in async_generator:
+            output += line
+
+        await result_message.edit_text(f"✅ **Command completed on `{alias}`**\n\n```{output.strip()}```", parse_mode='Markdown')
+    except Exception as e:
+        await result_message.edit_text(f"❌ **Error:**\n`{e}`", parse_mode='Markdown')
+
+    context.user_data.clear()
+    return ConversationHandler.END
+
+async def cancel_install_package(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Cancels the package installation conversation."""
+    await update.message.reply_text("Package installation cancelled.")
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
+@authorized
+async def docker_management_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Displays the Docker management menu."""
+    query = update.callback_query
+    await query.answer()
+    alias = query.data.split('_', 3)[3]
+
+    keyboard = [
+        [InlineKeyboardButton("📜 List Containers", callback_data=f"docker_ps_{alias}")],
+        [InlineKeyboardButton("📜 List All Containers", callback_data=f"docker_ps_a_{alias}")],
+        [InlineKeyboardButton("📄 View Logs", callback_data=f"docker_logs_{alias}")],
+        [InlineKeyboardButton("▶️ Start Container", callback_data=f"docker_start_{alias}")],
+        [InlineKeyboardButton("⏹️ Stop Container", callback_data=f"docker_stop_{alias}")],
+        [InlineKeyboardButton("🔙 Back to Server Menu", callback_data=f"connect_{alias}")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(
+        f"**🐳 Docker Management for {alias}**\n\nSelect an action:",
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
+
+
+@authorized
+async def docker_action_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Starts a conversation for a Docker action that requires a container name."""
+    query = update.callback_query
+    await query.answer()
+
+    action = query.data.split('_')[1]
+    alias = query.data.split('_', 2)[2]
+
+    context.user_data['docker_action'] = action
+    context.user_data['alias'] = alias
+
+    await query.edit_message_text(f"Please enter the name or ID of the container to `{action}`.", parse_mode='Markdown')
+    return AWAIT_CONTAINER_NAME
+
+
+async def execute_docker_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Executes a Docker action on a specific container."""
+    container_name = shlex.quote(update.message.text)
+    action = context.user_data['docker_action']
+    alias = context.user_data['alias']
+
+    command = f"docker {action} {container_name}"
+
+    result_message = await update.message.reply_text(f"Running `{command}` on `{alias}`...", parse_mode='Markdown')
+
+    output = ""
+    try:
+        async_generator = ssh_manager.run_command(alias, command)
+        async for line, stream in async_generator:
+            output += line
+
+        final_message = f"✅ **Command completed on `{alias}`**\n\n```{output.strip()}```"
+        if len(final_message) > 4096:
+            with tempfile.NamedTemporaryFile(mode="w+", delete=False, suffix=".txt") as f:
+                f.write(output)
+                f.flush()
+            await result_message.delete()
+            await update.message.reply_document(document=open(f.name, "rb"), caption=f"Command output for `{command}`")
+            os.remove(f.name)
+        else:
+            await result_message.edit_text(final_message, parse_mode='Markdown')
+    except Exception as e:
+        await result_message.edit_text(f"❌ **Error:**\n`{e}`", parse_mode='Markdown')
+
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
+@authorized
+async def docker_ps(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Lists Docker containers."""
+    query = update.callback_query
+    await query.answer()
+
+    command = "docker ps"
+    if query.data.startswith("docker_ps_a"):
+        command += " -a"
+    alias = query.data.split('_', 2)[-1]
+
+    result_message = await query.edit_message_text(f"Running `{command}` on `{alias}`...", parse_mode='Markdown')
+
+    output = ""
+    try:
+        async_generator = ssh_manager.run_command(alias, command)
+        async for line, stream in async_generator:
+            output += line
+
+        final_message = f"✅ **Command completed on `{alias}`**\n\n```{output.strip()}```"
+        if len(final_message) > 4096:
+            with tempfile.NamedTemporaryFile(mode="w+", delete=False, suffix=".txt") as f:
+                f.write(output)
+                f.flush()
+            await result_message.delete()
+            await query.message.reply_document(document=open(f.name, "rb"), caption=f"Command output for `{command}`")
+            os.remove(f.name)
+        else:
+            await result_message.edit_text(final_message, parse_mode='Markdown')
+    except Exception as e:
+        await result_message.edit_text(f"❌ **Error:**\n`{e}`", parse_mode='Markdown')
+
+
+async def cancel_docker_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Cancels the Docker action conversation."""
+    await update.message.reply_text("Docker action cancelled.")
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
+@authorized
+async def file_manager_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Displays the file manager menu."""
+    query = update.callback_query
+    await query.answer()
+    alias = query.data.split('_', 3)[3]
+
+    keyboard = [
+        [InlineKeyboardButton("📜 List Files", callback_data=f"fm_ls_{alias}")],
+        [InlineKeyboardButton("📥 Download File", callback_data=f"fm_download_{alias}")],
+        [InlineKeyboardButton("📤 Upload File", callback_data=f"fm_upload_{alias}")],
+        [InlineKeyboardButton("🔙 Back to Server Menu", callback_data=f"connect_{alias}")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(
+        f"**📁 File Manager for {alias}**\n\nSelect an action:",
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
+
+
+@authorized
+async def file_manager_action_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Starts a conversation for a file manager action."""
+    query = update.callback_query
+    await query.answer()
+
+    action = query.data.split('_')[1]
+    alias = query.data.split('_', 2)[2]
+
+    context.user_data['file_manager_action'] = action
+    context.user_data['alias'] = alias
+
+    if action == "ls":
+        prompt = "Please enter the directory path to list."
+    elif action == "download":
+        prompt = "Please enter the full path of the file to download."
+    elif action == "upload":
+        await query.edit_message_text(f"Please enter the full destination path on `{alias}`.", parse_mode='Markdown')
+        return AWAIT_FILE_PATH
+
+    await query.edit_message_text(prompt, parse_mode='Markdown')
+    return AWAIT_FILE_PATH
+
+
+async def file_manager_dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Dispatches to the correct file manager function based on the action."""
+    action = context.user_data.get('file_manager_action')
+    if action == "ls":
+        return await list_files(update, context)
+    elif action == "download":
+        return await download_file(update, context)
+    elif action == "upload":
+        return await upload_file_path(update, context)
+    else:
+        await update.message.reply_text("Unknown file manager action.")
+        return ConversationHandler.END
+
+async def list_files(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Lists files in a directory."""
+    path = shlex.quote(update.message.text)
+    alias = context.user_data['alias']
+    command = f"ls -la {path}"
+
+    result_message = await update.message.reply_text(f"Running `{command}` on `{alias}`...", parse_mode='Markdown')
+
+    output = ""
+    try:
+        async_generator = ssh_manager.run_command(alias, command)
+        async for line, stream in async_generator:
+            output += line
+
+        final_message = f"✅ **Files in `{path}` on `{alias}`**\n\n```{output.strip()}```"
+        if len(final_message) > 4096:
+            with tempfile.NamedTemporaryFile(mode="w+", delete=False, suffix=".txt") as f:
+                f.write(output)
+                f.flush()
+            await result_message.delete()
+            await update.message.reply_document(document=open(f.name, "rb"), caption=f"File list for `{path}`")
+            os.remove(f.name)
+        else:
+            await result_message.edit_text(final_message, parse_mode='Markdown')
+    except Exception as e:
+        await result_message.edit_text(f"❌ **Error:**\n`{e}`", parse_mode='Markdown')
+
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
+async def download_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Downloads a file from the server."""
+    remote_path = shlex.quote(update.message.text)
+    alias = context.user_data['alias']
+
+    await update.message.reply_text(f"📥 Downloading `{remote_path}` from `{alias}`...", parse_mode='Markdown')
+
+    try:
+        with tempfile.NamedTemporaryFile(delete=False) as f:
+            local_path = f.name
+        await ssh_manager.download_file(alias, remote_path, local_path)
+        await update.message.reply_document(document=open(local_path, 'rb'))
+        os.remove(local_path)
+    except Exception as e:
+        await update.message.reply_text(f"❌ **Error:**\n`{e}`", parse_mode='Markdown')
+
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
+async def upload_file_path(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Gets the destination path for the file upload."""
+    context.user_data['remote_path'] = update.message.text
+    await update.message.reply_text("Okay, now please upload the file to be sent to the server.")
+    return AWAIT_UPLOAD_FILE
+
+
+async def upload_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Uploads a file to the server."""
+    document = update.message.document
+    alias = context.user_data['alias']
+    remote_path = context.user_data['remote_path']
+
+    local_path = document.file_name
+    file = await document.get_file()
+    await file.download_to_drive(local_path)
+
+    await update.message.reply_text(f"📤 Uploading `{local_path}` to `{remote_path}` on `{alias}`...", parse_mode='Markdown')
+
+    try:
+        await ssh_manager.upload_file(alias, local_path, remote_path)
+        await update.message.reply_text("✅ **File uploaded successfully!**", parse_mode='Markdown')
+    except Exception as e:
+        await update.message.reply_text(f"❌ **Error:**\n`{e}`", parse_mode='Markdown')
+    finally:
+        os.remove(local_path)
+
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
+async def cancel_file_manager_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Cancels the file manager action conversation."""
+    await update.message.reply_text("File manager action cancelled.")
+    context.user_data.clear()
+    return ConversationHandler.END
+
 
 @authorized
 async def service_management_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1063,6 +1428,42 @@ def main() -> None:
     )
     application.add_handler(service_management_handler)
 
+    install_package_handler = ConversationHandler(
+        entry_points=[CallbackQueryHandler(install_package_start, pattern='^pkg_install_')],
+        states={
+            AWAIT_PACKAGE_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, execute_install_package)],
+        },
+        fallbacks=[CommandHandler('cancel', cancel_install_package)],
+    )
+    application.add_handler(install_package_handler)
+
+    docker_action_handler = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(docker_action_start, pattern='^docker_logs_'),
+            CallbackQueryHandler(docker_action_start, pattern='^docker_start_'),
+            CallbackQueryHandler(docker_action_start, pattern='^docker_stop_'),
+        ],
+        states={
+            AWAIT_CONTAINER_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, execute_docker_action)],
+        },
+        fallbacks=[CommandHandler('cancel', cancel_docker_action)],
+    )
+    application.add_handler(docker_action_handler)
+
+    file_manager_handler = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(file_manager_action_start, pattern='^fm_ls_'),
+            CallbackQueryHandler(file_manager_action_start, pattern='^fm_download_'),
+            CallbackQueryHandler(file_manager_action_start, pattern='^fm_upload_'),
+        ],
+        states={
+            AWAIT_FILE_PATH: [MessageHandler(filters.TEXT & ~filters.COMMAND, file_manager_dispatch)],
+            AWAIT_UPLOAD_FILE: [MessageHandler(filters.ATTACHMENT, upload_file)],
+        },
+        fallbacks=[CommandHandler('cancel', cancel_file_manager_action)],
+    )
+    application.add_handler(file_manager_handler)
+
     # --- UI & Menu Handlers ---
     application.add_handler(CallbackQueryHandler(main_menu, pattern='^main_menu$'))
     application.add_handler(CallbackQueryHandler(connect_server_menu, pattern='^connect_server_menu$'))
@@ -1077,6 +1478,12 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(stop_live_monitoring, pattern='^stop_live_monitoring_'))
     application.add_handler(CallbackQueryHandler(backup, pattern='^backup$'))
     application.add_handler(CallbackQueryHandler(service_management_menu, pattern='^service_management_menu_'))
+    application.add_handler(CallbackQueryHandler(package_management_menu, pattern='^package_management_menu_'))
+    application.add_handler(CallbackQueryHandler(package_manager_action, pattern='^pkg_update_'))
+    application.add_handler(CallbackQueryHandler(package_manager_action, pattern='^pkg_upgrade_'))
+    application.add_handler(CallbackQueryHandler(docker_management_menu, pattern='^docker_management_menu_'))
+    application.add_handler(CallbackQueryHandler(docker_ps, pattern='^docker_ps_'))
+    application.add_handler(CallbackQueryHandler(file_manager_menu, pattern='^file_manager_menu_'))
     application.add_handler(CallbackQueryHandler(system_commands_menu, pattern='^system_commands_menu_'))
     application.add_handler(CallbackQueryHandler(confirm_system_command, pattern='^reboot_'))
     application.add_handler(CallbackQueryHandler(confirm_system_command, pattern='^shutdown_'))
