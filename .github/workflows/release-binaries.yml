@@ -1,18 +1,11 @@
 name: 🚀 Release Binaries
 
-###############################################################################
-# High-signal defaults & guards
-###############################################################################
 permissions:
   contents: write
 
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
-
-defaults:
-  run:
-    shell: bash
 
 on:
   push:
@@ -28,19 +21,16 @@ on:
 env:
   MODEL_ID: deepseek/DeepSeek-V3-0324
 
-###############################################################################
-# 🧱 BUILD — matrixed, self-contained binaries per OS/arch
-###############################################################################
 jobs:
+  #############################################################################
+  # 🧱 BUILD — matrixed, self-contained binaries
+  #############################################################################
   build:
     name: 🧱 Build ${{ matrix.os }} / ${{ matrix.arch }}
     runs-on: ${{ matrix.os }}
-
-    # allow uploading artifacts
     permissions:
       contents: read
       actions:  write
-
     strategy:
       fail-fast: false
       matrix:
@@ -61,21 +51,23 @@ jobs:
           architecture: ${{ matrix.python_arch }}
 
       - name: 🧹 Clean outputs
+        shell: bash
         run: |
           rm -rf dist build .pytest_cache || true
           mkdir -p dist
 
       - name: 📦 Install build deps
+        shell: bash
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
           pip install .
           pip install pyinstaller
 
-      - name: 🔧 Build (self-contained, cross-shell safe)
+      - name: 🔧 Build (self-contained)
+        shell: bash
         run: |
           set -euo pipefail
-          # Use python -m to avoid PATH/launcher issues on Windows
           python -m PyInstaller \
             --clean --noconfirm --onefile \
             --name "${{ matrix.binary_name }}" \
@@ -83,13 +75,12 @@ jobs:
             --distpath "dist" \
             --workpath "build" \
             src/main.py
-
-          # Make sure *nix binaries are executable
           if [[ "$RUNNER_OS" != "Windows" ]]; then
             chmod +x "dist/${{ matrix.binary_name }}"
           fi
 
       - name: 🔍 Verify dist contents
+        shell: bash
         run: |
           set -euo pipefail
           echo "== dist tree =="
@@ -102,73 +93,129 @@ jobs:
       - name: ⬆️ Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          # one artifact per matrix entry (stable, explicit naming)
           name: bin-${{ matrix.os }}-${{ matrix.arch }}
           path: dist/${{ matrix.binary_name }}
           if-no-files-found: error
           retention-days: 7
 
-###############################################################################
-# 🚢 RELEASE — aggregates artifacts, composes notes, publishes release
-###############################################################################
+  #############################################################################
+  # 🚢 RELEASE — gated: only run on tags + all artifacts present
+  #############################################################################
   release:
     name: 🚢 Release
     runs-on: ubuntu-latest
     needs: build
-
-    # allow downloading artifacts + creating release
     permissions:
       contents: write
       actions:  read
-
     env:
       MODELS_TOKEN: ${{ secrets.MODELS_TOKEN }}
 
     steps:
-      - name: ⬇️ Download artifacts (flatten)
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-          merge-multiple: true
-
-      - name: ✅ Validate artifacts exist
-        run: |
-          set -euo pipefail
-          echo "== downloaded artifacts =="
-          if [[ -d artifacts ]]; then ls -lah artifacts; fi
-          test -d artifacts || { echo "artifacts/ not found"; exit 1; }
-          test -n "$(ls -A artifacts 2>/dev/null || true)" || { echo "artifacts/ is empty"; exit 1; }
-
-      - name: 🧪 Debug artifacts content
-        run: |
-          set -euo pipefail
-          echo "== matches for artifacts/** =="
-          printf '%s\n' artifacts/** || true
-          echo "== find files =="
-          find artifacts -type f -maxdepth 5 -print
-
-      - name: ⬇️ Checkout (full history)
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
       - name: 🏷️ Compute tag
         id: tag
+        shell: bash
         run: |
           if [ -n "${{ github.event.inputs.tag }}" ]; then
             echo "TAG_NAME=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
           elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
             echo "TAG_NAME=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
           else
-            echo "TAG_NAME=v0.0.0-manual-${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+            echo "TAG_NAME=" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: 🔗 Determine range (handles manual/synthetic)
+      - name: 🚧 Gate: require tag + all artifacts
+        id: gate
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # 1) Is this a tag run (either push tag or manual tag input)?
+          IS_TAG_RUN=0
+          if [[ -n "${{ steps.tag.outputs.TAG_NAME }}" ]]; then IS_TAG_RUN=1; fi
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then IS_TAG_RUN=1; fi
+          echo "is_tag_run=$IS_TAG_RUN" >> "$GITHUB_OUTPUT"
+
+          # 2) List artifacts for THIS workflow run
+          API="${GITHUB_API_URL:-https://api.github.com}"
+          RUN_ID="${GITHUB_RUN_ID}"
+          RESP="$(curl -sS -H "Authorization: Bearer $GITHUB_TOKEN" \
+                         -H "Accept: application/vnd.github+json" \
+                         "$API/repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts?per_page=100")"
+          COUNT="$(echo "$RESP" | jq -r '.total_count // 0')"
+          echo "artifact_count=$COUNT" >> "$GITHUB_OUTPUT"
+
+          # 3) Require ALL expected artifacts (from build matrix)
+          mapfile -t EXPECTED < <(cat <<'EOF'
+bin-ubuntu-latest-amd64
+bin-windows-latest-amd64
+bin-macos-latest-amd64
+bin-macos-latest-arm64
+EOF
+)
+          NAMES="$(echo "$RESP" | jq -r '.artifacts[].name')"
+          MISSING=()
+          for e in "${EXPECTED[@]}"; do
+            if ! grep -qx "$e" <<< "$NAMES"; then MISSING+=("$e"); fi
+          done
+          echo "missing=${MISSING[*]-}" >> "$GITHUB_OUTPUT"
+
+          if [[ "$IS_TAG_RUN" -eq 1 && "${#MISSING[@]}" -eq 0 ]]; then
+            echo "run_release=true"  >> "$GITHUB_OUTPUT"
+            echo "decision=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_release=false" >> "$GITHUB_OUTPUT"
+            echo "decision=failed"  >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: ❌ Stop (gate failed → pick failed)
+        if: ${{ steps.gate.outputs.run_release != 'true' }}
+        shell: bash
+        run: |
+          echo "::error::Release gated: decision=${{ steps.gate.outputs.decision }}; is_tag=${{ steps.gate.outputs.is_tag_run }}; artifact_count=${{ steps.gate.outputs.artifact_count }}; missing='${{ steps.gate.outputs.missing }}'"
+          exit 1
+
+      - name: ✅ Gate passed (pick success)
+        if: ${{ steps.gate.outputs.run_release == 'true' }}
+        shell: bash
+        run: echo "Gate passed ✔ — proceeding to download & publish release."
+
+      # از اینجا به بعد فقط وقتی گیت پاس شد اجرا می‌شود
+      - name: ⬇️ Download artifacts (flatten)
+        if: ${{ steps.gate.outputs.run_release == 'true' }}
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: ✅ Validate artifacts exist (post-download)
+        if: ${{ steps.gate.outputs.run_release == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "== downloaded artifacts =="
+          test -d artifacts || { echo "artifacts/ not found"; exit 1; }
+          ls -lah artifacts || true
+          test -n "$(ls -A artifacts 2>/dev/null || true)" || { echo "artifacts/ is empty"; exit 1; }
+
+      - name: ⬇️ Checkout (full history)
+        if: ${{ steps.gate.outputs.run_release == 'true' }}
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 🔗 Determine range
+        if: ${{ steps.gate.outputs.run_release == 'true' }}
         id: range
+        shell: bash
         run: |
           set -euo pipefail
           TAG="${{ steps.tag.outputs.TAG_NAME }}"
-          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+          if [[ -z "$TAG" && "${GITHUB_REF}" == refs/tags/* ]]; then TAG="${GITHUB_REF#refs/tags/}"; fi
+
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null 2>&1; then
             mapfile -t TAGS < <(git tag --sort=-creatordate)
             PREV=""
             for i in "${!TAGS[@]}"; do
@@ -186,7 +233,7 @@ jobs:
             fi
           else
             HEAD_SHA="${GITHUB_SHA}"
-            if git rev-parse -q --verify "${HEAD_SHA}^" >/dev/null; then
+            if git rev-parse -q --verify "${HEAD_SHA}^" >/dev/null 2>&1; then
               BASE_SHA=$(git rev-parse "${HEAD_SHA}^")
               echo "RANGE=${BASE_SHA}..${HEAD_SHA}" >> "$GITHUB_OUTPUT"
               echo "COMPARE=${{ github.server_url }}/${{ github.repository }}/compare/${BASE_SHA}...${HEAD_SHA}" >> "$GITHUB_OUTPUT"
@@ -197,25 +244,27 @@ jobs:
           fi
 
       - name: 🧮 Collect commits
+        if: ${{ steps.gate.outputs.run_release == 'true' }}
         id: changes
+        shell: bash
         run: |
           git log ${{ steps.range.outputs.RANGE }} --pretty='format:%h|%an|%s' > COMMITS.txt || true
-          {
-            echo "### Commits"
-            awk -F'|' '{printf "- (%s) %s - %s\n",$1,$3,$2}' COMMITS.txt
-          } > COMMITS.md
+          { echo "### Commits"; awk -F'|' '{printf "- (%s) %s - %s\n",$1,$3,$2}' COMMITS.txt; } > COMMITS.md
           echo "COMMITS=COMMITS.md" >> "$GITHUB_OUTPUT"
 
       - name: 🧰 Ensure jq
+        if: ${{ steps.gate.outputs.run_release == 'true' }}
+        shell: bash
         run: |
           if ! command -v jq >/dev/null 2>&1; then
-            sudo apt-get update -y
-            sudo apt-get install -y jq
+            sudo apt-get update -y && sudo apt-get install -y jq
           fi
 
       - name: 🧷 Build PR notes (merge descriptions first)
+        if: ${{ steps.gate.outputs.run_release == 'true' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
         run: |
           set -euo pipefail
           git log ${{ steps.range.outputs.RANGE }} --merges --pretty='%s' | sed -n 's/.*#\([0-9]\+\).*/\1/p' | sort -u > PRS.txt || true
@@ -248,16 +297,13 @@ jobs:
           fi
 
       - name: 🧱 Build prompt and input for LLM
+        if: ${{ steps.gate.outputs.run_release == 'true' }}
         id: prompt
+        shell: bash
         run: |
           {
             echo "You are a release-notes generator. Using the commit list, PR titles/bodies (if any), and compare link, produce a concise Markdown release summary with the following sections (omit empty ones):"
-            echo "- Features"
-            echo "- Fixes"
-            echo "- Performance"
-            echo "- Refactoring"
-            echo "- Docs"
-            echo "- Breaking Changes"
+            echo "- Features"; echo "- Fixes"; echo "- Performance"; echo "- Refactoring"; echo "- Docs"; echo "- Breaking Changes"
             echo "Start with a one-paragraph highlights summary. Prefer PR descriptions (merge descriptions) when available; otherwise use commit messages. End with the Compare URL. Output Markdown only."
           } > PROMPT.txt
           {
@@ -265,59 +311,36 @@ jobs:
             echo "Range: ${{ steps.range.outputs.RANGE }}"
             echo "Compare: ${{ steps.range.outputs.COMPARE }}"
             echo
-            if [ -s PR_NOTES.md ]; then
-              echo "=== PR NOTES ==="
-              cat PR_NOTES.md
-              echo
-            fi
-            echo "=== COMMITS ==="
-            cat "${{ steps.changes.outputs.COMMITS }}"
+            if [ -s PR_NOTES.md ]; then echo "=== PR NOTES ==="; cat PR_NOTES.md; echo; fi
+            echo "=== COMMITS ==="; cat "${{ steps.changes.outputs.COMMITS }}"
           } > INPUT.txt
 
       - name: 🧠 LLM summary (GitHub Models)
+        if: ${{ env.MODELS_TOKEN != '' && steps.gate.outputs.run_release == 'true' }}
         id: llm
-        if: ${{ env.MODELS_TOKEN != '' }}
+        shell: bash
         run: |
           set -euo pipefail
-          jq -n \
-            --arg model "${{ env.MODEL_ID }}" \
-            --rawfile sys PROMPT.txt \
-            --rawfile usr INPUT.txt \
+          jq -n --arg model "${{ env.MODEL_ID }}" --rawfile sys PROMPT.txt --rawfile usr INPUT.txt \
             '{model:$model, messages:[{role:"system",content:$sys},{role:"user",content:$usr}]}' > payload.json
-
           HTTP_CODE=$(curl -sS -o llm_raw.json -w "%{http_code}" \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer $MODELS_TOKEN" \
-            -H "Content-Type: application/json" \
-            -X POST "https://models.github.ai/inference/chat/completions" \
-            --data-binary @payload.json || echo "000")
+            -H "Accept: application/vnd.github+json" -H "Authorization: Bearer $MODELS_TOKEN" \
+            -H "Content-Type: application/json" -X POST \
+            "https://models.github.ai/inference/chat/completions" --data-binary @payload.json || echo "000")
           echo "LLM HTTP code: $HTTP_CODE"
-
-          if [ "$HTTP_CODE" != "200" ]; then
-            echo "Skipping LLM summary due to HTTP $HTTP_CODE"
-            exit 0
-          fi
-          if ! jq -e . llm_raw.json >/dev/null 2>&1; then
-            echo "Skipping LLM summary (response is not JSON)"
-            exit 0
-          fi
+          if [ "$HTTP_CODE" != "200" ] || ! jq -e . llm_raw.json >/dev/null 2>&1; then exit 0; fi
           SUMMARY=$(
-            jq -r '
-              (try .choices[0].message.content catch empty) //
-              (try .output[0].content[0].text catch empty) //
-              (try .output_text catch empty) //
-              (try .choices[0].text catch empty) //
-              empty
-            ' llm_raw.json
+            jq -r '(try .choices[0].message.content catch empty) //
+                   (try .output[0].content[0].text catch empty) //
+                   (try .output_text catch empty) //
+                   (try .choices[0].text catch empty) // empty' llm_raw.json
           )
-          if [ -n "$SUMMARY" ]; then
-            printf "%s\n" "$SUMMARY" > SUMMARY.md
-          else
-            echo "No summary in JSON response; fallback will be used."
-          fi
+          [ -n "$SUMMARY" ] && printf "%s\n" "$SUMMARY" > SUMMARY.md || echo "No summary in JSON response."
 
       - name: 📝 Choose body (LLM > PR notes > commits)
+        if: ${{ steps.gate.outputs.run_release == 'true' }}
         id: body
+        shell: bash
         run: |
           if [[ -s SUMMARY.md ]]; then
             echo "BODY_PATH=SUMMARY.md" >> "$GITHUB_OUTPUT"
@@ -325,26 +348,22 @@ jobs:
             echo "BODY_PATH=PR_NOTES.md" >> "$GITHUB_OUTPUT"
           else
             {
-              echo "## Changes"
-              echo
-              echo "No detailed PR descriptions were found. This release includes the changes listed below."
-              echo
-              echo "Compare: ${{ steps.range.outputs.COMPARE }}"
-              echo
+              echo "## Changes"; echo
+              echo "No detailed PR descriptions were found. This release includes the changes listed below."; echo
+              echo "Compare: ${{ steps.range.outputs.COMPARE }}"; echo
               cat "${{ steps.changes.outputs.COMMITS }}"
             } > FALLBACK.md
             echo "BODY_PATH=FALLBACK.md" >> "$GITHUB_OUTPUT"
           fi
 
-      # Build explicit file list → pass to release action without globs
-      - name: 📂 Prepare release files
+      - name: 📂 Prepare release files (explicit list)
+        if: ${{ steps.gate.outputs.run_release == 'true' }}
         id: relfiles
+        shell: bash
         run: |
           set -euo pipefail
           mapfile -t FILES < <(find artifacts -type f -maxdepth 5 -print | sort)
-          if [ "${#FILES[@]}" -eq 0 ]; then
-            echo "No files found in artifacts/"; exit 1
-          fi
+          if [ "${#FILES[@]}" -eq 0 ]; then echo "No files found in artifacts/"; exit 1; fi
           echo "== file list =="; printf '%s\n' "${FILES[@]}"
           echo "== sha256 =="
           if command -v sha256sum >/dev/null 2>&1; then
@@ -359,10 +378,11 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: 🚀 Create GitHub Release
+        if: ${{ steps.gate.outputs.run_release == 'true' }}
         uses: softprops/action-gh-release@v2
         with:
-          tag_name:  ${{ steps.tag.outputs.TAG_NAME }}
-          name:      Release ${{ steps.tag.outputs.TAG_NAME }}
+          tag_name:  ${{ steps.tag.outputs.TAG_NAME || github.ref_name }}
+          name:      Release ${{ steps.tag.outputs.TAG_NAME || github.ref_name }}
           body_path: ${{ steps.body.outputs.BODY_PATH }}
           files:     ${{ steps.relfiles.outputs.files }}
           draft: false
