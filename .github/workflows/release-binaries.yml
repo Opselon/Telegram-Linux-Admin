@@ -63,9 +63,13 @@ jobs:
         run: pyinstaller --onefile --name "${{ matrix.binary_name }}" src/main.py
 
       - name: Verify dist contents
+        shell: bash
         run: |
-          echo "== dist tree ==" && ls -lah dist || true
-          test -n "$(ls -A dist 2>/dev/null || true)" || { echo "dist/ is empty"; exit 1; }
+         set -euo pipefail
+         echo "== dist tree =="
+         test -d dist || { echo "dist/ not found"; exit 1; }
+         ls -lah dist || true
+         test -n "$(ls -A dist 2>/dev/null || true)" || { echo "dist/ is empty"; exit 1; }
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
