@@ -25,22 +25,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            arch: amd64
-            python_arch: x64
-            binary_name: telegram-linux-admin-linux-amd64
-          - os: windows-latest
-            arch: amd64
-            python_arch: x64
-            binary_name: telegram-linux-admin-windows-amd64.exe
-          - os: macos-latest
-            arch: amd64
-            python_arch: x64
-            binary_name: telegram-linux-admin-macos-amd64
-          - os: macos-latest
-            arch: arm64
-            python_arch: arm64
-            binary_name: telegram-linux-admin-macos-arm64
+          - { os: ubuntu-latest,  arch: amd64, python_arch: x64,  binary_name: telegram-linux-admin-linux-amd64 }
+          - { os: windows-latest, arch: amd64, python_arch: x64,  binary_name: telegram-linux-admin-windows-amd64.exe }
+          - { os: macos-latest,  arch: amd64, python_arch: x64,  binary_name: telegram-linux-admin-macos-amd64 }
+          - { os: macos-latest,  arch: arm64, python_arch: arm64, binary_name: telegram-linux-admin-macos-arm64 }
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -129,7 +117,7 @@ jobs:
             echo "COMPARE=${{ github.server_url }}/${{ github.repository }}/releases/tag/$TAG" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Collect commits
+      - name: Collect commits (plain list)
         id: changes
         shell: bash
         run: |
@@ -144,14 +132,16 @@ jobs:
         id: prompt
         shell: bash
         run: |
-          printf "%s\n" "You are a release notes generator. Using the commit list and compare link, produce a concise Markdown release summary with these sections (omit empty ones):
+          cat > PROMPT.txt << 'EOF'
+You are a release-notes generator. Using the commit list and compare link, produce a concise Markdown release summary with the following sections (omit empty ones):
 - Features
 - Fixes
 - Performance
 - Refactoring
 - Docs
 - Breaking Changes
-Start with a one-paragraph highlight summary. End with the Compare link. Output Markdown only." > PROMPT.txt
+Start with a one-paragraph highlights summary. End with the Compare URL. Output Markdown only.
+EOF
           {
             echo "Tag: ${{ steps.tag.outputs.TAG_NAME }}"
             echo "Range: ${{ steps.range.outputs.RANGE }}"
