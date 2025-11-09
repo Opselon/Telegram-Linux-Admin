@@ -5,7 +5,7 @@ import os
 import sys
 import zipfile
 from datetime import datetime
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import BotCommand, Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, filters, ContextTypes,
     CallbackQueryHandler, ConversationHandler
@@ -216,6 +216,10 @@ async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         [
             InlineKeyboardButton("➕ Add Server", callback_data='add_server_start'),
             InlineKeyboardButton("➖ Remove Server", callback_data='remove_server_menu')
+        ],
+        [
+            InlineKeyboardButton("💾 Backup", callback_data='backup'),
+            InlineKeyboardButton("🔄 Restore", callback_data='restore')
         ],
         [InlineKeyboardButton("🔄 Update Bot", callback_data='update_bot')],
     ]
@@ -633,6 +637,9 @@ async def disconnect(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 @authorized
 async def backup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Creates a backup of the config and database files."""
+    query = update.callback_query
+    await query.answer()
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     backup_filename = f"tla_backup_{timestamp}.zip"
 
@@ -647,22 +654,29 @@ async def backup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                     logger.warning(f"File {file} not found for backup.")
 
         with open(backup_filename, 'rb') as backup_file:
-            await update.effective_message.reply_document(backup_file)
+            await context.bot.send_document(chat_id=query.effective_chat.id, document=backup_file)
 
     except Exception as e:
         logger.error(f"Error creating backup: {e}", exc_info=True)
-        await update.effective_message.reply_text(f"❌ **Error:** Could not create backup.\n`{e}`", parse_mode='Markdown')
+        await query.message.reply_text(f"❌ **Error:** Could not create backup.\n`{e}`", parse_mode='Markdown')
     finally:
         if os.path.exists(backup_filename):
             os.remove(backup_filename)
+
+    keyboard = [[InlineKeyboardButton("🔙 Back to Main Menu", callback_data='main_menu')]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.message.reply_text("Backup complete.", reply_markup=reply_markup)
 
 # --- Restore ---
 @authorized
 async def restore_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Starts the restore process."""
+    query = update.callback_query
+    await query.answer()
+
     keyboard = [[InlineKeyboardButton("⚠️ Yes, I'm sure", callback_data='restore_yes')]]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.effective_message.reply_text(
+    await query.message.reply_text(
         "**⚠️ DANGER ZONE: RESTORE**\n\n"
         "Restoring from a backup will overwrite your current configuration and database. "
         "This action is irreversible. Are you sure you want to continue?",
@@ -705,7 +719,7 @@ async def restore_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         os.execv(sys.executable, ['python'] + sys.argv)
 
     except Exception as e:
-        await update.message.reply_text(f"❌ **Error:** {e}", parse_mode='Markdown')
+        await update.message.reply_text(f"❌ **Error:**\n`{e}`", parse_mode='Markdown')
     finally:
         if os.path.exists(document.file_name):
             os.remove(document.file_name)
@@ -780,6 +794,18 @@ async def post_shutdown(application: Application) -> None:
     close_db_connection()
 
 
+async def post_init(application: Application):
+    """Actions to run after the bot has been initialized."""
+    await application.bot.set_my_commands([
+        BotCommand("start", "Display the main menu"),
+        BotCommand("add_server", "Start the guided process to add a new server"),
+        BotCommand("check_updates", "Check for new bot updates"),
+        BotCommand("update_bot", "Update the bot to the latest version"),
+        BotCommand("debug", "Toggle verbose debug messages"),
+        BotCommand("exit_shell", "Terminate an active interactive shell session"),
+        BotCommand("cancel", "Cancel the current multi-step operation (like adding a server)")
+    ])
+
 def main() -> None:
     """
     Initializes and runs the Telegram bot application.
@@ -815,7 +841,7 @@ def main() -> None:
         sys.exit(1)
 
     # --- Application Setup ---
-    application = Application.builder().token(config.telegram_token).post_shutdown(post_shutdown).build()
+    application = Application.builder().token(config.telegram_token).post_init(post_init).post_shutdown(post_shutdown).build()
 
     # --- Error Handling ---
     application.add_error_handler(error_handler)
@@ -848,7 +874,7 @@ def main() -> None:
     application.add_handler(run_command_handler)
 
     restore_handler = ConversationHandler(
-        entry_points=[CommandHandler('restore', restore_start)],
+        entry_points=[CallbackQueryHandler(restore_start, pattern='^restore$')],
         states={
             AWAIT_RESTORE_CONFIRMATION: [CallbackQueryHandler(restore_confirmation)],
             AWAIT_RESTORE_FILE: [MessageHandler(filters.ATTACHMENT, restore_file)],
@@ -869,6 +895,7 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(get_resource_usage, pattern='^resource_usage_'))
     application.add_handler(CallbackQueryHandler(live_monitoring, pattern='^live_monitoring_'))
     application.add_handler(CallbackQueryHandler(stop_live_monitoring, pattern='^stop_live_monitoring_'))
+    application.add_handler(CallbackQueryHandler(backup, pattern='^backup$'))
     application.add_handler(CallbackQueryHandler(disconnect, pattern='^disconnect_'))
     application.add_handler(CallbackQueryHandler(remove_server_confirm, pattern='^remove_'))
 
@@ -878,7 +905,6 @@ def main() -> None:
     application.add_handler(CommandHandler('exit_shell', exit_shell))
     application.add_handler(CommandHandler('check_updates', check_for_updates_command))
     application.add_handler(CommandHandler('update_bot', update_bot_command))
-    application.add_handler(CommandHandler('backup', backup))
 
     # --- Start Bot ---
     logger.info("Bot is starting...")
