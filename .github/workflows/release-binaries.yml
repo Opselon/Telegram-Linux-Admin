@@ -1,7 +1,8 @@
 name: Release Binaries
 
 permissions:
-  contents: write
+  contents: write   # سطح کلی
+  # (اختیاری) اگر نمی‌خواهی global بدهی، در هر job پایین تعریف شده است
 
 on:
   push:
@@ -15,11 +16,15 @@ on:
         default: ""
 
 env:
-  # Pick a valid model id from the catalog, e.g. openai/gpt-4.1-mini or openai/gpt-4o-mini
   MODEL_ID: deepseek/DeepSeek-V3-0324
 
 jobs:
   build:
+    # این دو خط، آپلود آرتیفکت را مجاز می‌کند
+    permissions:
+      contents: read
+      actions: write
+
     name: Build ${{ matrix.os }} / ${{ matrix.arch }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -30,12 +35,10 @@ jobs:
           - { os: windows-latest, arch: amd64, python_arch: x64,  binary_name: telegram-linux-admin-windows-amd64.exe }
           - { os: macos-latest,  arch: amd64, python_arch: x64,  binary_name: telegram-linux-admin-macos-amd64 }
           - { os: macos-latest,  arch: arm64, python_arch: arm64, binary_name: telegram-linux-admin-macos-arm64 }
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           architecture: ${{ matrix.python_arch }}
@@ -43,38 +46,25 @@ jobs:
       - name: Clean dist (Windows)
         if: ${{ runner.os == 'Windows' }}
         shell: pwsh
-        run: |
-          if (Test-Path dist) { Remove-Item -Recurse -Force dist }
+        run: if (Test-Path dist) { Remove-Item -Recurse -Force dist }
 
       - name: Clean dist (*nix)
         if: ${{ runner.os != 'Windows' }}
-        shell: bash
         run: rm -rf dist || true
 
       - name: Install deps
-        shell: bash
         run: |
           python -m pip install --upgrade pip
           pip install .
           pip install pyinstaller
 
-      - name: Build (Windows)
-        if: ${{ runner.os == 'Windows' }}
-        shell: pwsh
-        run: |
-          pyinstaller --onefile --name "${{ matrix.binary_name }}" src/main.py
-
-      - name: Build (*nix)
-        if: ${{ runner.os != 'Windows' }}
+      - name: Build
         shell: bash
-        run: |
-          pyinstaller --onefile --name "${{ matrix.binary_name }}" src/main.py
+        run: pyinstaller --onefile --name "${{ matrix.binary_name }}" src/main.py
 
       - name: Verify dist contents
-        shell: bash
         run: |
-          echo "== dist tree =="
-          ls -lah dist || true
+          echo "== dist tree ==" && ls -lah dist || true
           test -n "$(ls -A dist 2>/dev/null || true)" || { echo "dist/ is empty"; exit 1; }
 
       - name: Upload artifact
@@ -88,16 +78,23 @@ jobs:
     name: Release
     runs-on: ubuntu-latest
     needs: build
+
+    # این دو خط، دانلود آرتیفکت را مجاز می‌کند
+    permissions:
+      contents: write
+      actions: read
+
     env:
       MODELS_TOKEN: ${{ secrets.MODELS_TOKEN }}
+
     steps:
-      - name: Download artifacts
+      - name: Download artifacts (flatten)
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+          merge-multiple: true   # همه را در یک پوشه می‌ریزد
 
       - name: Show downloaded artifacts
-        shell: bash
         run: ls -R artifacts || true
 
       - name: Checkout (full history)
@@ -305,11 +302,14 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/**/*
           tag_name: ${{ steps.tag.outputs.TAG_NAME }}
           name: Release ${{ steps.tag.outputs.TAG_NAME }}
-          body_path: ${{ steps.body.outputs.BODY_PATH }}
+          # حتماً quote کن تا YAML با * بازی درنیارد
+          files: |
+            "artifacts/*"
           draft: false
           prerelease: false
+          overwrite: true               # در rerun هم آپدیت می‌کند
+          fail_on_unmatched_files: true # اگر چیزی پیدا نشود، fail شود
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
