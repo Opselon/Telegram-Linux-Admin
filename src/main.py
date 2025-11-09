@@ -37,8 +37,8 @@ MONITORING_TASKS = {}
 # --- Conversation States ---
 (
     AWAIT_COMMAND, ALIAS, HOSTNAME, USER, AUTH_METHOD, PASSWORD, KEY_PATH,
-    AWAIT_RESTORE_CONFIRMATION, AWAIT_RESTORE_FILE
-) = range(9)
+    AWAIT_RESTORE_CONFIRMATION, AWAIT_RESTORE_FILE, AWAIT_SERVICE_NAME
+) = range(10)
 
 # --- Authorization ---
 def _extract_user_id(update: Update) -> Optional[int]:
@@ -277,6 +277,7 @@ async def handle_server_connection(update: Update, context: ContextTypes.DEFAULT
             [InlineKeyboardButton("▶️ Run a Command", callback_data=f"run_command_{alias}")],
             [InlineKeyboardButton("🖥️ Open Interactive Shell", callback_data=f"start_shell_{alias}")],
             [InlineKeyboardButton("📊 Server Status", callback_data=f"server_status_menu_{alias}")],
+            [InlineKeyboardButton("🔧 Service Management", callback_data=f"service_management_menu_{alias}")],
             [InlineKeyboardButton("🔌 Disconnect", callback_data=f"disconnect_{alias}")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -612,6 +613,72 @@ async def stop_live_monitoring(update: Update, context: ContextTypes.DEFAULT_TYP
         parse_mode='Markdown'
     )
 
+@authorized
+async def service_management_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Displays the service management menu."""
+    query = update.callback_query
+    await query.answer()
+    alias = query.data.split('_', 3)[3]
+
+    keyboard = [
+        [InlineKeyboardButton("🔍 Check Service Status", callback_data=f"check_service_{alias}")],
+        [InlineKeyboardButton("▶️ Start a Service", callback_data=f"start_service_{alias}")],
+        [InlineKeyboardButton("⏹️ Stop a Service", callback_data=f"stop_service_{alias}")],
+        [InlineKeyboardButton("🔄 Restart a Service", callback_data=f"restart_service_{alias}")],
+        [InlineKeyboardButton("🔙 Back to Server Menu", callback_data=f"connect_{alias}")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(
+        f"**🔧 Service Management for {alias}**\n\nSelect an action:",
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
+
+# --- Service Management ---
+@authorized
+async def service_action_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Starts the service management conversation."""
+    query = update.callback_query
+    await query.answer()
+
+    action = query.data.split('_')[0]
+    alias = query.data.split('_', 2)[2]
+
+    context.user_data['service_action'] = action
+    context.user_data['alias'] = alias
+
+    await query.edit_message_text(f"Please enter the name of the service to `{action}`.", parse_mode='Markdown')
+    return AWAIT_SERVICE_NAME
+
+async def execute_service_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Executes the selected service action."""
+    service_name = update.message.text
+    action = context.user_data['service_action']
+    alias = context.user_data['alias']
+
+    command = f"systemctl {action} {service_name}"
+
+    result_message = await update.message.reply_text(f"Running `{command}` on `{alias}`...", parse_mode='Markdown')
+
+    output = ""
+    try:
+        async_generator = ssh_manager.run_command(alias, command)
+        async for line, stream in async_generator:
+            output += line
+
+        await result_message.edit_text(f"✅ **Command completed on `{alias}`**\n\n```{output.strip()}```", parse_mode='Markdown')
+    except Exception as e:
+        await result_message.edit_text(f"❌ **Error:**\n`{e}`", parse_mode='Markdown')
+
+    context.user_data.clear()
+    return ConversationHandler.END
+
+async def cancel_service_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Cancels the service management conversation."""
+    await update.message.reply_text("Service action cancelled.")
+    context.user_data.clear()
+    return ConversationHandler.END
+
 async def disconnect(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Disconnects the user from the server."""
     query = update.callback_query
@@ -882,6 +949,20 @@ def main() -> None:
     )
     application.add_handler(restore_handler)
 
+    service_management_handler = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(service_action_start, pattern='^check_service_'),
+            CallbackQueryHandler(service_action_start, pattern='^start_service_'),
+            CallbackQueryHandler(service_action_start, pattern='^stop_service_'),
+            CallbackQueryHandler(service_action_start, pattern='^restart_service_'),
+        ],
+        states={
+            AWAIT_SERVICE_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, execute_service_action)],
+        },
+        fallbacks=[CommandHandler('cancel', cancel_service_action)],
+    )
+    application.add_handler(service_management_handler)
+
     # --- UI & Menu Handlers ---
     application.add_handler(CallbackQueryHandler(main_menu, pattern='^main_menu$'))
     application.add_handler(CallbackQueryHandler(connect_server_menu, pattern='^connect_server_menu$'))
@@ -895,6 +976,7 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(live_monitoring, pattern='^live_monitoring_'))
     application.add_handler(CallbackQueryHandler(stop_live_monitoring, pattern='^stop_live_monitoring_'))
     application.add_handler(CallbackQueryHandler(backup, pattern='^backup$'))
+    application.add_handler(CallbackQueryHandler(service_management_menu, pattern='^service_management_menu_'))
     application.add_handler(CallbackQueryHandler(disconnect, pattern='^disconnect_'))
     application.add_handler(CallbackQueryHandler(remove_server_confirm, pattern='^remove_'))
 
