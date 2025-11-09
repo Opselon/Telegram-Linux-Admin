@@ -25,10 +25,22 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest,  arch: amd64, python_arch: x64,  binary_name: telegram-linux-admin-linux-amd64 }
-          - { os: windows-latest, arch: amd64, python_arch: x64,  binary_name: telegram-linux-admin-windows-amd64.exe }
-          - { os: macos-latest,  arch: amd64, python_arch: x64,  binary_name: telegram-linux-admin-macos-amd64 }
-          - { os: macos-latest,  arch: arm64, python_arch: arm64, binary_name: telegram-linux-admin-macos-arm64 }
+          - os: ubuntu-latest
+            arch: amd64
+            python_arch: x64
+            binary_name: telegram-linux-admin-linux-amd64
+          - os: windows-latest
+            arch: amd64
+            python_arch: x64
+            binary_name: telegram-linux-admin-windows-amd64.exe
+          - os: macos-latest
+            arch: amd64
+            python_arch: x64
+            binary_name: telegram-linux-admin-macos-amd64
+          - os: macos-latest
+            arch: arm64
+            python_arch: arm64
+            binary_name: telegram-linux-admin-macos-arm64
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -40,13 +52,13 @@ jobs:
           architecture: ${{ matrix.python_arch }}
 
       - name: Clean dist (Windows)
-        if: runner.os == 'Windows'
+        if: ${{ runner.os == 'Windows' }}
         shell: pwsh
         run: |
           if (Test-Path dist) { Remove-Item -Recurse -Force dist }
 
       - name: Clean dist (*nix)
-        if: runner.os != 'Windows'
+        if: ${{ runner.os != 'Windows' }}
         shell: bash
         run: rm -rf dist || true
 
@@ -117,14 +129,14 @@ jobs:
             echo "COMPARE=${{ github.server_url }}/${{ github.repository }}/releases/tag/$TAG" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Collect commits (plain list)
+      - name: Collect commits
         id: changes
         shell: bash
         run: |
           git log ${{ steps.range.outputs.RANGE }} --pretty='format:%h|%an|%s' > COMMITS.txt || true
           {
             echo "### Commits"
-            awk -F'|' '{printf "- (%s) %s — %s\n",$1,$3,$2}' COMMITS.txt
+            awk -F'|' '{printf "- (%s) %s - %s\n",$1,$3,$2}' COMMITS.txt
           } > COMMITS.md
           echo "COMMITS=COMMITS.md" >> "$GITHUB_OUTPUT"
 
@@ -132,16 +144,16 @@ jobs:
         id: prompt
         shell: bash
         run: |
-          cat > PROMPT.txt << 'EOF'
-You are a release-notes generator. Using the commit list and compare link, produce a concise Markdown release summary with the following sections (omit empty ones):
-- Features
-- Fixes
-- Performance
-- Refactoring
-- Docs
-- Breaking Changes
-Start with a one-paragraph highlights summary. End with the Compare URL. Output Markdown only.
-EOF
+          {
+            echo "You are a release-notes generator. Using the commit list and compare link, produce a concise Markdown release summary with the following sections (omit empty ones):"
+            echo "- Features"
+            echo "- Fixes"
+            echo "- Performance"
+            echo "- Refactoring"
+            echo "- Docs"
+            echo "- Breaking Changes"
+            echo "Start with a one-paragraph highlights summary. End with the Compare URL. Output Markdown only."
+          } > PROMPT.txt
           {
             echo "Tag: ${{ steps.tag.outputs.TAG_NAME }}"
             echo "Range: ${{ steps.range.outputs.RANGE }}"
@@ -150,9 +162,18 @@ EOF
             cat "${{ steps.changes.outputs.COMMITS }}"
           } > INPUT.txt
 
+      - name: Ensure jq
+        if: ${{ env.MODELS_TOKEN != '' }}
+        shell: bash
+        run: |
+          if ! command -v jq >/dev/null 2>&1; then
+            sudo apt-get update -y
+            sudo apt-get install -y jq
+          fi
+
       - name: LLM summary (GitHub Models)
         id: llm
-        if: env.MODELS_TOKEN != ''
+        if: ${{ env.MODELS_TOKEN != '' }}
         shell: bash
         run: |
           cat PROMPT.txt INPUT.txt > LLM_INPUT.txt
