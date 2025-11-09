@@ -10,22 +10,28 @@ jobs:
     name: Build for ${{ matrix.os }}/${{ matrix.arch }}
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
             arch: amd64
+            python_arch: x64
             binary_name: telegram-linux-admin-linux-amd64
           - os: ubuntu-latest
             arch: arm64
+            python_arch: arm64
             binary_name: telegram-linux-admin-linux-arm64
           - os: windows-latest
             arch: amd64
+            python_arch: x64
             binary_name: telegram-linux-admin-windows-amd64.exe
           - os: macos-latest
             arch: amd64
+            python_arch: x64
             binary_name: telegram-linux-admin-macos-amd64
           - os: macos-latest
             arch: arm64
+            python_arch: arm64
             binary_name: telegram-linux-admin-macos-arm64
 
     steps:
@@ -36,7 +42,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          architecture: ${{ matrix.arch }}  # نکته پایین رو ببین
+          architecture: ${{ matrix.python_arch }}
 
       - name: Install dependencies
         run: |
