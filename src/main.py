@@ -329,7 +329,7 @@ async def handle_server_connection(update: Update, context: ContextTypes.DEFAULT
         error_message = f"❌ **Connection Refused:**\nCould not connect to `{alias}`. Please ensure the server is running and the port is correct."
         logger.error(f"Connection refused for {alias}")
         await query.edit_message_text(error_message, parse_mode='Markdown')
-    except (asyncssh.SocketError, asyncssh.misc.gaierror):
+    except (OSError, asyncssh.misc.gaierror):
         error_message = f"❌ **Host Not Found:**\nCould not resolve hostname `{alias}`. Please check the server address."
         logger.error(f"Hostname could not be resolved for {alias}")
         await query.edit_message_text(error_message, parse_mode='Markdown')
@@ -1651,7 +1651,6 @@ def main() -> None:
             CommandHandler('add_server', add_server_start),
             CallbackQueryHandler(add_server_start, pattern='^add_server_start$')
         ],
-        per_message=False,
         states={
             ALIAS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_alias)],
             HOSTNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_hostname)],
@@ -1669,7 +1668,6 @@ def main() -> None:
             AWAIT_COMMAND: [MessageHandler(filters.TEXT & ~filters.COMMAND, execute_command)],
         },
         fallbacks=[],
-        per_message=False,
     )
     application.add_handler(add_server_handler)
     application.add_handler(run_command_handler)
@@ -1681,7 +1679,6 @@ def main() -> None:
             AWAIT_RESTORE_FILE: [MessageHandler(filters.ATTACHMENT, restore_file)],
         },
         fallbacks=[CommandHandler('cancel', cancel_restore)],
-        per_message=False,
     )
     application.add_handler(restore_handler)
 
@@ -1696,7 +1693,6 @@ def main() -> None:
             AWAIT_SERVICE_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, execute_service_action)],
         },
         fallbacks=[CommandHandler('cancel', cancel_service_action)],
-        per_message=False,
     )
     application.add_handler(service_management_handler)
 
@@ -1706,7 +1702,6 @@ def main() -> None:
             AWAIT_PACKAGE_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, execute_install_package)],
         },
         fallbacks=[CommandHandler('cancel', cancel_install_package)],
-        per_message=False,
     )
     application.add_handler(install_package_handler)
 
@@ -1720,7 +1715,6 @@ def main() -> None:
             AWAIT_CONTAINER_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, execute_docker_action)],
         },
         fallbacks=[CommandHandler('cancel', cancel_docker_action)],
-        per_message=False,
     )
     application.add_handler(docker_action_handler)
 
@@ -1735,7 +1729,6 @@ def main() -> None:
             AWAIT_UPLOAD_FILE: [MessageHandler(filters.ATTACHMENT, upload_file)],
         },
         fallbacks=[CommandHandler('cancel', cancel_file_manager_action)],
-        per_message=False,
     )
     application.add_handler(file_manager_handler)
 
@@ -1745,7 +1738,6 @@ def main() -> None:
             AWAIT_PID: [MessageHandler(filters.TEXT & ~filters.COMMAND, execute_kill_process)],
         },
         fallbacks=[CommandHandler('cancel', cancel_kill_process)],
-        per_message=False,
     )
     application.add_handler(kill_process_handler)
 
@@ -1759,7 +1751,6 @@ def main() -> None:
             AWAIT_FIREWALL_RULE: [MessageHandler(filters.TEXT & ~filters.COMMAND, execute_firewall_action)],
         },
         fallbacks=[CommandHandler('cancel', cancel_firewall_action)],
-        per_message=False,
     )
     application.add_handler(firewall_management_handler)
 
