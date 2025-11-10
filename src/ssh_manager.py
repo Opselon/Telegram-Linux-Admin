@@ -1,7 +1,9 @@
 import asyncio
 import asyncssh
+import inspect
 import logging
 import async_timeout
+from typing import Any
 from asyncssh import PermissionDenied
 from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception
 from .database import get_all_servers
@@ -114,11 +116,7 @@ class SSHManager:
             # Re-raise the exception to be handled by the global error handler
             raise
         finally:
-            # --- Definitive Crash Fix ---
-            # A simple `if conn:` check is the safest way to prevent an `await`
-            # on a `None` object, regardless of how the connection failed.
-            if conn:
-                await conn.close()
+            await self._close_conn(conn)
 
     async def kill_process(self, alias: str, pid: int) -> None:
         """Kills a process on a remote server."""
@@ -129,14 +127,7 @@ class SSHManager:
         except Exception:
             raise
         finally:
-            logger.debug(f"In finally block for kill_process. Connection object is: {conn}")
-            if conn and not conn.is_closed():
-                logger.debug("Connection is valid and not closed, closing now.")
-                await conn.close()
-            elif conn:
-                logger.debug("Connection is already closed or closing.")
-            else:
-                logger.debug("Connection is None, nothing to close.")
+            await self._close_conn(conn)
 
     async def start_shell_session(self, alias: str) -> None:
         """
@@ -198,14 +189,7 @@ class SSHManager:
         except Exception:
             raise
         finally:
-            logger.debug(f"In finally block for download_file. Connection object is: {conn}")
-            if conn and not conn.is_closed():
-                logger.debug("Connection is valid and not closed, closing now.")
-                await conn.close()
-            elif conn:
-                logger.debug("Connection is already closed or closing.")
-            else:
-                logger.debug("Connection is None, nothing to close.")
+            await self._close_conn(conn)
 
     async def upload_file(self, alias: str, local_path: str, remote_path: str) -> None:
         """Uploads a file to a remote server."""
@@ -217,15 +201,27 @@ class SSHManager:
         except Exception:
             raise
         finally:
-            logger.debug(f"In finally block for upload_file. Connection object is: {conn}")
-            if conn and not conn.is_closed():
-                logger.debug("Connection is valid and not closed, closing now.")
-                await conn.close()
-            elif conn:
-                logger.debug("Connection is already closed or closing.")
-            else:
-                logger.debug("Connection is None, nothing to close.")
+            await self._close_conn(conn)
 
     # --- Health Check (No longer needed) ---
     # The start_health_check and stop_health_check methods are removed as they
     # are not required with the new just-in-time connection model.
+
+    async def _close_conn(self, conn: Any) -> None:
+        """
+        Safely closes an SSH connection, handling various library patterns.
+        """
+        if conn is None:
+            return
+
+        close = getattr(conn, "close", None)
+        close_result = None
+        if callable(close):
+            close_result = close()
+
+        if inspect.isawaitable(close_result):
+            await close_result
+
+        wait_closed = getattr(conn, "wait_closed", None)
+        if callable(wait_closed):
+            await wait_closed()
