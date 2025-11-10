@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
+import contextlib
 import logging
 import os
 from dataclasses import dataclass
@@ -25,7 +25,7 @@ from .database import get_all_servers
 
 COMMAND_TIMEOUT_DEFAULT = float(os.getenv("TLA_COMMAND_TIMEOUT", "120"))  # sec
 CONNECT_TIMEOUT = float(os.getenv("TLA_CONNECT_TIMEOUT", "15"))           # sec
-SFTP_TIMEOUT = float(os.getenv("TLA_SFTP_TIMEOUT", "60"))                  # sec
+SFTP_TIMEOUT = float(os.getenv("TLA_SFTP_TIMEOUT", "60"))                 # sec
 KEEPALIVE_INTERVAL = int(os.getenv("TLA_KEEPALIVE_INTERVAL", "15"))       # sec
 KEEPALIVE_COUNT_MAX = int(os.getenv("TLA_KEEPALIVE_COUNT", "3"))
 
@@ -57,11 +57,6 @@ def _is_retryable_exception(e: Exception) -> bool:
     if isinstance(e, (asyncssh.TimeoutError, ConnectionRefusedError, OSError, asyncssh.Error)):
         return True
     return False
-
-
-def _shell_quote(s: str) -> str:
-    """Single-quote for POSIX shell safely."""
-    return "'" + s.replace("'", "'\"'\"'") + "'"
 
 
 def _wrap_with_pid_echo(command: str) -> str:
@@ -123,7 +118,7 @@ class SSHManager:
             return True
         # if in cool-off, block
         now = asyncio.get_event_loop().time()
-        if now - st.opened_at < BREKER_COOL := BREAKER_COOL_OFF:
+        if (now - st.opened_at) < BREAKER_COOL_OFF:
             return False
         # Reset after cool-off
         self.breaker[alias] = _BreakerState()
@@ -206,7 +201,7 @@ class SSHManager:
           • heartbeat 'meta' every HEARTBEAT_INTERVAL seconds if no output
           • safe teardown on cancel/timeout
 
-        NOTE: For backward compatibility with your bot, extra 'meta' events are safe to ignore.
+        NOTE: 'meta' events are optional to consume.
         """
         if alias not in self.alias_semaphores:
             self.alias_semaphores[alias] = asyncio.Semaphore(MAX_CONCURRENT_PER_ALIAS)
@@ -224,8 +219,8 @@ class SSHManager:
             try:
                 async for chunk in stream:
                     if queue.qsize() >= MAX_QUEUE_SIZE:
-                        # Drop to avoid OOM; account and sample later
-                        dropped_bytes += len(chunk.encode() if isinstance(chunk, str) else chunk)
+                        # Drop to avoid OOM; account for lost bytes
+                        dropped_bytes += len(chunk)
                         continue
                     await queue.put((chunk, name))
             except Exception as e:
@@ -268,35 +263,35 @@ class SSHManager:
                                 if "\n" in pid_buffer:
                                     first_line, remainder = pid_buffer.split("\n", 1)
                                     if first_line.strip().isdigit():
-                                        await self._safe_yield((first_line.strip(), "pid"))
+                                        yield first_line.strip(), "pid"
                                         pid_emitted = True
                                         if remainder:
-                                            await self._safe_yield((remainder, "stdout"))
+                                            yield remainder, "stdout"
                                     else:
                                         # Not a PID; pass through and disable PID capture
-                                        await self._safe_yield((pid_buffer, "stdout"))
+                                        yield pid_buffer, "stdout"
                                         pid_emitted = True
                                 continue
 
                             # Normal streaming
-                            await self._safe_yield((item, stream))
+                            yield item, stream
 
                             # Queue overflow notice (once per loop if happened)
                             if dropped_bytes:
                                 sample = f"... [dropped ~{dropped_bytes} bytes due to backpressure] ..."
-                                await self._safe_yield((sample, "stderr"))
+                                yield sample, "stderr"
                                 dropped_bytes = 0
 
                         except asyncio.TimeoutError:
                             # Heartbeat
                             now = asyncio.get_event_loop().time()
                             if now - last_activity >= HEARTBEAT_INTERVAL:
-                                await self._safe_yield(("heartbeat", "meta"))
+                                yield "heartbeat", "meta"
 
                         # Cancellation check
                         if cancel_event and cancel_event.is_set():
                             await self._graceful_terminate(conn, process, alias)
-                            await self._safe_yield((f"Command cancelled on '{alias}'", "stderr"))
+                            yield f"Command cancelled on '{alias}'", "stderr"
                             break
 
                         # Exit when both readers finished and queue drained
@@ -305,7 +300,7 @@ class SSHManager:
 
             except asyncio.TimeoutError:
                 # Global command timeout
-                await self._safe_yield((f"Error: Command timed out after {timeout:.0f}s.", "stderr"))
+                yield f"Error: Command timed out after {timeout:.0f}s.", "stderr"
                 await self._force_close_connection(conn)
                 return
 
@@ -319,12 +314,12 @@ class SSHManager:
             # Final overflow note if any
             if dropped_bytes:
                 sample = f"... [dropped ~{dropped_bytes} bytes due to backpressure] ..."
-                await self._safe_yield((sample, "stderr"))
+                yield sample, "stderr"
 
         except PermissionDenied as e:
             self._breaker_record_failure(alias)
             raise e
-        except Exception as e:
+        except Exception:
             self._breaker_record_failure(alias)
             # Bubble up to the bot's global error handler
             raise
@@ -333,13 +328,11 @@ class SSHManager:
             sem.release()
 
     async def _graceful_terminate(self, conn: Optional[asyncssh.SSHClientConnection], process: Any, alias: str) -> None:
-        """Try TERM first, then force close the channel/connection."""
+        """Try soft-terminate, then force close the connection."""
         try:
-            # Best-effort soft terminate: close stdin and channel
             if hasattr(process, "stdin") and process.stdin:
                 with contextlib.suppress(Exception):
                     process.stdin.write_eof()
-            # Force channel close by closing connection (most reliable cross-platform)
             await self._force_close_connection(conn)
         except Exception as e:
             logger.warning("Error during graceful terminate on %s: %s", alias, e, exc_info=True)
@@ -353,10 +346,6 @@ class SSHManager:
                     await conn.wait_closed()
         except Exception as e:
             logger.warning("Force close error: %s", e, exc_info=True)
-
-    async def _safe_yield(self, item: tuple[str, str]) -> None:
-        """Helper to make future instrumentation easier."""
-        yield item  # type: ignore[misc]
 
     # ── Convenience: collect command (non-stream) ──────────────────────────────
 
@@ -398,12 +387,13 @@ class SSHManager:
 
             async with async_timeout.timeout(COMMAND_TIMEOUT_DEFAULT):
                 await conn.run(f"kill -TERM {pid}", check=False)
-                # Wait a bit; if still alive, KILL
                 await asyncio.sleep(grace)
-                await conn.run(f"kill -0 {pid}", check=False)  # check exists
-                await conn.run(f"kill -KILL {pid}", check=False)
+                # If still alive, kill -0 returns 0; but check=False never raises
+                res = await conn.run(f"kill -0 {pid}", check=False)
+                if res.exit_status == 0:
+                    await conn.run(f"kill -KILL {pid}", check=False)
         except ProcessError:
-            # kill -0 failed → already gone; treat as success
+            # If kill produced an error because process died in between, ignore
             return
         finally:
             await self._close_conn(conn)
@@ -454,7 +444,8 @@ class SSHManager:
         """Close all persistent shells."""
         logger.info("Closing all persistent SSH shell connections...")
         for alias in list(self.active_shells.keys()):
-            await self.disconnect(alias)
+            with contextlib.suppress(Exception):
+                await self.disconnect(alias)
 
     # ── SFTP (with timeouts) ───────────────────────────────────────────────────
 
