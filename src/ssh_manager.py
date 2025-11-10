@@ -177,16 +177,22 @@ class SSHManager:
 
     async def disconnect(self, alias: str):
         """
-        Closes a persistent shell connection.
+        Safely closes a persistent shell connection.
         """
-        if alias in self.active_shells:
-            logger.info(f"Closing interactive shell for {alias}.")
-            conn = self.active_shells[alias]
-            with contextlib.suppress(Exception):
-                conn.close()
-                if hasattr(conn, "wait_closed"):
-                    await conn.wait_closed()
-            del self.active_shells[alias]
+        conn = self.active_shells.get(alias)
+        if not conn:
+            return  # No active connection to close
+
+        logger.info(f"Closing interactive shell for {alias}...")
+        try:
+            # AsyncSSH close() is synchronous, but wait_closed() is awaitable.
+            conn.close()
+            if hasattr(conn, "wait_closed"):
+                await conn.wait_closed()
+        except Exception as e:
+            logger.warning(f"Error while closing SSH session for {alias}: {e}", exc_info=True)
+        finally:
+            self.active_shells.pop(alias, None)
 
     async def close_all_connections(self):
         """Closes all active shell connections."""
