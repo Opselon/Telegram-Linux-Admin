@@ -29,19 +29,34 @@ def test_apply_update_success(mock_sleep, mock_run, mock_download, mock_copytree
     assert mock_run.call_count == 3
 
 @patch('src.updater.shutil.rmtree')
+@patch('src.updater.shutil.copy')
 @patch('src.updater.shutil.copytree')
 @patch('src.updater.download_and_extract_zip', side_effect=Exception("Download failed"))
 @patch('src.updater.rollback')
 @patch('src.updater.time.sleep', return_value=None)
-def test_apply_update_failure_and_rollback(mock_sleep, mock_rollback, mock_download, mock_copytree, mock_rmtree):
+def test_apply_update_failure_and_rollback(mock_sleep, mock_rollback, mock_download, mock_copytree, mock_copy, mock_rmtree):
     """Test a failed update and the subsequent rollback."""
-    with patch('src.updater.subprocess.run') as mock_run:
-        result = apply_update()
+    # Create dummy data files for the backup step to succeed before the download fails
+    from pathlib import Path
+    config_file = Path("config.json")
+    db_file = Path("database.db")
+    config_file.touch()
+    db_file.touch()
 
-    mock_run.assert_called_once_with(["systemctl", "stop", "telegram_bot.service"], check=True, timeout=COMMAND_TIMEOUT)
-    assert "Update Failed: Download failed" in result
-    assert "Attempting to roll back..." in result
-    mock_rollback.assert_called_once()
+    try:
+        with patch('src.updater.subprocess.run') as mock_run:
+            result = apply_update()
+
+        mock_run.assert_called_once_with(["systemctl", "stop", "telegram_bot.service"], check=True, timeout=COMMAND_TIMEOUT)
+        assert "Update Failed: Download failed" in result
+        assert "Attempting to roll back..." in result
+        mock_rollback.assert_called_once()
+    finally:
+        # Clean up the dummy files to not affect other tests
+        if config_file.exists():
+            config_file.unlink()
+        if db_file.exists():
+            db_file.unlink()
 
 @patch('src.updater.shutil.copytree')
 @patch('src.updater.subprocess.run')

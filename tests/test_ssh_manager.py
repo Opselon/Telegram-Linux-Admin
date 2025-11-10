@@ -98,14 +98,29 @@ async def test_run_command_always_closes_connection(mocker):
     mocker.patch.object(manager, '_create_connection', return_value=mock_conn)
     mocker.patch.object(manager, '_close_conn', new_callable=AsyncMock)
 
-    # Mock the command streaming part
-    async def fake_streamer(*args, **kwargs):
-        yield ("output", "stdout")
-
-    # Mock the asyncssh process and its streams
+    # Mock the asyncssh process and its streams to behave like real streams
     process_mock = AsyncMock()
-    process_mock.stdout = fake_streamer()
-    process_mock.stderr = fake_streamer()
+
+    # Mock stdout to be an async iterator and have a readline method
+    stdout_mock = AsyncMock()
+    stdout_mock.readline = AsyncMock(return_value="12345")  # Mock PID
+
+    async def fake_stdout_stream():
+        yield "output line 1"
+
+    # Make the mock iterable for the `async for` loop
+    stdout_mock.__aiter__ = MagicMock(return_value=fake_stdout_stream())
+
+    # Mock stderr to be an async iterator
+    stderr_mock = AsyncMock()
+
+    async def fake_stderr_stream():
+        yield "error line 1"
+
+    stderr_mock.__aiter__ = MagicMock(return_value=fake_stderr_stream())
+
+    process_mock.stdout = stdout_mock
+    process_mock.stderr = stderr_mock
 
     conn_mock = AsyncMock()
     conn_mock.create_process.return_value = process_mock
@@ -123,14 +138,15 @@ async def test_run_command_always_closes_connection(mocker):
     # 2. Test exception case
     manager._close_conn.reset_mock()
 
-    # Configure streamer to raise an error
-    async def error_streamer(*args, **kwargs):
-        yield ("output", "stdout")
+    # Configure the mocked stdout stream to raise an error during iteration
+    async def error_stream():
+        yield "output line 1"  # The stream must yield something before failing
         raise ValueError("Command failed")
 
-    process_mock.stdout = error_streamer()
+    # Replace the iterator of the existing mock, preserving the `readline` method
+    stdout_mock.__aiter__ = MagicMock(return_value=error_stream())
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Command failed"):
         async for _, __ in manager.run_command("alias", "cmd"):
             pass
 

@@ -21,6 +21,7 @@ dependencies = [
     "asyncssh",
     "pytest",
     "pytest-asyncio",
+    "pytest-mock",
     "tenacity",
     "async-timeout",
     "requests",
