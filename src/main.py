@@ -109,38 +109,120 @@ def _resolve_message(update: Update):
     return None
 
 # --- Add/Remove Server ---
-@admin_authorized
-async def add_server_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Starts the conversation to add a new server."""
+async def render_alias_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Renders the alias prompt."""
     prompt = (
         "🖥️ **Add a New Server**\n\n"
         "Let's add a new server. First, what is the short alias for this server? (e.g., `webserver`)"
     )
+    keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data='cancel_conversation')]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
 
     if update.callback_query:
         await update.callback_query.answer()
-        await update.callback_query.edit_message_text(prompt, parse_mode='Markdown')
+        message = await update.callback_query.edit_message_text(prompt, reply_markup=reply_markup, parse_mode='Markdown')
     else:
-        await update.effective_message.reply_text(prompt, parse_mode='Markdown')
+        message = await update.effective_message.reply_text(prompt, reply_markup=reply_markup, parse_mode='Markdown')
 
+    context.user_data['conversation_message_id'] = message.message_id
+
+async def render_hostname_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Renders the hostname prompt."""
+    prompt = "Great. Now, what is the hostname or IP address?"
+    keyboard = [[InlineKeyboardButton("⬅️ Back", callback_data='back'), InlineKeyboardButton("❌ Cancel", callback_data='cancel_conversation')]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await context.bot.edit_message_text(
+        chat_id=update.effective_chat.id,
+        message_id=context.user_data['conversation_message_id'],
+        text=prompt,
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
+
+async def render_user_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Renders the user prompt."""
+    prompt = "And the SSH username?"
+    keyboard = [[InlineKeyboardButton("⬅️ Back", callback_data='back'), InlineKeyboardButton("❌ Cancel", callback_data='cancel_conversation')]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await context.bot.edit_message_text(
+        chat_id=update.effective_chat.id,
+        message_id=context.user_data['conversation_message_id'],
+        text=prompt,
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
+
+async def render_auth_method_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Renders the auth method prompt."""
+    prompt = "How would you like to authenticate?"
+    keyboard = [
+        [InlineKeyboardButton("🔑 Key", callback_data='key'), InlineKeyboardButton("🔒 Password", callback_data='password')],
+        [InlineKeyboardButton("⬅️ Back", callback_data='back'), InlineKeyboardButton("❌ Cancel", callback_data='cancel_conversation')]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await context.bot.edit_message_text(
+        chat_id=update.effective_chat.id,
+        message_id=context.user_data['conversation_message_id'],
+        text=prompt,
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
+
+async def render_password_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Renders the password prompt."""
+    prompt = "Please enter the SSH password."
+    keyboard = [[InlineKeyboardButton("⬅️ Back", callback_data='back'), InlineKeyboardButton("❌ Cancel", callback_data='cancel_conversation')]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await context.bot.edit_message_text(
+        chat_id=update.effective_chat.id,
+        message_id=context.user_data['conversation_message_id'],
+        text=prompt,
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
+
+async def render_key_path_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Renders the key path prompt."""
+    prompt = "Please enter the full path to your SSH private key on the server running this bot."
+    keyboard = [[InlineKeyboardButton("⬅️ Back", callback_data='back'), InlineKeyboardButton("❌ Cancel", callback_data='cancel_conversation')]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await context.bot.edit_message_text(
+        chat_id=update.effective_chat.id,
+        message_id=context.user_data['conversation_message_id'],
+        text=prompt,
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
+
+@admin_authorized
+async def add_server_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Starts the conversation to add a new server."""
+    context.user_data['state_history'] = [ALIAS]
+    await render_alias_prompt(update, context)
     return ALIAS
 
 
 async def get_alias(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data['alias'] = update.message.text
-    await update.message.reply_text("Great. Now, what is the hostname or IP address?")
+    context.user_data['state_history'].append(HOSTNAME)
+    await render_hostname_prompt(update, context)
     return HOSTNAME
 
 async def get_hostname(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data['hostname'] = update.message.text
-    await update.message.reply_text("And the SSH username?")
+    context.user_data['state_history'].append(USER)
+    await render_user_prompt(update, context)
     return USER
 
 async def get_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data['user'] = update.message.text
-    keyboard = [[InlineKeyboardButton("🔑 Key", callback_data='key'), InlineKeyboardButton("🔒 Password", callback_data='password')]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("How would you like to authenticate?", reply_markup=reply_markup)
+    context.user_data['state_history'].append(AUTH_METHOD)
+    await render_auth_method_prompt(update, context)
     return AUTH_METHOD
 
 async def get_auth_method(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -148,11 +230,14 @@ async def get_auth_method(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await query.answer()
 
     if query.data == 'password':
-        await query.message.reply_text("Please enter the SSH password.")
-        return PASSWORD
+        await render_password_prompt(update, context)
+        next_state = PASSWORD
     else:
-        await query.message.reply_text("Please enter the full path to your SSH private key on the server running this bot.")
-        return KEY_PATH
+        await render_key_path_prompt(update, context)
+        next_state = KEY_PATH
+
+    context.user_data['state_history'].append(next_state)
+    return next_state
 
 async def get_password(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data['password'] = update.message.text
@@ -181,11 +266,48 @@ async def save_server(update: Update, context: ContextTypes.DEFAULT_TYPE):
     finally:
         context.user_data.clear()
 
-async def cancel_add_server(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Cancels the add server conversation."""
-    await update.message.reply_text("Server addition cancelled.")
+async def back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Generic back handler for conversations."""
+    query = update.callback_query
+    await query.answer()
+
+    state_history = context.user_data.get('state_history', [])
+    if len(state_history) > 1:
+        state_history.pop()  # Pop the current state
+        previous_state = state_history[-1]
+
+        # Re-render the previous state's prompt
+        await CONVERSATION_STATE_RENDERERS[previous_state](update, context)
+
+        return previous_state
+    else:
+        # If there's no history, cancel the conversation.
+        return await cancel_conversation(update, context)
+
+CONVERSATION_STATE_RENDERERS = {
+    ALIAS: render_alias_prompt,
+    HOSTNAME: render_hostname_prompt,
+    USER: render_user_prompt,
+    AUTH_METHOD: render_auth_method_prompt,
+    PASSWORD: render_password_prompt,
+    KEY_PATH: render_key_path_prompt,
+}
+
+async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Generic cancel handler for all conversations."""
+    if update.callback_query:
+        await update.callback_query.answer()
+        message = update.callback_query.message
+    else:
+        message = update.message
+
+    await message.reply_text("Operation cancelled.")
     context.user_data.clear()
+    # After cancelling, show the main menu again.
+    await main_menu(update, context)
     return ConversationHandler.END
+
+
 
 @admin_authorized
 async def remove_server_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -223,6 +345,109 @@ async def remove_server_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 # --- Navigation ---
 @authorized
+async def go_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Navigates back to the previous menu in the navigation history."""
+    query = update.callback_query
+    await query.answer()
+
+    history = context.user_data.get('navigation_history', [])
+
+    # Pop the current view. We need at least 2 items to go back.
+    if len(history) > 1:
+        history.pop()  # Pop the current menu
+
+        # Get the previous menu
+        prev_text, prev_keyboard_data = history[-1]
+
+        # Reconstruct the InlineKeyboardMarkup from the stored data
+        prev_keyboard = [
+            [InlineKeyboardButton.from_dict(button_data) for button_data in row]
+            for row in prev_keyboard_data
+        ]
+        prev_markup = InlineKeyboardMarkup(prev_keyboard)
+
+        try:
+            await query.edit_message_text(
+                text=prev_text,
+                reply_markup=prev_markup,
+                parse_mode='Markdown'
+            )
+        except BadRequest as e:
+            if "Message is not modified" not in str(e):
+                logger.warning(f"Could not edit message when going back: {e}. Falling back to main menu.")
+                # If editing fails for some reason (e.g., message too old), show the main menu as a fallback.
+                context.user_data['navigation_history'] = []  # Clear history on error
+                await main_menu(update, context)
+    else:
+        # If there's no history to go back to, show the main menu.
+        context.user_data['navigation_history'] = []  # Clear history
+        await main_menu(update, context)
+
+
+def _add_back_button_to_keyboard(keyboard: list, context: ContextTypes.DEFAULT_TYPE) -> list:
+    """Adds a 'Back' button to the keyboard if there is navigation history."""
+    if context.user_data.get('navigation_history'):
+        # Ensure the last row is a list
+        if not keyboard or not isinstance(keyboard[-1], list):
+            keyboard.append([])
+        keyboard[-1].insert(0, InlineKeyboardButton("⬅️ Back", callback_data='go_back'))
+    return keyboard
+
+
+async def send_or_edit_menu_message(update: Update, context: ContextTypes.DEFAULT_TYPE, menu_text: str, keyboard: list, is_main_menu: bool = False):
+    """
+    Sends a new message or edits an existing one with a menu, handling navigation history.
+
+    Args:
+        update: The Telegram update.
+        context: The context object.
+        menu_text: The text to display.
+        keyboard: A list of lists representing the InlineKeyboardMarkup.
+        is_main_menu: Flag to indicate if this is the root menu, which clears history.
+    """
+    # For the main menu, we clear the history.
+    if is_main_menu:
+        context.user_data['navigation_history'] = []
+
+    # Add the back button if it's not the main menu
+    if not is_main_menu:
+        keyboard = _add_back_button_to_keyboard(keyboard, context)
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    # Convert the keyboard to a serializable format for history storage
+    serializable_keyboard = [
+        [button.to_dict() for button in row]
+        for row in keyboard
+    ]
+
+    # Store the current view in the user's history
+    history = context.user_data.setdefault('navigation_history', [])
+    history.append((menu_text, serializable_keyboard))
+
+    # Determine if we should edit the message or send a new one
+    query = update.callback_query
+    if query:
+        await query.answer()
+        try:
+            await query.edit_message_text(
+                text=menu_text,
+                reply_markup=reply_markup,
+                parse_mode='Markdown'
+            )
+        except BadRequest as e:
+            # If the message is the same, Telegram raises an error. We can ignore it.
+            if "Message is not modified" not in str(e):
+                logger.error(f"Error editing message: {e}")
+    else:
+        await update.effective_message.reply_text(
+            text=menu_text,
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+
+
+@authorized
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Sends the main menu."""
     user_id = update.effective_user.id
@@ -254,14 +479,9 @@ async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         ]
         keyboard.extend(admin_buttons)
 
-    reply_markup = InlineKeyboardMarkup(keyboard)
     menu_text = "🐧 **Welcome to your Linux Admin Bot!**\n\nWhat would you like to do?"
 
-    if update.callback_query:
-        await update.callback_query.answer()
-        await update.callback_query.edit_message_text(menu_text, reply_markup=reply_markup, parse_mode='Markdown')
-    else:
-        await update.message.reply_text(menu_text, reply_markup=reply_markup, parse_mode='Markdown')
+    await send_or_edit_menu_message(update, context, menu_text, keyboard, is_main_menu=True)
 
 
 # --- Server Connection ---
@@ -277,11 +497,8 @@ async def connect_server_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
     keyboard = []
     for server in servers:
         keyboard.append([InlineKeyboardButton(f"🖥️ {server['alias']}", callback_data=f"connect_{server['alias']}")])
-    keyboard.append([InlineKeyboardButton("🔙 Back to Main Menu", callback_data='main_menu')])
-
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.callback_query.answer()
-    await update.callback_query.edit_message_text('**Select a server to connect to:**', reply_markup=reply_markup, parse_mode='Markdown')
+    menu_text = '**Select a server to connect to:**'
+    await send_or_edit_menu_message(update, context, menu_text, keyboard)
 
 @authorized
 async def handle_server_connection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -316,12 +533,8 @@ async def handle_server_connection(update: Update, context: ContextTypes.DEFAULT
             [InlineKeyboardButton("⚙️ System Commands", callback_data=f"system_commands_menu_{alias}")],
             [InlineKeyboardButton("🔌 Disconnect", callback_data=f"disconnect_{alias}")]
         ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(
-            f"✅ **Connected to {alias}!**\n\nWhat would you like to do?",
-            reply_markup=reply_markup,
-            parse_mode='Markdown'
-        )
+        menu_text = f"✅ **Connected to {alias}!**\n\nWhat would you like to do?"
+        await send_or_edit_menu_message(update, context, menu_text, keyboard)
     # --- User-Friendly Error Handling ---
     # Catch common, understandable errors and provide clear feedback to the user.
     except asyncssh.PermissionDenied:
@@ -576,15 +789,10 @@ async def server_status_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
     keyboard = [
         [InlineKeyboardButton("ℹ️ System Info", callback_data=f"static_info_{alias}")],
         [InlineKeyboardButton("📈 Resource Usage", callback_data=f"resource_usage_{alias}")],
-        [InlineKeyboardButton("🔴 Live Monitoring", callback_data=f"live_monitoring_{alias}")],
-        [InlineKeyboardButton("🔙 Back to Server Menu", callback_data=f"connect_{alias}")]
+        [InlineKeyboardButton("🔴 Live Monitoring", callback_data=f"live_monitoring_{alias}")]
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(
-        f"**📊 Server Status for {alias}**\n\nSelect an option:",
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
-    )
+    menu_text = f"**📊 Server Status for {alias}**\n\nSelect an option:"
+    await send_or_edit_menu_message(update, context, menu_text, keyboard)
 
 @authorized
 async def get_static_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -723,15 +931,10 @@ async def package_management_menu(update: Update, context: ContextTypes.DEFAULT_
     keyboard = [
         [InlineKeyboardButton("🔄 Update Package Lists", callback_data=f"pkg_update_{alias}")],
         [InlineKeyboardButton("⬆️ Upgrade All Packages", callback_data=f"pkg_upgrade_{alias}")],
-        [InlineKeyboardButton("➕ Install a Package", callback_data=f"pkg_install_{alias}")],
-        [InlineKeyboardButton("🔙 Back to Server Menu", callback_data=f"connect_{alias}")]
+        [InlineKeyboardButton("➕ Install a Package", callback_data=f"pkg_install_{alias}")]
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(
-        f"**📦 Package Management for {alias}**\n\nSelect an action:",
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
-    )
+    menu_text = f"**📦 Package Management for {alias}**\n\nSelect an action:"
+    await send_or_edit_menu_message(update, context, menu_text, keyboard)
 
 @authorized
 async def package_manager_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -823,15 +1026,10 @@ async def docker_management_menu(update: Update, context: ContextTypes.DEFAULT_T
         [InlineKeyboardButton("📜 List All Containers", callback_data=f"docker_ps_a_{alias}")],
         [InlineKeyboardButton("📄 View Logs", callback_data=f"docker_logs_{alias}")],
         [InlineKeyboardButton("▶️ Start Container", callback_data=f"docker_start_{alias}")],
-        [InlineKeyboardButton("⏹️ Stop Container", callback_data=f"docker_stop_{alias}")],
-        [InlineKeyboardButton("🔙 Back to Server Menu", callback_data=f"connect_{alias}")]
+        [InlineKeyboardButton("⏹️ Stop Container", callback_data=f"docker_stop_{alias}")]
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(
-        f"**🐳 Docker Management for {alias}**\n\nSelect an action:",
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
-    )
+    menu_text = f"**🐳 Docker Management for {alias}**\n\nSelect an action:"
+    await send_or_edit_menu_message(update, context, menu_text, keyboard)
 
 
 @authorized
@@ -933,15 +1131,10 @@ async def file_manager_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     keyboard = [
         [InlineKeyboardButton("📜 List Files", callback_data=f"fm_ls_{alias}")],
         [InlineKeyboardButton("📥 Download File", callback_data=f"fm_download_{alias}")],
-        [InlineKeyboardButton("📤 Upload File", callback_data=f"fm_upload_{alias}")],
-        [InlineKeyboardButton("🔙 Back to Server Menu", callback_data=f"connect_{alias}")]
+        [InlineKeyboardButton("📤 Upload File", callback_data=f"fm_upload_{alias}")]
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(
-        f"**📁 File Manager for {alias}**\n\nSelect an action:",
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
-    )
+    menu_text = f"**📁 File Manager for {alias}**\n\nSelect an action:"
+    await send_or_edit_menu_message(update, context, menu_text, keyboard)
 
 
 @authorized
@@ -1079,15 +1272,10 @@ async def process_management_menu(update: Update, context: ContextTypes.DEFAULT_
 
     keyboard = [
         [InlineKeyboardButton("📜 List Processes", callback_data=f"ps_aux_{alias}")],
-        [InlineKeyboardButton("❌ Kill Process", callback_data=f"kill_process_{alias}")],
-        [InlineKeyboardButton("🔙 Back to Server Menu", callback_data=f"connect_{alias}")]
+        [InlineKeyboardButton("❌ Kill Process", callback_data=f"kill_process_{alias}")]
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(
-        f"**⚙️ Process Management for {alias}**\n\nSelect an action:",
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
-    )
+    menu_text = f"**⚙️ Process Management for {alias}**\n\nSelect an action:"
+    await send_or_edit_menu_message(update, context, menu_text, keyboard)
 
 
 @authorized
@@ -1174,15 +1362,10 @@ async def firewall_management_menu(update: Update, context: ContextTypes.DEFAULT
         [InlineKeyboardButton("📜 View Rules", callback_data=f"fw_status_{alias}")],
         [InlineKeyboardButton("➕ Allow Port", callback_data=f"fw_allow_{alias}")],
         [InlineKeyboardButton("➖ Deny Port", callback_data=f"fw_deny_{alias}")],
-        [InlineKeyboardButton("🗑️ Delete Rule", callback_data=f"fw_delete_{alias}")],
-        [InlineKeyboardButton("🔙 Back to Server Menu", callback_data=f"connect_{alias}")]
+        [InlineKeyboardButton("🗑️ Delete Rule", callback_data=f"fw_delete_{alias}")]
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(
-        f"**🔥 Firewall Management for {alias}**\n\nSelect an action:",
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
-    )
+    menu_text = f"**🔥 Firewall Management for {alias}**\n\nSelect an action:"
+    await send_or_edit_menu_message(update, context, menu_text, keyboard)
 
 @authorized
 async def firewall_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1267,15 +1450,10 @@ async def service_management_menu(update: Update, context: ContextTypes.DEFAULT_
         [InlineKeyboardButton("🔍 Check Service Status", callback_data=f"check_service_{alias}")],
         [InlineKeyboardButton("▶️ Start a Service", callback_data=f"start_service_{alias}")],
         [InlineKeyboardButton("⏹️ Stop a Service", callback_data=f"stop_service_{alias}")],
-        [InlineKeyboardButton("🔄 Restart a Service", callback_data=f"restart_service_{alias}")],
-        [InlineKeyboardButton("🔙 Back to Server Menu", callback_data=f"connect_{alias}")]
+        [InlineKeyboardButton("🔄 Restart a Service", callback_data=f"restart_service_{alias}")]
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(
-        f"**🔧 Service Management for {alias}**\n\nSelect an action:",
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
-    )
+    menu_text = f"**🔧 Service Management for {alias}**\n\nSelect an action:"
+    await send_or_edit_menu_message(update, context, menu_text, keyboard)
 
 # --- Service Management ---
 @authorized
@@ -1334,15 +1512,10 @@ async def system_commands_menu(update: Update, context: ContextTypes.DEFAULT_TYP
         [InlineKeyboardButton("🌐 Network Info", callback_data=f"network_info_{alias}")],
         [InlineKeyboardButton("🔌 Open Ports", callback_data=f"open_ports_{alias}")],
         [InlineKeyboardButton("🔄 Reboot", callback_data=f"reboot_{alias}")],
-        [InlineKeyboardButton(" Shutdown", callback_data=f"shutdown_{alias}")],
-        [InlineKeyboardButton("🔙 Back to Server Menu", callback_data=f"connect_{alias}")],
+        [InlineKeyboardButton(" Shutdown", callback_data=f"shutdown_{alias}")]
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(
-        f"**⚙️ System Commands for {alias}**\n\nSelect an action:",
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
-    )
+    menu_text = f"**⚙️ System Commands for {alias}**\n\nSelect an action:"
+    await send_or_edit_menu_message(update, context, menu_text, keyboard)
 
 @authorized
 async def confirm_system_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1700,13 +1873,13 @@ def main() -> None:
         ],
         states={
             ALIAS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_alias)],
-            HOSTNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_hostname)],
-            USER: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_user)],
-            AUTH_METHOD: [CallbackQueryHandler(get_auth_method)],
-            PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_password)],
-            KEY_PATH: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_key_path)],
+            HOSTNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_hostname), CallbackQueryHandler(back, pattern='^back$')],
+            USER: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_user), CallbackQueryHandler(back, pattern='^back$')],
+            AUTH_METHOD: [CallbackQueryHandler(get_auth_method), CallbackQueryHandler(back, pattern='^back$')],
+            PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_password), CallbackQueryHandler(back, pattern='^back$')],
+            KEY_PATH: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_key_path), CallbackQueryHandler(back, pattern='^back$')],
         },
-        fallbacks=[CommandHandler('cancel', cancel_add_server)],
+        fallbacks=[CallbackQueryHandler(cancel_conversation, pattern='^cancel_conversation$')],
     )
 
     run_command_handler = ConversationHandler(
@@ -1802,6 +1975,7 @@ def main() -> None:
     application.add_handler(firewall_management_handler)
 
     # --- UI & Menu Handlers ---
+    application.add_handler(CallbackQueryHandler(go_back, pattern='^go_back$'))
     application.add_handler(CallbackQueryHandler(main_menu, pattern='^main_menu$'))
     application.add_handler(CallbackQueryHandler(connect_server_menu, pattern='^connect_server_menu$'))
     application.add_handler(CallbackQueryHandler(remove_server_menu, pattern='^remove_server_menu$'))
