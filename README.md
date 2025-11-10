@@ -19,13 +19,48 @@ A powerful, asynchronous Python application that transforms your private Telegra
 
 ## Features
 
--   **Multi-Server Management:** Connect to and manage multiple servers from a single bot.
--   **Real-Time Terminal:** Execute commands and see the output streamed back to you in real-time.
--   **Secure:** Uses SSH key-based authentication and restricts bot access to a whitelist of user IDs.
--   **Self-Updating:** Can automatically update itself from a Git repository.
--   **Easy Installation:** A simple setup wizard guides you through the configuration process.
--   **Database Persistent:** Server and user configurations are stored in a local SQLite database.
--   **Backup & Restore:** Easily backup and restore your bot's configuration via Telegram.
+This bot provides a comprehensive suite of tools for remote server administration, all accessible from a secure Telegram chat.
+
+### Core Functionality
+
+-   **Multi-Server Management:** Securely connect to and manage multiple Linux servers. Switch between servers instantly with a simple inline keyboard.
+-   **Interactive Shell:** Open a persistent, real-time SSH shell for any server. Execute commands and see live output, just like a native terminal.
+-   **Secure by Design:**
+    -   Uses robust SSH key-based authentication.
+    -   Restricts all bot access to a pre-approved whitelist of Telegram user IDs.
+    -   Features an Admin Role for the primary user, gating access to sensitive operations.
+-   **Self-Updating Mechanism:** Keep the bot current with a built-in, one-click updater that fetches the latest version from GitHub, backs up your data, and seamlessly restarts the service.
+-   **Automated Installation:** A user-friendly `install.sh` script handles everything: virtual environment creation, dependency installation, and interactive setup.
+-   **Persistent Configuration:** Server details and user whitelists are stored in a local SQLite database, ensuring your data persists across restarts.
+-   **Backup & Restore:** Easily create and restore full backups of your bot's configuration (`config.json` and `database.db`) directly from the Telegram interface.
+
+### Remote Management Modules
+
+-   **System Commands:**
+    -   Safely **reboot** or **shutdown** your server (with confirmation).
+    -   Check disk usage with `df -h`.
+    -   View network interface information with `ip a`.
+-   **Service Management:**
+    -   Check the status of any `systemd` service.
+    -   **Start**, **stop**, or **restart** services directly from the bot.
+-   **Process Management:**
+    -   List all running processes using `ps aux`.
+    -   **Kill** any process by providing its PID.
+-   **Firewall Management (UFW):**
+    -   View all active `ufw` firewall rules.
+    -   **Allow** or **deny** traffic on specific ports.
+    -   **Delete** existing firewall rules.
+-   **Docker Management:**
+    -   List all running and stopped Docker containers.
+    -   View the logs of any container.
+    -   **Start** and **stop** containers.
+-   **Package Management (APT):**
+    -   Run `apt update` or `apt upgrade`.
+    -   Install new packages with `apt install`.
+-   **File Manager:**
+    -   List files and directories.
+    -   **Download** files directly from your server to your Telegram chat.
+    -   **Upload** files from your chat to a specified path on your server.
 
 ---
 
