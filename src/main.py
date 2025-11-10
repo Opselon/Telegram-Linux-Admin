@@ -372,57 +372,86 @@ async def run_command_start(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     )
     return AWAIT_COMMAND
 
+@authorized
 async def execute_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Executes the command on the remote server."""
+    """Executes a command on the connected remote server with live streaming and safe handling."""
     user_id = update.effective_user.id
     alias = user_connections.get(user_id)
-    command = update.message.text
+    command = update.message.text.strip()
 
     if not alias:
-        await update.message.reply_text("No active connection. Please connect to a server first.")
+        await update.message.reply_text("⚠️ No active connection. Please connect to a server first.")
         return ConversationHandler.END
 
-    result_message = await update.message.reply_text(f"Running `{command}` on `{alias}`...", parse_mode='Markdown')
+    # Initial message
+    result_message = await update.message.reply_text(
+        f"🛰️ Running `{command}` on `{alias}`...",
+        parse_mode='Markdown'
+    )
 
-    output = ""
-    last_output = ""
-    pid = None
+    output_buffer = []
+    last_sent_text = ""
+    edit_interval = 1.5  # seconds between UI refreshes
+    last_edit_time = asyncio.get_event_loop().time()
+
     try:
-        async_generator = ssh_manager.run_command(alias, command)
-        async for item, stream in async_generator:
+        async for item, stream in ssh_manager.run_command(alias, command):
+            # Skip PID events (AsyncSSH doesn’t expose it natively)
             if stream == 'pid':
-                pid = item.pid
-                keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_command_{alias}_{pid}")]]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                await result_message.edit_reply_markup(reply_markup)
-            elif stream == 'stdout' or stream == 'stderr':
-                output += item
-            # To avoid hitting Telegram's rate limits and API errors, edit the message only periodically and if it has changed
-            if len(output) % 100 == 0 and output != last_output:
-                try:
-                    await result_message.edit_text(f"```\n{output}\n```", parse_mode='Markdown', reply_markup=result_message.reply_markup)
-                    last_output = output
-                except BadRequest as e:
-                    if "Message is not modified" not in str(e):
-                        logger.warning(f"Error editing message: {e}")
+                continue
 
-        final_message = f"✅ **Command completed on `{alias}`**\n\n```\n{output}\n```"
-        if len(final_message) > 4096:
-            # If the message is too long, send it as a file
+            if stream in ('stdout', 'stderr'):
+                output_buffer.append(item)
+
+                # Periodically update Telegram message without flooding API
+                now = asyncio.get_event_loop().time()
+                if now - last_edit_time >= edit_interval:
+                    partial_output = ''.join(output_buffer)[-3800:]  # keep last chunk for preview
+                    if partial_output != last_sent_text:
+                        try:
+                            await result_message.edit_text(
+                                f"```\n{partial_output}\n```",
+                                parse_mode='Markdown'
+                            )
+                            last_sent_text = partial_output
+                        except BadRequest as e:
+                            if "Message is not modified" not in str(e):
+                                logger.warning(f"Telegram update error: {e}")
+                        last_edit_time = now
+
+        # Combine all output once command completes
+        final_output = ''.join(output_buffer).strip()
+        if not final_output:
+            final_output = "[No output returned]"
+
+        final_text = f"✅ **Command completed on `{alias}`**\n\n```\n{final_output}\n```"
+        if len(final_text) > 4096:
             with tempfile.NamedTemporaryFile(mode="w+", delete=False, suffix=".txt") as f:
-                f.write(output)
+                f.write(final_output)
                 f.flush()
             await result_message.delete()
-            await update.message.reply_document(document=open(f.name, "rb"), caption=f"Command output for `{command}`")
+            await update.message.reply_document(
+                document=open(f.name, "rb"),
+                caption=f"Output for `{command}`"
+            )
             os.remove(f.name)
         else:
-            await result_message.edit_text(final_message, parse_mode='Markdown')
+            await result_message.edit_text(final_text, parse_mode='Markdown')
 
+    except asyncio.TimeoutError:
+        await result_message.edit_text(
+            f"⏰ **Timeout:** Command `{command}` took too long and was terminated.",
+            parse_mode='Markdown'
+        )
     except Exception as e:
-        logger.error(f"Error executing command '{command}' on '{alias}': {e}", exc_info=True)
-        await result_message.edit_text(f"❌ **Error:**\n`{e}`", parse_mode='Markdown')
+        logger.error(f"Error executing '{command}' on '{alias}': {e}", exc_info=True)
+        await result_message.edit_text(
+            f"❌ **Error while executing command:**\n`{e}`",
+            parse_mode='Markdown'
+        )
 
     return ConversationHandler.END
+
 
 @authorized
 async def cancel_command_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
