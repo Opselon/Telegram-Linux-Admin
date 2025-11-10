@@ -114,14 +114,11 @@ class SSHManager:
             # Re-raise the exception to be handled by the global error handler
             raise
         finally:
-            logger.debug(f"In finally block for run_command. Connection object is: {conn}")
-            if conn and not conn.is_closed():
-                logger.debug("Connection is valid and not closed, closing now.")
+            # --- Definitive Crash Fix ---
+            # A simple `if conn:` check is the safest way to prevent an `await`
+            # on a `None` object, regardless of how the connection failed.
+            if conn:
                 await conn.close()
-            elif conn:
-                logger.debug("Connection is already closed or closing.")
-            else:
-                logger.debug("Connection is None, nothing to close.")
 
     async def kill_process(self, alias: str, pid: int) -> None:
         """Kills a process on a remote server."""
