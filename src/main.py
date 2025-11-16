@@ -208,33 +208,40 @@ async def add_server_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 async def get_alias(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = _extract_user_id(update)
     language = _get_user_language(user_id)
-
     context.user_data['alias'] = update.message.text
-    prompt = translate('prompt_hostname', language)
-    await update.message.reply_text(prompt)
+    await update.message.reply_text(
+        translate('prompt_hostname', language),
+    )
     return HOSTNAME
 
 async def get_hostname(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = _extract_user_id(update)
     language = _get_user_language(user_id)
-
     context.user_data['hostname'] = update.message.text
-    prompt = translate('prompt_username', language)
-    await update.message.reply_text(prompt)
+    await update.message.reply_text(
+        translate('prompt_username', language),
+    )
     return USER
 
 async def get_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = _extract_user_id(update)
     language = _get_user_language(user_id)
-
     context.user_data['user'] = update.message.text
     keyboard = [[
-        InlineKeyboardButton(translate('button_auth_key', language), callback_data='key'),
-        InlineKeyboardButton(translate('button_auth_password', language), callback_data='password')
+        InlineKeyboardButton(
+            translate('button_auth_key', language),
+            callback_data='key'
+        ),
+        InlineKeyboardButton(
+            translate('button_auth_password', language),
+            callback_data='password'
+        )
     ]]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    prompt = translate('prompt_auth_method', language)
-    await update.message.reply_text(prompt, reply_markup=reply_markup)
+    await update.message.reply_text(
+        translate('prompt_auth_method', language),
+        reply_markup=reply_markup,
+    )
     return AUTH_METHOD
 
 async def get_auth_method(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -244,12 +251,14 @@ async def get_auth_method(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await query.answer()
 
     if query.data == 'password':
-        prompt = translate('prompt_password', language)
-        await query.message.reply_text(prompt)
+        await query.message.reply_text(
+            translate('prompt_enter_password', language),
+        )
         return PASSWORD
     else:
-        prompt = translate('prompt_key_path', language)
-        await query.message.reply_text(prompt)
+        await query.message.reply_text(
+            translate('prompt_enter_key_path', language),
+        )
         return KEY_PATH
 
 async def get_password(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -264,6 +273,8 @@ async def get_key_path(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
 async def save_server(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Saves the server to the database."""
+    user_id = _extract_user_id(update)
+    language = _get_user_language(user_id)
     try:
         user_id = _extract_user_id(update)
         language = _get_user_language(user_id)
@@ -279,13 +290,20 @@ async def save_server(update: Update, context: ContextTypes.DEFAULT_TYPE):
         confirmation = translate('server_added', language, alias=context.user_data['alias'])
         await update.message.reply_text(confirmation, parse_mode='Markdown')
     except Exception as e:
-        await update.message.reply_text(f"❌ **Error:** {e}")
+        await update.message.reply_text(
+            translate('server_add_error', language, error=str(e)),
+            parse_mode='Markdown'
+        )
     finally:
         context.user_data.clear()
 
 async def cancel_add_server(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Cancels the add server conversation."""
-    await update.message.reply_text("Server addition cancelled.")
+    user_id = _extract_user_id(update)
+    language = _get_user_language(user_id)
+    await update.message.reply_text(
+        translate('server_add_cancelled', language),
+    )
     context.user_data.clear()
     return ConversationHandler.END
 
