@@ -19,12 +19,25 @@ from telegram.error import BadRequest, InvalidToken
 import asyncssh
 from .ssh_manager import SSHManager
 from .database import (
-    get_all_servers, initialize_database,
-    close_db_connection, add_server, remove_server
+    get_all_servers,
+    initialize_database,
+    close_db_connection,
+    add_server,
+    remove_server,
+    get_user_language_preference,
+    set_user_language_preference,
+    get_user_server_limit,
+    get_user_server_count,
 )
 from .config import config
 from functools import wraps
-from typing import Optional
+from typing import Optional, Dict
+from .localization import (
+    translate,
+    SUPPORTED_LANGUAGES,
+    DEFAULT_LANGUAGE,
+    get_language_label,
+)
 
 # --- Globals & Logging ---
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
@@ -32,11 +45,13 @@ logger = logging.getLogger(__name__)
 
 ssh_manager = None
 user_connections = {}
+user_language_cache: Dict[int, str] = {}
 RESTORING = False
 SHELL_MODE_USERS = set()
 DEBUG_MODE = False
 LOCK_FILE = "bot.lock"
 MONITORING_TASKS = {}
+SUPPORTED_LANGUAGE_SET = set(SUPPORTED_LANGUAGES)
 
 # --- Conversation States ---
 (
@@ -108,14 +123,78 @@ def _resolve_message(update: Update):
         return update.callback_query.message
     return None
 
+
+def _get_user_language(user_id: Optional[int]) -> str:
+    """Returns the cached language preference for a user."""
+    if user_id is None:
+        return DEFAULT_LANGUAGE
+
+    language = user_language_cache.get(user_id)
+    if language:
+        return language
+
+    preference = get_user_language_preference(user_id)
+    if preference not in SUPPORTED_LANGUAGE_SET:
+        preference = DEFAULT_LANGUAGE
+
+    user_language_cache[user_id] = preference
+    return preference
+
+
+def _translate_for_user(user_id: Optional[int], key: str, **kwargs) -> str:
+    """Translates a key using the user's language preference."""
+    language = _get_user_language(user_id)
+    return translate(key, language, **kwargs)
+
+
+def _build_language_keyboard(active_language: str) -> InlineKeyboardMarkup:
+    """Builds the inline keyboard for language selection."""
+    buttons = []
+    for code in SUPPORTED_LANGUAGES:
+        prefix = "✅ " if code == active_language else ""
+        buttons.append([
+            InlineKeyboardButton(
+                f"{prefix}{get_language_label(code)}",
+                callback_data=f"set_language_{code}"
+            )
+        ])
+
+    buttons.append([
+        InlineKeyboardButton(
+            translate('button_back_main_menu', active_language),
+            callback_data='main_menu'
+        )
+    ])
+    return InlineKeyboardMarkup(buttons)
+
+
+async def _send_connection_error(query: Update.callback_query, user_id: Optional[int], key: str, **kwargs) -> None:
+    """Sends a translated connection error message to the user."""
+    error_message = _translate_for_user(user_id, key, **kwargs)
+    await query.edit_message_text(error_message, parse_mode='Markdown')
+
 # --- Add/Remove Server ---
-@admin_authorized
+@authorized
 async def add_server_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Starts the conversation to add a new server."""
-    prompt = (
-        "🖥️ **Add a New Server**\n\n"
-        "Let's add a new server. First, what is the short alias for this server? (e.g., `webserver`)"
-    )
+    user_id = _extract_user_id(update)
+    language = _get_user_language(user_id)
+    limit = get_user_server_limit(user_id)
+    current = get_user_server_count(user_id)
+
+    if current >= limit:
+        message = translate(
+            'server_limit_reached',
+            language,
+            limit=limit,
+        )
+        if update.callback_query:
+            await update.callback_query.answer(message, show_alert=True)
+        elif update.effective_message:
+            await update.effective_message.reply_text(message)
+        return ConversationHandler.END
+
+    prompt = translate('add_server_prompt', language)
 
     if update.callback_query:
         await update.callback_query.answer()
@@ -167,14 +246,15 @@ async def get_key_path(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 async def save_server(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Saves the server to the database."""
     try:
+        owner_id = update.effective_user.id
         add_server(
+            owner_id,
             alias=context.user_data['alias'],
             hostname=context.user_data['hostname'],
             user=context.user_data['user'],
             password=context.user_data.get('password'),
             key_path=context.user_data.get('key_path')
         )
-        ssh_manager.refresh_server_configs()
         await update.message.reply_text(f"✅ **Server '{context.user_data['alias']}' added successfully!**", parse_mode='Markdown')
     except Exception as e:
         await update.message.reply_text(f"❌ **Error:** {e}")
@@ -187,12 +267,14 @@ async def cancel_add_server(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     context.user_data.clear()
     return ConversationHandler.END
 
-@admin_authorized
+@authorized
 async def remove_server_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Displays a menu of servers to remove."""
-    servers = get_all_servers()
+    user_id = _extract_user_id(update)
+    language = _get_user_language(user_id)
+    servers = get_all_servers(user_id)
     if not servers:
-        message = "🤷 **No servers to remove.**"
+        message = translate('no_servers_to_remove', language)
         if update.callback_query:
             await update.callback_query.answer()
             await update.callback_query.edit_message_text(message, parse_mode='Markdown')
@@ -200,11 +282,17 @@ async def remove_server_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await update.effective_message.reply_text(message, parse_mode='Markdown')
         return
 
+    remove_label = translate('button_remove_server', language)
     keyboard = [
-        [InlineKeyboardButton(f"Remove {server['alias']}", callback_data=f"remove_{server['alias']}")]
+        [InlineKeyboardButton(f"{remove_label} {server['alias']}", callback_data=f"remove_{server['alias']}")]
         for server in servers
     ]
-    keyboard.append([InlineKeyboardButton("Cancel", callback_data="main_menu")])
+    keyboard.append([
+        InlineKeyboardButton(
+            translate('button_back_main_menu', language),
+            callback_data="main_menu"
+        )
+    ])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
     if update.callback_query:
@@ -233,19 +321,33 @@ async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Displays the main menu with options, dynamically showing admin buttons."""
     user_id = _extract_user_id(update)
     logger.info(f"Displaying main menu for user_id: {user_id}.")
+    language = _get_user_language(user_id)
 
     # Base keyboard for all users
     keyboard = [
-        [InlineKeyboardButton("🔌 Connect to a Server", callback_data='connect_server_menu')],
+        [InlineKeyboardButton(
+            translate('button_connect_server', language),
+            callback_data='connect_server_menu'
+        )],
+        [
+            InlineKeyboardButton(
+                translate('button_add_server', language),
+                callback_data='add_server_start'
+            ),
+            InlineKeyboardButton(
+                translate('button_remove_server', language),
+                callback_data='remove_server_menu'
+            )
+        ],
+        [InlineKeyboardButton(
+            translate('button_language_settings', language),
+            callback_data='language_menu'
+        )],
     ]
 
     # Admin-only buttons
     if config.whitelisted_users and user_id == config.whitelisted_users[0]:
         admin_buttons = [
-            [
-                InlineKeyboardButton("➕ Add Server", callback_data='add_server_start'),
-                InlineKeyboardButton("➖ Remove Server", callback_data='remove_server_menu')
-            ],
             [
                 InlineKeyboardButton("💾 Backup", callback_data='backup'),
                 InlineKeyboardButton("🔄 Restore", callback_data='restore')
@@ -255,7 +357,7 @@ async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         keyboard.extend(admin_buttons)
 
     reply_markup = InlineKeyboardMarkup(keyboard)
-    menu_text = "🐧 **Welcome to your Linux Admin Bot!**\n\nWhat would you like to do?"
+    menu_text = _translate_for_user(user_id, 'main_menu_welcome')
 
     if update.callback_query:
         await update.callback_query.answer()
@@ -264,24 +366,81 @@ async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(menu_text, reply_markup=reply_markup, parse_mode='Markdown')
 
 
+@authorized
+async def language_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Displays or handles the language selection menu."""
+    user_id = _extract_user_id(update)
+    language = _get_user_language(user_id)
+    title = translate('language_menu_title', language)
+    description = translate(
+        'language_menu_description',
+        language,
+        language_name=get_language_label(language)
+    )
+    text = f"{title}\n\n{description}"
+    reply_markup = _build_language_keyboard(language)
+
+    message = _resolve_message(update)
+    if update.callback_query:
+        await update.callback_query.answer()
+        await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+    elif message:
+        await message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+
+
+@authorized
+async def set_language(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Saves the selected language preference for the current user."""
+    query = update.callback_query
+    user_id = update.effective_user.id
+    lang_code = query.data.split('_', 2)[2]
+
+    if lang_code not in SUPPORTED_LANGUAGE_SET:
+        await query.answer(_translate_for_user(user_id, 'language_unsupported'), show_alert=True)
+        return
+
+    set_user_language_preference(user_id, lang_code)
+    user_language_cache[user_id] = lang_code
+    await query.answer(translate('language_saved_toast', lang_code), show_alert=False)
+
+    title = translate('language_updated', lang_code, language_name=get_language_label(lang_code))
+    description = translate(
+        'language_menu_description',
+        lang_code,
+        language_name=get_language_label(lang_code)
+    )
+    text = f"{title}\n\n{description}"
+    reply_markup = _build_language_keyboard(lang_code)
+    await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+
+
 # --- Server Connection ---
 @authorized
 async def connect_server_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Displays a menu of servers to connect to."""
     logger.info("Displaying connect server menu.")
-    servers = get_all_servers()
+    user_id = _extract_user_id(update)
+    language = _get_user_language(user_id)
+    servers = get_all_servers(user_id)
     if not servers:
-        await update.callback_query.answer("No servers configured. Add one first!", show_alert=True)
+        await update.callback_query.answer(translate('no_servers_configured', language), show_alert=True)
         return
 
     keyboard = []
     for server in servers:
         keyboard.append([InlineKeyboardButton(f"🖥️ {server['alias']}", callback_data=f"connect_{server['alias']}")])
-    keyboard.append([InlineKeyboardButton("🔙 Back to Main Menu", callback_data='main_menu')])
+    keyboard.append([InlineKeyboardButton(
+        translate('button_back_main_menu', language),
+        callback_data='main_menu'
+    )])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.callback_query.answer()
-    await update.callback_query.edit_message_text('**Select a server to connect to:**', reply_markup=reply_markup, parse_mode='Markdown')
+    await update.callback_query.edit_message_text(
+        translate('connect_menu_prompt', language),
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
 
 @authorized
 async def handle_server_connection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -290,12 +449,16 @@ async def handle_server_connection(update: Update, context: ContextTypes.DEFAULT
     await query.answer()
     alias = query.data.split('_', 1)[1]
     user_id = update.effective_user.id
+    language = _get_user_language(user_id)
 
     try:
-        await query.edit_message_text(f"🔌 **Connecting to {alias}...**", parse_mode='Markdown')
+        await query.edit_message_text(
+            translate('connecting_to_server', language, alias=alias),
+            parse_mode='Markdown'
+        )
 
         # Establish the SSH connection by running a simple command
-        async for _, __ in ssh_manager.run_command(alias, "echo 'Connection successful'"):
+        async for _, __ in ssh_manager.run_command(user_id, alias, "echo 'Connection successful'"):
             pass
 
         # Store the active connection alias for the user
@@ -318,24 +481,28 @@ async def handle_server_connection(update: Update, context: ContextTypes.DEFAULT
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(
-            f"✅ **Connected to {alias}!**\n\nWhat would you like to do?",
+            translate('connected_to_server', language, alias=alias),
             reply_markup=reply_markup,
             parse_mode='Markdown'
         )
     # --- User-Friendly Error Handling ---
     # Catch common, understandable errors and provide clear feedback to the user.
     except asyncssh.PermissionDenied:
-        error_message = "❌ **Authentication Failed:**\nPermission denied. This is likely due to an incorrect username, password, or SSH key."
         logger.error(f"Authentication failed for {alias}")
-        await query.edit_message_text(error_message, parse_mode='Markdown')
+        await _send_connection_error(query, user_id, 'error_auth_failed', alias=alias)
     except ConnectionRefusedError:
-        error_message = f"❌ **Connection Refused:**\nCould not connect to `{alias}`. The server may be down or the port may be incorrect."
         logger.error(f"Connection refused for {alias}")
-        await query.edit_message_text(error_message, parse_mode='Markdown')
-    except (socket.gaierror, OSError) as e:
-        error_message = f"❌ **Host Not Found:**\nCould not resolve hostname `{alias}`. Please check the server address.\n\n`{e}`"
+        await _send_connection_error(query, user_id, 'error_connection_refused', alias=alias)
+    except socket.gaierror as e:
         logger.error(f"Hostname could not be resolved for {alias}")
-        await query.edit_message_text(error_message, parse_mode='Markdown')
+        await _send_connection_error(query, user_id, 'error_host_not_found', alias=alias, error=str(e))
+    except asyncssh.Error as e:
+        logger.error(f"AsyncSSH error while connecting to {alias}: {e}")
+        message_key = 'error_code_202012' if '202012' in str(e) else 'error_generic_connection'
+        await _send_connection_error(query, user_id, message_key, alias=alias, error=str(e))
+    except OSError as e:
+        logger.error(f"OS error while connecting to {alias}: {e}")
+        await _send_connection_error(query, user_id, 'error_generic_connection', alias=alias, error=str(e))
     except Exception:
         # For any other exception, defer to the global error handler to send the full traceback
         logger.error(f"An unexpected error occurred while connecting to {alias}", exc_info=True)
@@ -395,7 +562,7 @@ async def execute_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     last_edit_time = asyncio.get_event_loop().time()
 
     try:
-        async for item, stream in ssh_manager.run_command(alias, command):
+        async for item, stream in ssh_manager.run_command(user_id, alias, command):
             # Skip PID events (AsyncSSH doesn’t expose it natively)
             if stream == 'pid':
                 continue
@@ -461,7 +628,8 @@ async def cancel_command_callback(update: Update, context: ContextTypes.DEFAULT_
     _, alias, pid = query.data.split('_', 2)
 
     try:
-        await ssh_manager.kill_process(alias, int(pid))
+        user_id = update.effective_user.id
+        await ssh_manager.kill_process(user_id, alias, int(pid))
         await query.edit_message_text(f"✅ **Command (PID: {pid}) cancelled on `{alias}`.**", parse_mode='Markdown')
     except Exception as e:
         await query.edit_message_text(f"❌ **Error:** Could not cancel command.\n`{e}`", parse_mode='Markdown')
@@ -477,7 +645,7 @@ async def start_shell_session(update: Update, context: ContextTypes.DEFAULT_TYPE
     user_id = update.effective_user.id
 
     try:
-        await ssh_manager.start_shell_session(alias)
+        await ssh_manager.start_shell_session(user_id, alias)
         SHELL_MODE_USERS.add(user_id)
         user_connections[user_id] = alias  # Ensure connection is tracked
         await query.edit_message_text(
@@ -504,7 +672,7 @@ async def handle_shell_command(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     try:
-        output = await ssh_manager.run_command_in_shell(alias, command)
+        output = await ssh_manager.run_command_in_shell(user_id, alias, command)
         if not output:
             output = "[No output]"
 
@@ -528,7 +696,7 @@ async def exit_shell(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         SHELL_MODE_USERS.remove(user_id)
         alias = user_connections.get(user_id)
         if alias:
-            await ssh_manager.disconnect(alias)
+            await ssh_manager.disconnect(user_id, alias)
             del user_connections[user_id]
 
         await update.message.reply_text("🔌 **Shell session terminated.**", parse_mode='Markdown')
@@ -592,6 +760,7 @@ async def get_static_info(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     query = update.callback_query
     await query.answer()
     alias = query.data.split('_', 2)[2]
+    user_id = update.effective_user.id
 
     commands = {
         "Kernel": "uname -a",
@@ -605,7 +774,7 @@ async def get_static_info(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         output = ""
         try:
             output = ""
-            async for item, stream in ssh_manager.run_command(alias, command):
+            async for item, stream in ssh_manager.run_command(user_id, alias, command):
                 if stream in ('stdout', 'stderr'):
                     output += item
             info_message += f"**{key}:**\n```{output.strip()}```\n\n"
@@ -623,6 +792,7 @@ async def get_resource_usage(update: Update, context: ContextTypes.DEFAULT_TYPE)
     query = update.callback_query
     await query.answer()
     alias = query.data.split('_', 2)[2]
+    user_id = update.effective_user.id
 
     commands = {
         "Memory Usage": "free -m",
@@ -635,7 +805,7 @@ async def get_resource_usage(update: Update, context: ContextTypes.DEFAULT_TYPE)
         output = ""
         try:
             output = ""
-            async for item, stream in ssh_manager.run_command(alias, command):
+            async for item, stream in ssh_manager.run_command(user_id, alias, command):
                 if stream in ('stdout', 'stderr'):
                     output += item
             usage_message += f"**{key}:**\n```{output.strip()}```\n\n"
@@ -674,7 +844,7 @@ async def live_monitoring(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             output = ""
             try:
                 output = ""
-                async for item, stream in ssh_manager.run_command(alias, command):
+            async for item, stream in ssh_manager.run_command(user_id, alias, command):
                     if stream in ('stdout', 'stderr'):
                         output += item
                 await message.edit_text(
@@ -740,6 +910,7 @@ async def package_manager_action(update: Update, context: ContextTypes.DEFAULT_T
     await query.answer()
 
     _, action, alias = query.data.split('_', 2)
+    user_id = update.effective_user.id
 
     if action == "update":
         command = "sudo apt-get update"
@@ -753,7 +924,7 @@ async def package_manager_action(update: Update, context: ContextTypes.DEFAULT_T
     output = ""
     try:
         output = ""
-        async for item, stream in ssh_manager.run_command(alias, command):
+        async for item, stream in ssh_manager.run_command(user_id, alias, command):
             if stream in ('stdout', 'stderr'):
                 output += item
         final_message = f"✅ **Command completed on `{alias}`**\n\n```\n{output.strip()}\n```"
@@ -786,6 +957,7 @@ async def execute_install_package(update: Update, context: ContextTypes.DEFAULT_
     """Executes the package installation."""
     package_name = shlex.quote(update.message.text)
     alias = context.user_data['alias']
+    user_id = update.effective_user.id
 
     command = f"sudo apt-get install -y {package_name}"
 
@@ -794,7 +966,7 @@ async def execute_install_package(update: Update, context: ContextTypes.DEFAULT_
     output = ""
     try:
         output = ""
-        async for item, stream in ssh_manager.run_command(alias, command):
+        async for item, stream in ssh_manager.run_command(user_id, alias, command):
             if stream in ('stdout', 'stderr'):
                 output += item
         await result_message.edit_text(f"✅ **Command completed on `{alias}`**\n\n```{output.strip()}```", parse_mode='Markdown')
@@ -855,6 +1027,7 @@ async def execute_docker_action(update: Update, context: ContextTypes.DEFAULT_TY
     container_name = shlex.quote(update.message.text)
     action = context.user_data['docker_action']
     alias = context.user_data['alias']
+    user_id = update.effective_user.id
 
     command = f"docker {action} {container_name}"
 
@@ -863,7 +1036,7 @@ async def execute_docker_action(update: Update, context: ContextTypes.DEFAULT_TY
     output = ""
     try:
         output = ""
-        async for item, stream in ssh_manager.run_command(alias, command):
+        async for item, stream in ssh_manager.run_command(user_id, alias, command):
             if stream in ('stdout', 'stderr'):
                 output += item
         final_message = f"✅ **Command completed on `{alias}`**\n\n```{output.strip()}```"
@@ -893,13 +1066,14 @@ async def docker_ps(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if query.data.startswith("docker_ps_a"):
         command += " -a"
     alias = query.data.split('_', 2)[-1]
+    user_id = update.effective_user.id
 
     result_message = await query.edit_message_text(f"Running `{command}` on `{alias}`...", parse_mode='Markdown')
 
     output = ""
     try:
         output = ""
-        async for item, stream in ssh_manager.run_command(alias, command):
+        async for item, stream in ssh_manager.run_command(user_id, alias, command):
             if stream in ('stdout', 'stderr'):
                 output += item
         final_message = f"✅ **Command completed on `{alias}`**\n\n```{output.strip()}```"
@@ -985,6 +1159,7 @@ async def list_files(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Lists files in a directory."""
     path = shlex.quote(update.message.text)
     alias = context.user_data['alias']
+    user_id = update.effective_user.id
     command = f"ls -la {path}"
 
     result_message = await update.message.reply_text(f"Running `{command}` on `{alias}`...", parse_mode='Markdown')
@@ -992,7 +1167,7 @@ async def list_files(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     output = ""
     try:
         output = ""
-        async for item, stream in ssh_manager.run_command(alias, command):
+        async for item, stream in ssh_manager.run_command(user_id, alias, command):
             if stream in ('stdout', 'stderr'):
                 output += item
         final_message = f"✅ **Files in `{path}` on `{alias}`**\n\n```{output.strip()}```"
@@ -1016,13 +1191,14 @@ async def download_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     """Downloads a file from the server."""
     remote_path = shlex.quote(update.message.text)
     alias = context.user_data['alias']
+    user_id = update.effective_user.id
 
     await update.message.reply_text(f"📥 Downloading `{remote_path}` from `{alias}`...", parse_mode='Markdown')
 
     try:
         with tempfile.NamedTemporaryFile(delete=False) as f:
             local_path = f.name
-        await ssh_manager.download_file(alias, remote_path, local_path)
+        await ssh_manager.download_file(user_id, alias, remote_path, local_path)
         await update.message.reply_document(document=open(local_path, 'rb'))
         os.remove(local_path)
     except Exception as e:
@@ -1044,6 +1220,7 @@ async def upload_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     document = update.message.document
     alias = context.user_data['alias']
     remote_path = context.user_data['remote_path']
+    user_id = update.effective_user.id
 
     local_path = document.file_name
     file = await document.get_file()
@@ -1052,7 +1229,7 @@ async def upload_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     await update.message.reply_text(f"📤 Uploading `{local_path}` to `{remote_path}` on `{alias}`...", parse_mode='Markdown')
 
     try:
-        await ssh_manager.upload_file(alias, local_path, remote_path)
+        await ssh_manager.upload_file(user_id, alias, local_path, remote_path)
         await update.message.reply_text("✅ **File uploaded successfully!**", parse_mode='Markdown')
     except Exception as e:
         await update.message.reply_text(f"❌ **Error:**\n`{e}`", parse_mode='Markdown')
@@ -1096,6 +1273,7 @@ async def list_processes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     query = update.callback_query
     await query.answer()
     alias = query.data.split('_', 2)[2]
+    user_id = update.effective_user.id
 
     command = "ps aux"
     result_message = await query.edit_message_text(f"Running `{command}` on `{alias}`...", parse_mode='Markdown')
@@ -1103,7 +1281,7 @@ async def list_processes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     output = ""
     try:
         output = ""
-        async for item, stream in ssh_manager.run_command(alias, command):
+        async for item, stream in ssh_manager.run_command(user_id, alias, command):
             if stream in ('stdout', 'stderr'):
                 output += item
         final_message = f"✅ **Command completed on `{alias}`**\n\n```{output.strip()}```"
@@ -1137,6 +1315,7 @@ async def execute_kill_process(update: Update, context: ContextTypes.DEFAULT_TYP
     """Executes the kill command."""
     pid = shlex.quote(update.message.text)
     alias = context.user_data['alias']
+    user_id = update.effective_user.id
 
     command = f"kill -9 {pid}"
 
@@ -1145,7 +1324,7 @@ async def execute_kill_process(update: Update, context: ContextTypes.DEFAULT_TYP
     output = ""
     try:
         output = ""
-        async for item, stream in ssh_manager.run_command(alias, command):
+        async for item, stream in ssh_manager.run_command(user_id, alias, command):
             if stream in ('stdout', 'stderr'):
                 output += item
         await result_message.edit_text(f"✅ **Command completed on `{alias}`**\n\n```{output.strip()}```", parse_mode='Markdown')
@@ -1190,12 +1369,13 @@ async def firewall_status(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     query = update.callback_query
     await query.answer()
     alias = query.data.split('_', 2)[2]
+    user_id = update.effective_user.id
 
     command = "sudo ufw status verbose"
     output = ""
     try:
         output = ""
-        async for item, stream in ssh_manager.run_command(alias, command):
+        async for item, stream in ssh_manager.run_command(user_id, alias, command):
             if stream in ('stdout', 'stderr'):
                 output += item
         keyboard = [[InlineKeyboardButton("🔙 Back to Firewall Menu", callback_data=f"firewall_management_menu_{alias}")]]
@@ -1231,6 +1411,7 @@ async def execute_firewall_action(update: Update, context: ContextTypes.DEFAULT_
     rule = shlex.quote(update.message.text)
     action = context.user_data['firewall_action']
     alias = context.user_data['alias']
+    user_id = update.effective_user.id
 
     command = f"sudo ufw {action} {rule}"
 
@@ -1239,7 +1420,7 @@ async def execute_firewall_action(update: Update, context: ContextTypes.DEFAULT_
     output = ""
     try:
         output = ""
-        async for item, stream in ssh_manager.run_command(alias, command):
+        async for item, stream in ssh_manager.run_command(user_id, alias, command):
             if stream in ('stdout', 'stderr'):
                 output += item
         await result_message.edit_text(f"✅ **Command completed on `{alias}`**\n\n```{output.strip()}```", parse_mode='Markdown')
@@ -1298,6 +1479,7 @@ async def execute_service_action(update: Update, context: ContextTypes.DEFAULT_T
     service_name = update.message.text
     action = context.user_data['service_action']
     alias = context.user_data['alias']
+    user_id = update.effective_user.id
 
     command = f"systemctl {action} {service_name}"
 
@@ -1306,7 +1488,7 @@ async def execute_service_action(update: Update, context: ContextTypes.DEFAULT_T
     output = ""
     try:
         output = ""
-        async for item, stream in ssh_manager.run_command(alias, command):
+        async for item, stream in ssh_manager.run_command(user_id, alias, command):
             if stream in ('stdout', 'stderr'):
                 output += item
         await result_message.edit_text(f"✅ **Command completed on `{alias}`**\n\n```{output.strip()}```", parse_mode='Markdown')
@@ -1373,6 +1555,7 @@ async def execute_system_command(update: Update, context: ContextTypes.DEFAULT_T
     await query.answer()
 
     _, action, alias = query.data.split('_', 2)
+    user_id = update.effective_user.id
 
     if action == "reboot":
         command = "reboot"
@@ -1383,7 +1566,7 @@ async def execute_system_command(update: Update, context: ContextTypes.DEFAULT_T
 
     try:
         # We only need to start the command, not wait for output
-        async for _, __ in ssh_manager.run_command(alias, f"sudo {command}"):
+        async for _, __ in ssh_manager.run_command(user_id, alias, f"sudo {command}"):
             pass
         await query.edit_message_text(f"✅ **Command `{command}` sent to `{alias}` successfully.**", parse_mode='Markdown')
     except Exception as e:
@@ -1395,12 +1578,13 @@ async def get_disk_usage(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     query = update.callback_query
     await query.answer()
     alias = query.data.split('_', 2)[2]
+    user_id = update.effective_user.id
 
     command = "df -h"
     output = ""
     try:
         output = ""
-        async for item, stream in ssh_manager.run_command(alias, command):
+        async for item, stream in ssh_manager.run_command(user_id, alias, command):
             if stream in ('stdout', 'stderr'):
                 output += item
         keyboard = [[InlineKeyboardButton("🔙 Back to System Commands", callback_data=f"system_commands_menu_{alias}")]]
@@ -1415,12 +1599,13 @@ async def get_network_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     query = update.callback_query
     await query.answer()
     alias = query.data.split('_', 2)[2]
+    user_id = update.effective_user.id
 
     command = "ip a"
     output = ""
     try:
         output = ""
-        async for item, stream in ssh_manager.run_command(alias, command):
+        async for item, stream in ssh_manager.run_command(user_id, alias, command):
             if stream in ('stdout', 'stderr'):
                 output += item
         keyboard = [[InlineKeyboardButton("🔙 Back to System Commands", callback_data=f"system_commands_menu_{alias}")]]
@@ -1435,12 +1620,13 @@ async def get_open_ports(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     query = update.callback_query
     await query.answer()
     alias = query.data.split('_', 2)[2]
+    user_id = update.effective_user.id
 
     command = "ss -tuln"
     output = ""
     try:
         output = ""
-        async for item, stream in ssh_manager.run_command(alias, command):
+        async for item, stream in ssh_manager.run_command(user_id, alias, command):
             if stream in ('stdout', 'stderr'):
                 output += item
         keyboard = [[InlineKeyboardButton("🔙 Back to System Commands", callback_data=f"system_commands_menu_{alias}")]]
@@ -1458,7 +1644,7 @@ async def disconnect(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     user_id = update.effective_user.id
 
     try:
-        await ssh_manager.disconnect(alias)
+        await ssh_manager.disconnect(user_id, alias)
         if user_id in user_connections:
             del user_connections[user_id]
 
@@ -1574,9 +1760,20 @@ async def remove_server_confirm(update: Update, context: ContextTypes.DEFAULT_TY
     await query.answer()
 
     alias = query.data.split('_', 1)[1]
-    remove_server(alias)
-    ssh_manager.refresh_server_configs()
-    await query.edit_message_text(f"✅ **Server '{alias}' removed successfully!**", parse_mode='Markdown')
+    user_id = update.effective_user.id
+    success = remove_server(user_id, alias)
+    language = _get_user_language(user_id)
+    if not success:
+        await query.edit_message_text(
+            translate('server_not_found', language, alias=alias),
+            parse_mode='Markdown'
+        )
+        return
+
+    await query.edit_message_text(
+        translate('server_removed', language, alias=alias),
+        parse_mode='Markdown'
+    )
 
 # --- Update ---
 @admin_authorized
@@ -1803,6 +2000,8 @@ def main() -> None:
 
     # --- UI & Menu Handlers ---
     application.add_handler(CallbackQueryHandler(main_menu, pattern='^main_menu$'))
+    application.add_handler(CallbackQueryHandler(language_menu, pattern='^language_menu$'))
+    application.add_handler(CallbackQueryHandler(set_language, pattern='^set_language_'))
     application.add_handler(CallbackQueryHandler(connect_server_menu, pattern='^connect_server_menu$'))
     application.add_handler(CallbackQueryHandler(remove_server_menu, pattern='^remove_server_menu$'))
     application.add_handler(CallbackQueryHandler(update_bot_command, pattern='^update_bot$'))
@@ -1838,6 +2037,7 @@ def main() -> None:
 
     # --- Command Handlers ---
     application.add_handler(CommandHandler('start', start))
+    application.add_handler(CommandHandler('language', language_menu))
     application.add_handler(CommandHandler('debug', toggle_debug_mode))
     application.add_handler(CommandHandler('exit_shell', exit_shell))
     application.add_handler(CommandHandler('update_bot', update_bot_command))

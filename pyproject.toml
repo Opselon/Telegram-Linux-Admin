@@ -25,6 +25,7 @@ dependencies = [
     "tenacity",
     "async-timeout",
     "requests",
+    "cryptography",
 ]
 
 [project.scripts]
