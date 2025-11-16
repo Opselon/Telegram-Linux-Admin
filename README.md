@@ -1,119 +1,194 @@
-# Telegram Linux Admin (Python Edition)
+---
 
-A powerful, asynchronous Python application that transforms your private Telegram chat into a full-featured, multi-server command center for your Linux servers.
+# 🚀 Telegram Linux Admin (Python Edition)
+
+A modern, encrypted, multi-user, multi-language **Telegram SSH management bot** that transforms your Telegram chat into a secure command center for all your Linux servers.
+
+This project is designed for professionals, sysadmins, DevOps engineers, and server owners who want **secure remote administration** with **zero learning curve** — directly inside Telegram.
 
 ---
 
-## 🚨🚨🚨 **EXTREME SECURITY WARNING** 🚨🚨🚨
->
-> This application provides **full, un-sandboxed, root-level shell access** to your server. Anyone who gains access to your Telegram account or your bot's token can execute **ANY command** on your server, including reading sensitive files, installing malware, or destroying all data (`rm -rf /`).
->
-> ### **Non-Negotiable Security Practices:**
->
-> 1.  **SECURE YOUR TELEGRAM ACCOUNT**: You **MUST** enable **Two-Step Verification (2FA)** on your Telegram account. Your Telegram account is now a key to your server's root access.
-> 2.  **PROTECT YOUR BOT TOKEN**: Treat your Telegram Bot Token as your private root SSH key. Do not share it, commit it to public repositories, or store it insecurely.
->
-> **USE THIS SCRIPT AT YOUR OWN IMMENSE RISK.** The author is not responsible for any damage, data loss, or security breaches resulting from its use.
+<p align="center">
+
+  <!-- Core Badges -->
+
+  <img src="https://img.shields.io/badge/Python-3.10%2B-blue?style=for-the-badge">
+  <img src="https://img.shields.io/badge/Asyncio-Enabled-4B8BBE?style=for-the-badge">
+  <img src="https://img.shields.io/badge/SSH-Secure-green?style=for-the-badge">
+  <img src="https://img.shields.io/badge/Encryption-Enabled-orange?style=for-the-badge">
+
+  <!-- Repo Badges -->
+
+  <img src="https://img.shields.io/github/stars/Opselon/Telegram-Linux-Admin?style=for-the-badge">
+  <img src="https://img.shields.io/github/forks/Opselon/Telegram-Linux-Admin?style=for-the-badge">
+  <img src="https://img.shields.io/github/watchers/Opselon/Telegram-Linux-Admin?style=for-the-badge">
+  <img src="https://img.shields.io/github/repo-size/Opselon/Telegram-Linux-Admin?style=for-the-badge">
+
+  <!-- Versioning / Releases -->
+
+  <img src="https://img.shields.io/github/v/release/Opselon/Telegram-Linux-Admin?style=for-the-badge">
+  <img src="https://img.shields.io/github/release-date/Opselon/Telegram-Linux-Admin?style=for-the-badge">
+  <img src="https://img.shields.io/github/commits-since/Opselon/Telegram-Linux-Admin/latest?style=for-the-badge">
+
+  <!-- Downloads -->
+
+  <img src="https://img.shields.io/github/downloads/Opselon/Telegram-Linux-Admin/total?style=for-the-badge">
+  <img src="https://img.shields.io/github/downloads/Opselon/Telegram-Linux-Admin/latest/total?style=for-the-badge">
+
+  <!-- CI / Code Quality -->
+
+  <img src="https://img.shields.io/github/actions/workflow/status/Opselon/Telegram-Linux-Admin/tests.yml?label=Tests&style=for-the-badge">
+  <img src="https://img.shields.io/lgtm/grade/python/github/Opselon/Telegram-Linux-Admin?style=for-the-badge">
+  <img src="https://img.shields.io/codefactor/grade/github/Opselon/Telegram-Linux-Admin?style=for-the-badge">
+
+  <!-- Activity -->
+
+  <img src="https://img.shields.io/github/last-commit/Opselon/Telegram-Linux-Admin?style=for-the-badge">
+  <img src="https://img.shields.io/github/commit-activity/m/Opselon/Telegram-Linux-Admin?style=for-the-badge">
+
+  <!-- License -->
+
+  <img src="https://img.shields.io/github/license/Opselon/Telegram-Linux-Admin?style=for-the-badge">
+
+  <!-- Docker -->
+
+  <img src="https://img.shields.io/badge/Docker-Ready-0db7ed?style=for-the-badge">
+
+  <!-- Multi Language -->
+
+  <img src="https://img.shields.io/badge/Multi--Language-15+_Languages-purple?style=for-the-badge">
+
+</p>
 
 ---
 
-## Features
+# 🔐 Extreme Security — But Easy to Use
 
-This bot provides a comprehensive suite of tools for remote server administration, all accessible from a secure Telegram chat.
+This bot is built with **professional security standards**:
 
-### Core Functionality
+### ✔️ Full encryption for all secrets
 
--   **Multi-Server Management:** Securely connect to and manage multiple Linux servers. Switch between servers instantly with a simple inline keyboard.
--   **Interactive Shell:** Open a persistent, real-time SSH shell for any server. Execute commands and see live output, just like a native terminal.
--   **Secure by Design:**
-    -   Uses robust SSH key-based authentication.
-    -   Restricts all bot access to a pre-approved whitelist of Telegram user IDs.
-    -   Features an Admin Role for the primary user, gating access to sensitive operations.
--   **Self-Updating Mechanism:** Keep the bot current with a built-in, one-click updater that fetches the latest version from GitHub, backs up your data, and seamlessly restarts the service.
--   **Automated Installation:** A user-friendly `install.sh` script handles everything: virtual environment creation, dependency installation, and interactive setup.
--   **Persistent Configuration:** Server details and user whitelists are stored in a local SQLite database, ensuring your data persists across restarts.
--   **Backup & Restore:** Easily create and restore full backups of your bot's configuration (`config.json` and `database.db`) directly from the Telegram interface.
+* SSH passwords
+* SSH private key paths
+* Server configuration
+  All encrypted using **Fernet 256-bit symmetric crypto** with a restricted (`0600`) key file.
 
-### Remote Management Modules
+### ✔️ Per-user isolation
 
--   **System Commands:**
-    -   Safely **reboot** or **shutdown** your server (with confirmation).
-    -   Check disk usage with `df -h`.
-    -   View network interface information with `ip a`.
--   **Service Management:**
-    -   Check the status of any `systemd` service.
-    -   **Start**, **stop**, or **restart** services directly from the bot.
--   **Process Management:**
-    -   List all running processes using `ps aux`.
-    -   **Kill** any process by providing its PID.
--   **Firewall Management (UFW):**
-    -   View all active `ufw` firewall rules.
-    -   **Allow** or **deny** traffic on specific ports.
-    -   **Delete** existing firewall rules.
--   **Docker Management:**
-    -   List all running and stopped Docker containers.
-    -   View the logs of any container.
-    -   **Start** and **stop** containers.
--   **Package Management (APT):**
-    -   Run `apt update` or `apt upgrade`.
-    -   Install new packages with `apt install`.
--   **File Manager:**
-    -   List files and directories.
-    -   **Download** files directly from your server to your Telegram chat.
-    -   **Upload** files from your chat to a specified path on your server.
+Each Telegram user only sees **their own servers**.
+No one can access another user's machines.
+
+### ✔️ Zero plaintext storage
+
+No credentials are ever stored unencrypted.
+
+### ✔️ Hidden admin-only commands
+
+Only the installer/admin user can run:
+
+* Bot update
+* Maintenance commands
+* Config-level actions
+
+Other users **never see admin options**.
+
+### ✔️ Easy for anyone worldwide
+
+The bot now supports **global usage** — every user can manage their own servers safely and independently.
 
 ---
 
-## Installation
+# 📈 SEO-Optimized Feature Overview
 
-1.  **Clone the repository:**
-    ```bash
-      git clone https://github.com/Opselon/Telegram-Linux-Admin.git && cd Telegram-Linux-Admin && chmod +x install.sh && sudo ./install.sh
-    ```
+This section is optimized for Google ranking on target keywords:
 
-2.  **Run the installation script:**
-    ```bash
-    bash install.sh
-    ```
-    The script will create a Python virtual environment, install the necessary dependencies, and launch an interactive setup wizard to guide you through the rest of the configuration.
+**telegram linux admin bot**, **telegram ssh bot**,
+**secure telegram ssh manager**, **linux server telegram bot**,
+**remote linux management bot**, **telegram devops tools**,
+**telegram server admin**, **telegram ssh terminal bot**
 
 ---
 
-## Docker
+# ⚙️ Features
 
-For a containerized deployment, you can use the provided `Dockerfile`.
+## 🔧 Server Management
 
-### 1. Build the Image
+* Add unlimited Linux servers
+* Password or SSH-key authentication
+* Persistent shell sessions
+* Multi-language prompts & menus
+* Per-user server list isolation
 
-From the project root, run the following command:
+## 🔒 Security Layer
+
+* Encrypted database secrets
+* Auto-generated encryption key
+* Per-user sandboxed environments
+* Hidden admin controls
+* No plaintext secrets stored anywhere
+
+## 🛠 System Controls
+
+* Reboot / shutdown
+* System info (CPU, RAM, Disk, Network)
+* Process manager with kill/inspect
+* Service manager (`systemd`)
+* Package manager (apt)
+* Docker control
+* Firewall management (UFW)
+* File upload/download
+
+## 📦 Persistence & Backup
+
+* Encrypted SQLite database
+* Backup & restore tools
+* Self-updating mechanism
+* Auto-updater with rollback
+
+---
+
+# 🚀 Installation
+
+### 1. Clone repo
+
+```bash
+git clone https://github.com/Opselon/Telegram-Linux-Admin.git \
+ && cd Telegram-Linux-Admin \
+ && chmod +x install.sh \
+ && sudo ./install.sh
+```
+
+### 2. Run setup
+
+```bash
+bash install.sh
+```
+
+---
+
+# 🐳 Docker Support
+
+### Build
 
 ```bash
 docker build -t tla-bot:latest .
 ```
 
-### 2. Run the Container
-
-When running the container, you must mount a local directory to the `/app/data` volume inside the container. This ensures that your `config.json` and `database.db` files are persisted across container restarts.
+### Run
 
 ```bash
-# Create a local directory for your data
-mkdir -p /path/to/your/appdata
+mkdir -p /path/to/appdata
 
-# Run the container
 docker run -d \
   --name telegram-admin-bot \
-  -v /path/to/your/appdata:/app/data \
+  -v /path/to/appdata:/app/data \
   --restart unless-stopped \
   tla-bot:latest
 ```
 
-The first time you run the container, it will exit immediately. You will need to copy the `config.json` file into your data directory and run the setup wizard to configure the bot.
-
 ---
 
-## Uninstallation
-
-To completely remove the bot and all its data, run the uninstaller script. This will stop the service, remove all application files, and delete the systemd and cron configurations.
+# ❌ Uninstall
 
 ```bash
 sudo ./scripts/uninstall.sh
@@ -121,6 +196,15 @@ sudo ./scripts/uninstall.sh
 
 ---
 
-## Contributing & License
+# 🤝 Contributing
 
-Contributions, issues, and feature requests are welcome! See the LICENSE file for details.
+Pull requests, improvements, and contributions are welcome.
+Please follow security best practices when submitting features.
+
+---
+
+# 📜 License
+
+MIT License — fully open source.
+
+---
