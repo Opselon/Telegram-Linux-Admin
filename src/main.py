@@ -74,7 +74,7 @@ def _extract_user_id(update: Update) -> Optional[int]:
     return None
 
 def authorized(func):
-    """Decorator to check if the user is authorized."""
+    """Decorator to welcome any user."""
     @wraps(func)
     async def wrapped(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
         user_id = _extract_user_id(update)
@@ -86,17 +86,8 @@ def authorized(func):
                 await update.effective_chat.send_message("🚫 **Access Denied**\nWe could not verify your identity.", parse_mode='Markdown')
             return
 
-        await send_debug_message(update, f"Checking authorization for user_id: {user_id}...")
-        if user_id not in config.whitelisted_users:
-            logger.warning(f"Unauthorized access denied for user_id: {user_id}")
-            await send_debug_message(update, f"Unauthorized access denied for user_id: {user_id}.")
-            if update.callback_query:
-                await update.callback_query.answer("🚫 You are not authorized to use this bot.", show_alert=True)
-            elif update.effective_message:
-                await update.effective_message.reply_text("🚫 **Access Denied**\nYou are not authorized.", parse_mode='Markdown')
-            return
-
-        await send_debug_message(update, "Authorization successful.")
+        # No whitelist check, all users are welcome.
+        await send_debug_message(update, f"Processing request for user_id: {user_id}...")
         return await func(update, context, *args, **kwargs)
     return wrapped
 
@@ -105,6 +96,14 @@ def admin_authorized(func):
     @wraps(func)
     async def wrapped(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
         user_id = _extract_user_id(update)
+        if user_id is None:
+            logger.error("Unable to extract user id from update; denying access for safety.")
+            if update and update.callback_query:
+                await update.callback_query.answer("🚫 Unable to identify user.", show_alert=True)
+            elif update and update.effective_chat:
+                await update.effective_chat.send_message("🚫 **Access Denied**\nWe could not verify your identity.", parse_mode='Markdown')
+            return
+
         # Ensure there is a whitelist and the user is the first one in it
         if not config.whitelisted_users or user_id != config.whitelisted_users[0]:
             logger.warning(f"Admin access denied for user_id: {user_id}")
@@ -113,8 +112,10 @@ def admin_authorized(func):
             elif update.effective_message:
                 await update.effective_message.reply_text("🚫 **Access Denied**\nThis is an admin-only feature.", parse_mode='Markdown')
             return
+
+        await send_debug_message(update, "Admin authorization successful.")
         return await func(update, context, *args, **kwargs)
-    return authorized(wrapped) # Chain with the general authorization check
+    return wrapped
 
 def _resolve_message(update: Update):
     if update.message:
@@ -252,12 +253,12 @@ async def get_auth_method(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if query.data == 'password':
         await query.message.reply_text(
-            translate('prompt_enter_password', language),
+            translate('prompt_password', language),
         )
         return PASSWORD
     else:
         await query.message.reply_text(
-            translate('prompt_enter_key_path', language),
+            translate('prompt_key_path', language),
         )
         return KEY_PATH
 
