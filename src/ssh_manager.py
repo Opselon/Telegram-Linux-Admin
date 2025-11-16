@@ -7,7 +7,7 @@ import contextlib
 from typing import Any
 from asyncssh import PermissionDenied
 from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception
-from .database import get_all_servers
+from .database import get_server
 
 # --- Constants ---
 # The default timeout for a command to complete.
@@ -48,20 +48,8 @@ class SSHManager:
 
     def __init__(self):
         """Initializes the SSHManager."""
-        self.server_configs = {}
-        # active_shells: A dictionary to store persistent connections for interactive shells.
-        # Format: { "alias": asyncssh.SSHClientConnection }
-        self.active_shells = {}
-        self.refresh_server_configs()
-
-    def refresh_server_configs(self):
-        """Reloads server configurations from the database."""
-        logger.info("Refreshing server configurations from database...")
-        try:
-            self.server_configs = {s['alias']: s for s in get_all_servers()}
-            logger.info(f"Loaded {len(self.server_configs)} server configs.")
-        except Exception as e:
-            logger.error(f"Failed to refresh server configs: {e}", exc_info=True)
+        # active_shells: keyed by (owner_id, alias)
+        self.active_shells: dict[tuple[int, str], asyncssh.SSHClientConnection] = {}
 
     # Use a retry decorator to handle transient network errors during connection.
     # The _is_retryable_exception function provides fine-grained control over
@@ -71,14 +59,13 @@ class SSHManager:
         wait=wait_fixed(2),
         retry=retry_if_exception(_is_retryable_exception)
     )
-    async def _create_connection(self, alias: str):
+    async def _create_connection(self, owner_id: int, alias: str):
         """
         Establishes a new SSH connection with retry logic for transient errors.
         """
-        if alias not in self.server_configs:
-            raise ValueError(f"Server alias '{alias}' not found.")
-
-        config = self.server_configs[alias]
+        config = get_server(owner_id, alias)
+        if not config:
+            raise ValueError(f"Server alias '{alias}' not found for this user.")
         connect_args = {
             'username': config.get('user'),
             'password': config.get('password'),
@@ -92,7 +79,13 @@ class SSHManager:
             logger.error(f"Failed to connect to {alias}: {e}")
             raise  # Re-raise the exception to be handled by the caller
 
-    async def run_command(self, alias: str, command: str, timeout: float = COMMAND_TIMEOUT):
+    async def run_command(
+        self,
+        owner_id: int,
+        alias: str,
+        command: str,
+        timeout: float = COMMAND_TIMEOUT,
+    ):
         """
         Connects to a server, runs a single command with a timeout, and disconnects.
 
@@ -103,7 +96,7 @@ class SSHManager:
         """
         conn = None
         try:
-            conn = await self._create_connection(alias)
+            conn = await self._create_connection(owner_id, alias)
             async with async_timeout.timeout(timeout):
                 # Emit remote PID as first stdout line for reliable cancel support
                 process = await conn.create_process(f"bash -lc 'echo $$; exec {command}'")
@@ -125,43 +118,45 @@ class SSHManager:
         finally:
             await self._close_conn(conn)
 
-    async def kill_process(self, alias: str, pid: int) -> None:
+    async def kill_process(self, owner_id: int, alias: str, pid: int) -> None:
         """Kills a process on a remote server."""
         conn = None
         try:
-            conn = await self._create_connection(alias)
+            conn = await self._create_connection(owner_id, alias)
             await conn.run(f"kill -9 {pid}")
         except Exception:
             raise
         finally:
             await self._close_conn(conn)
 
-    async def start_shell_session(self, alias: str) -> None:
+    async def start_shell_session(self, owner_id: int, alias: str) -> None:
         """
         Starts a persistent interactive shell for a user.
         If a shell for the alias already exists, it will be closed and replaced.
         """
         # If a shell already exists for this alias, close it before creating a new one.
-        if alias in self.active_shells:
-            conn_prev = self.active_shells[alias]
+        key = (owner_id, alias)
+        if key in self.active_shells:
+            conn_prev = self.active_shells[key]
             with contextlib.suppress(Exception):
                 conn_prev.close()
                 if hasattr(conn_prev, "wait_closed"):
                     await conn_prev.wait_closed()
 
-        conn = await self._create_connection(alias)
-        self.active_shells[alias] = conn
+        conn = await self._create_connection(owner_id, alias)
+        self.active_shells[key] = conn
         logger.info(f"Interactive shell session started for {alias}.")
 
-    async def run_command_in_shell(self, alias: str, command: str) -> str:
+    async def run_command_in_shell(self, owner_id: int, alias: str, command: str) -> str:
         """
         Runs a command within an existing interactive shell.
         If no shell is active, it will raise an exception.
         """
-        if alias not in self.active_shells or self.active_shells[alias].is_closed():
+        key = (owner_id, alias)
+        if key not in self.active_shells or self.active_shells[key].is_closed():
             raise ConnectionError(f"No active shell session for {alias}. Please start a new one.")
 
-        conn = self.active_shells[alias]
+        conn = self.active_shells[key]
         try:
             # Execute the command and read the output.
             # This is a simplified approach; real interactive shells are complex.
@@ -175,11 +170,12 @@ class SSHManager:
             logger.error(f"Error in shell for {alias}: {e}", exc_info=True)
             return f"An unexpected error occurred: {e}"
 
-    async def disconnect(self, alias: str):
+    async def disconnect(self, owner_id: int, alias: str):
         """
         Safely closes a persistent shell connection.
         """
-        conn = self.active_shells.get(alias)
+        key = (owner_id, alias)
+        conn = self.active_shells.get(key)
         if not conn:
             return  # No active connection to close
 
@@ -192,19 +188,19 @@ class SSHManager:
         except Exception as e:
             logger.warning(f"Error while closing SSH session for {alias}: {e}", exc_info=True)
         finally:
-            self.active_shells.pop(alias, None)
+            self.active_shells.pop(key, None)
 
     async def close_all_connections(self):
         """Closes all active shell connections."""
         logger.info("Closing all persistent SSH shell connections...")
-        for alias in list(self.active_shells.keys()):
-            await self.disconnect(alias)
+        for owner_id, alias in list(self.active_shells.keys()):
+            await self.disconnect(owner_id, alias)
 
-    async def download_file(self, alias: str, remote_path: str, local_path: str) -> None:
+    async def download_file(self, owner_id: int, alias: str, remote_path: str, local_path: str) -> None:
         """Downloads a file from a remote server."""
         conn = None
         try:
-            conn = await self._create_connection(alias)
+            conn = await self._create_connection(owner_id, alias)
             async with conn.start_sftp_client() as sftp:
                 await sftp.get(remote_path, local_path)
         except Exception:
@@ -212,11 +208,11 @@ class SSHManager:
         finally:
             await self._close_conn(conn)
 
-    async def upload_file(self, alias: str, local_path: str, remote_path: str) -> None:
+    async def upload_file(self, owner_id: int, alias: str, local_path: str, remote_path: str) -> None:
         """Uploads a file to a remote server."""
         conn = None
         try:
-            conn = await self._create_connection(alias)
+            conn = await self._create_connection(owner_id, alias)
             async with conn.start_sftp_client() as sftp:
                 await sftp.put(local_path, remote_path)
         except Exception:

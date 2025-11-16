@@ -83,7 +83,7 @@ async def test_get_disk_usage(mock_config, mock_ssh_manager, authorized_update):
     mock_config.whitelisted_users = [12345]
     authorized_update.callback_query.data = "disk_usage_test_alias"
 
-    async def mock_run_command_gen(alias, command):
+    async def mock_run_command_gen(user_id, alias, command):
         assert alias == "test_alias"
         assert command == "df -h"
         yield "Filesystem      Size  Used Avail Use% Mounted on\n/dev/sda1        20G   10G   10G  50% /", "stdout"
@@ -105,7 +105,7 @@ async def test_get_network_info(mock_config, mock_ssh_manager, authorized_update
     mock_config.whitelisted_users = [12345]
     authorized_update.callback_query.data = "network_info_test_alias"
 
-    async def mock_run_command_gen(alias, command):
+    async def mock_run_command_gen(user_id, alias, command):
         assert alias == "test_alias"
         assert command == "ip a"
         yield "1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN group default qlen 1000", "stdout"
