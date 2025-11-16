@@ -20,7 +20,7 @@ class MockSSHManager:
                 conn.close()
 
 
-    async def run_command(self, alias, command):
+    async def run_command(self, user_id, alias, command):
         try:
             # Simulate a successful connection and command execution
             yield ("output line 1", "stdout")

@@ -87,9 +87,6 @@ async def test_run_command_always_closes_connection(mocker):
     """
     Verify `run_command` calls `_close_conn` on success and exception.
     """
-    # Prevent database access during initialization
-    mocker.patch('src.ssh_manager.get_all_servers', return_value=[])
-
     # 1. Test success case
     manager = SSHManager()
     mock_conn = AsyncSSHLikeConn()
@@ -130,7 +127,7 @@ async def test_run_command_always_closes_connection(mocker):
 
 
     # Consume the generator
-    async for _, __ in manager.run_command("alias", "cmd"):
+    async for _, __ in manager.run_command(1, "alias", "cmd"):
         pass
 
     manager._close_conn.assert_awaited_once_with(conn_mock)
@@ -147,7 +144,7 @@ async def test_run_command_always_closes_connection(mocker):
     stdout_mock.__aiter__ = MagicMock(return_value=error_stream())
 
     with pytest.raises(ValueError, match="Command failed"):
-        async for _, __ in manager.run_command("alias", "cmd"):
+        async for _, __ in manager.run_command(1, "alias", "cmd"):
             pass
 
     manager._close_conn.assert_awaited_once_with(conn_mock)
