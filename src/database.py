@@ -384,10 +384,21 @@ def set_user_language_preference(telegram_id: int, language: str) -> None:
 def get_user_language_preference(telegram_id: int) -> str | None:
     """Fetches the preferred language for a Telegram user."""
     conn = get_db_connection()
-    row = conn.execute(
-        "SELECT language FROM user_preferences WHERE telegram_id = ?",
-        (telegram_id,),
-    ).fetchone()
+    try:
+        row = conn.execute(
+            "SELECT language FROM user_preferences WHERE telegram_id = ?",
+            (telegram_id,),
+        ).fetchone()
+    except sqlite3.OperationalError as exc:
+        # Gracefully recover in environments where the schema was not initialized yet
+        # (e.g., unit tests that import handlers directly).
+        if "no such table" not in str(exc):
+            raise
+        initialize_database()
+        row = conn.execute(
+            "SELECT language FROM user_preferences WHERE telegram_id = ?",
+            (telegram_id,),
+        ).fetchone()
     return row["language"] if row else None
 
 

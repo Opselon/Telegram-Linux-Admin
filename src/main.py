@@ -844,7 +844,7 @@ async def live_monitoring(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             output = ""
             try:
                 output = ""
-            async for item, stream in ssh_manager.run_command(user_id, alias, command):
+                async for item, stream in ssh_manager.run_command(user_id, alias, command):
                     if stream in ('stdout', 'stderr'):
                         output += item
                 await message.edit_text(
