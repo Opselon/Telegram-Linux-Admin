@@ -38,7 +38,6 @@ from .localization import (
     DEFAULT_LANGUAGE,
     get_language_label,
 )
-from .security import SecretEncryptionError
 
 # --- Globals & Logging ---
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
@@ -286,15 +285,7 @@ async def save_server(update: Update, context: ContextTypes.DEFAULT_TYPE):
             password=context.user_data.get('password'),
             key_path=context.user_data.get('key_path')
         )
-        await update.message.reply_text(
-            translate('server_added_success', language, alias=context.user_data['alias']),
-            parse_mode='Markdown'
-        )
-    except SecretEncryptionError as e:
-        await update.message.reply_text(
-            translate('error_encryption_key_missing', language, error=str(e)),
-            parse_mode='Markdown'
-        )
+        await update.message.reply_text(f"✅ **Server '{context.user_data['alias']}' added successfully!**", parse_mode='Markdown')
     except Exception as e:
         await update.message.reply_text(
             translate('server_add_error', language, error=str(e)),
