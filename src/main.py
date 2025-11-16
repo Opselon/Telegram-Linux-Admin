@@ -206,31 +206,50 @@ async def add_server_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 
 async def get_alias(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id = _extract_user_id(update)
+    language = _get_user_language(user_id)
+
     context.user_data['alias'] = update.message.text
-    await update.message.reply_text("Great. Now, what is the hostname or IP address?")
+    prompt = translate('prompt_hostname', language)
+    await update.message.reply_text(prompt)
     return HOSTNAME
 
 async def get_hostname(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id = _extract_user_id(update)
+    language = _get_user_language(user_id)
+
     context.user_data['hostname'] = update.message.text
-    await update.message.reply_text("And the SSH username?")
+    prompt = translate('prompt_username', language)
+    await update.message.reply_text(prompt)
     return USER
 
 async def get_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id = _extract_user_id(update)
+    language = _get_user_language(user_id)
+
     context.user_data['user'] = update.message.text
-    keyboard = [[InlineKeyboardButton("🔑 Key", callback_data='key'), InlineKeyboardButton("🔒 Password", callback_data='password')]]
+    keyboard = [[
+        InlineKeyboardButton(translate('button_auth_key', language), callback_data='key'),
+        InlineKeyboardButton(translate('button_auth_password', language), callback_data='password')
+    ]]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("How would you like to authenticate?", reply_markup=reply_markup)
+    prompt = translate('prompt_auth_method', language)
+    await update.message.reply_text(prompt, reply_markup=reply_markup)
     return AUTH_METHOD
 
 async def get_auth_method(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
+    user_id = _extract_user_id(update)
+    language = _get_user_language(user_id)
     await query.answer()
 
     if query.data == 'password':
-        await query.message.reply_text("Please enter the SSH password.")
+        prompt = translate('prompt_password', language)
+        await query.message.reply_text(prompt)
         return PASSWORD
     else:
-        await query.message.reply_text("Please enter the full path to your SSH private key on the server running this bot.")
+        prompt = translate('prompt_key_path', language)
+        await query.message.reply_text(prompt)
         return KEY_PATH
 
 async def get_password(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -246,6 +265,8 @@ async def get_key_path(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 async def save_server(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Saves the server to the database."""
     try:
+        user_id = _extract_user_id(update)
+        language = _get_user_language(user_id)
         owner_id = update.effective_user.id
         add_server(
             owner_id,
@@ -255,7 +276,8 @@ async def save_server(update: Update, context: ContextTypes.DEFAULT_TYPE):
             password=context.user_data.get('password'),
             key_path=context.user_data.get('key_path')
         )
-        await update.message.reply_text(f"✅ **Server '{context.user_data['alias']}' added successfully!**", parse_mode='Markdown')
+        confirmation = translate('server_added', language, alias=context.user_data['alias'])
+        await update.message.reply_text(confirmation, parse_mode='Markdown')
     except Exception as e:
         await update.message.reply_text(f"❌ **Error:** {e}")
     finally:
