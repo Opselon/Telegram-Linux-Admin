@@ -1,13 +1,3 @@
----
-
-# 🚀 Telegram Linux Admin (Python Edition)
-
-A modern, encrypted, multi-user, multi-language **Telegram SSH management bot** that transforms your Telegram chat into a secure command center for all your Linux servers.
-
-This project is designed for professionals, sysadmins, DevOps engineers, and server owners who want **secure remote administration** with **zero learning curve** — directly inside Telegram.
-
----
-
 <p align="center">
 
   <!-- Core Badges -->
@@ -60,6 +50,12 @@ This project is designed for professionals, sysadmins, DevOps engineers, and ser
 
 </p>
 
+
+# 🚀 Telegram Linux Admin (Python Edition)
+
+A modern, encrypted, multi-user, multi-language **Telegram SSH management bot** that transforms your Telegram chat into a secure command center for all your Linux servers.
+
+This project is designed for professionals, sysadmins, DevOps engineers, and server owners who want **secure remote administration** with **zero learning curve** — directly inside Telegram.
 ---
 
 # 🔐 Extreme Security — But Easy to Use
