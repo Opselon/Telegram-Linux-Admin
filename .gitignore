@@ -19,3 +19,4 @@ database.db
 src/telegram_linux_admin.egg-info
 database.db-shm
 database.db-wal
+var/encryption.key

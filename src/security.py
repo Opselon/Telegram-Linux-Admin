@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 from functools import lru_cache
+from pathlib import Path
+import threading
 
 from cryptography.fernet import Fernet, InvalidToken
 
@@ -12,17 +14,61 @@ class SecretEncryptionError(RuntimeError):
     """Raised when a secret cannot be encrypted or decrypted safely."""
 
 
+_KEY_LOCK = threading.RLock()
+
+
+def _get_key_path() -> Path:
+    """Resolves the encryption key file path from environment configuration."""
+
+    return Path(os.environ.get("TLA_ENCRYPTION_KEY_FILE", "var/encryption.key"))
+
+
 def _load_key() -> bytes:
-    """Loads and validates the configured encryption key."""
-    key = os.environ.get("TLA_ENCRYPTION_KEY", "").strip()
-    if not key:
-        raise SecretEncryptionError(
-            "TLA_ENCRYPTION_KEY environment variable must be set to a valid Fernet key."
-        )
+    """Loads and validates the configured encryption key.
+
+    The loader follows a priority order:
+    1. Explicit ``TLA_ENCRYPTION_KEY`` environment variable.
+    2. A key stored on disk (``TLA_ENCRYPTION_KEY_FILE`` or ``var/encryption.key``).
+    3. A newly generated Fernet key that is written to disk for future runs.
+
+    This makes the bot usable out of the box while still supporting explicit,
+    operator-supplied keys for consistent encryption across deployments.
+    """
+
+    with _KEY_LOCK:
+        raw_key = os.environ.get("TLA_ENCRYPTION_KEY", "").strip()
+
+        if not raw_key:
+            raw_key = _read_or_create_keyfile()
+
+        try:
+            return raw_key.encode("utf-8") if isinstance(raw_key, str) else raw_key
+        except Exception as exc:  # pragma: no cover - defensive
+            raise SecretEncryptionError("Unable to process the configured encryption key.") from exc
+
+
+def _read_or_create_keyfile() -> str:
+    """Reads a key from disk or generates a new one if absent.
+
+    The generated key is persisted with ``0600`` permissions to avoid leaking
+    sensitive material to other users on the host.
+    """
+
+    key_path = _get_key_path()
     try:
-        return key.encode("utf-8") if isinstance(key, str) else key
+        if key_path.exists():
+            return key_path.read_text(encoding="utf-8").strip()
+
+        key_path.parent.mkdir(parents=True, exist_ok=True)
+        generated_key = Fernet.generate_key().decode("utf-8")
+        key_path.write_text(generated_key, encoding="utf-8")
+        try:
+            os.chmod(key_path, 0o600)
+        except PermissionError:  # pragma: no cover - best-effort hardening
+            pass
+        return generated_key
     except Exception as exc:  # pragma: no cover - defensive
-        raise SecretEncryptionError("Unable to process the configured encryption key.") from exc
+        raise SecretEncryptionError("Unable to read or create the encryption key file.") from exc
 
 
 @lru_cache(maxsize=1)

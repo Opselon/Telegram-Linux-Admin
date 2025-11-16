@@ -276,6 +276,8 @@ async def save_server(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = _extract_user_id(update)
     language = _get_user_language(user_id)
     try:
+        user_id = _extract_user_id(update)
+        language = _get_user_language(user_id)
         owner_id = update.effective_user.id
         add_server(
             owner_id,
@@ -285,7 +287,8 @@ async def save_server(update: Update, context: ContextTypes.DEFAULT_TYPE):
             password=context.user_data.get('password'),
             key_path=context.user_data.get('key_path')
         )
-        await update.message.reply_text(f"✅ **Server '{context.user_data['alias']}' added successfully!**", parse_mode='Markdown')
+        confirmation = translate('server_added', language, alias=context.user_data['alias'])
+        await update.message.reply_text(confirmation, parse_mode='Markdown')
     except Exception as e:
         await update.message.reply_text(
             translate('server_add_error', language, error=str(e)),
