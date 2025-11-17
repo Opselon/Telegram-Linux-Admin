@@ -10,6 +10,7 @@ import subprocess
 import socket
 import traceback
 from datetime import datetime
+from pathlib import Path
 from telegram import BotCommand, Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, filters, ContextTypes,
@@ -30,6 +31,7 @@ from .database import (
     get_user_server_count,
 )
 from .config import config
+from .backup_manager import BackupManager
 from functools import wraps
 from typing import Optional, Dict
 from .localization import (
@@ -44,6 +46,7 @@ logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 ssh_manager = None
+backup_manager = None
 user_connections = {}
 user_language_cache: Dict[int, str] = {}
 RESTORING = False
@@ -56,9 +59,10 @@ SUPPORTED_LANGUAGE_SET = set(SUPPORTED_LANGUAGES)
 # --- Conversation States ---
 (
     AWAIT_COMMAND, ALIAS, HOSTNAME, USER, AUTH_METHOD, PASSWORD, KEY_PATH,
-    AWAIT_RESTORE_CONFIRMATION, AWAIT_RESTORE_FILE, AWAIT_SERVICE_NAME, AWAIT_PACKAGE_NAME, AWAIT_CONTAINER_NAME,
+    AWAIT_RESTORE_CONFIRMATION, AWAIT_USER_RESTORE_FILE, AWAIT_SYSTEM_RESTORE_FILE,
+    AWAIT_SERVICE_NAME, AWAIT_PACKAGE_NAME, AWAIT_CONTAINER_NAME,
     AWAIT_FILE_PATH, AWAIT_UPLOAD_FILE, AWAIT_PID, AWAIT_FIREWALL_RULE
-) = range(16)
+) = range(17)
 
 # --- Authorization ---
 def _extract_user_id(update: Update) -> Optional[int]:
@@ -380,6 +384,10 @@ async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 callback_data='remove_server_menu'
             )
         ],
+        [
+            InlineKeyboardButton("📦 Backup My Servers", callback_data='backup_user'),
+            InlineKeyboardButton("♻️ Restore My Backup", callback_data='restore_user')
+        ],
         [InlineKeyboardButton(
             translate('button_language_settings', language),
             callback_data='language_menu'
@@ -390,8 +398,8 @@ async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if config.whitelisted_users and user_id == config.whitelisted_users[0]:
         admin_buttons = [
             [
-                InlineKeyboardButton("💾 Backup", callback_data='backup'),
-                InlineKeyboardButton("🔄 Restore", callback_data='restore')
+                InlineKeyboardButton("🛡 Full System Backup", callback_data='backup_system'),
+                InlineKeyboardButton("💾 Full System Restore", callback_data='restore_system')
             ],
             [InlineKeyboardButton("🔄 Update Bot", callback_data='update_bot')],
         ]
@@ -1698,96 +1706,117 @@ async def disconnect(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await query.edit_message_text(f"❌ **Error:** Could not disconnect.\n`{e}`", parse_mode='Markdown')
 
 
-@admin_authorized
-async def backup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Creates a backup of the config and database files."""
+@authorized
+async def backup_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Creates a backup for the current user."""
     query = update.callback_query
     await query.answer()
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_filename = f"tla_backup_{timestamp}.zip"
-
-    files_to_backup = ["config.json", "database.db"]
-
+    user_id = update.effective_user.id
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".tar.gz") as tf:
+        backup_path = Path(tf.name)
     try:
-        with zipfile.ZipFile(backup_filename, 'w') as zipf:
-            for file in files_to_backup:
-                if os.path.exists(file):
-                    zipf.write(file)
-                else:
-                    logger.warning(f"File {file} not found for backup.")
-
-        with open(backup_filename, 'rb') as backup_file:
-            await context.bot.send_document(chat_id=update.effective_chat.id, document=backup_file)
-
-        keyboard = [[InlineKeyboardButton("🔙 Back to Main Menu", callback_data='main_menu')]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.message.reply_text("Backup complete.", reply_markup=reply_markup)
-
+        backup_manager.backup_user(user_id, backup_path)
+        with open(backup_path, 'rb') as f:
+            await context.bot.send_document(chat_id=update.effective_chat.id, document=f)
+        await query.message.reply_text("Backup complete.")
     except Exception as e:
-        logger.error(f"Error creating backup: {e}", exc_info=True)
+        logger.error(f"Error creating user backup: {e}", exc_info=True)
         await query.message.reply_text(f"❌ **Error:** Could not create backup.\n`{e}`", parse_mode='Markdown')
     finally:
-        if os.path.exists(backup_filename):
-            os.remove(backup_filename)
+        os.remove(backup_path)
 
-# --- Restore ---
 @admin_authorized
-async def restore_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Starts the restore process."""
+async def backup_system(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Creates a full system backup."""
     query = update.callback_query
     await query.answer()
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".tar.gz") as tf:
+        backup_path = Path(tf.name)
+    try:
+        backup_manager.backup_system(backup_path)
+        with open(backup_path, 'rb') as f:
+            await context.bot.send_document(chat_id=update.effective_chat.id, document=f)
+        await query.message.reply_text("System backup complete.")
+    except Exception as e:
+        logger.error(f"Error creating system backup: {e}", exc_info=True)
+        await query.message.reply_text(f"❌ **Error:** Could not create backup.\n`{e}`", parse_mode='Markdown')
+    finally:
+        os.remove(backup_path)
 
-    keyboard = [[InlineKeyboardButton("⚠️ Yes, I'm sure", callback_data='restore_yes')]]
+# --- Restore ---
+@authorized
+async def restore_user_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Starts the user restore process."""
+    query = update.callback_query
+    await query.answer()
+    await query.message.reply_text("Please upload your backup file (`.tar.gz`).")
+    return AWAIT_USER_RESTORE_FILE
+
+async def restore_user_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Receives the user backup file and restores it."""
+    document = update.message.document
+    if not document.file_name.endswith('.tar.gz'):
+        await update.message.reply_text("Invalid file format. Please upload a `.tar.gz` file.")
+        return AWAIT_USER_RESTORE_FILE
+    backup_file = await document.get_file()
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".tar.gz") as tf:
+        temp_path = Path(tf.name)
+    await backup_file.download_to_drive(str(temp_path))
+    try:
+        user_id = update.effective_user.id
+        backup_manager.restore_user(user_id, temp_path)
+        await update.message.reply_text("✅ **Restore successful!**", parse_mode='Markdown')
+    except Exception as e:
+        await update.message.reply_text(f"❌ **Error:**\n`{e}`", parse_mode='Markdown')
+    finally:
+        os.remove(temp_path)
+    return ConversationHandler.END
+
+@admin_authorized
+async def restore_system_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Starts the system restore process."""
+    query = update.callback_query
+    await query.answer()
+    keyboard = [[InlineKeyboardButton("⚠️ Yes, I'm sure", callback_data='restore_system_yes')]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.message.reply_text(
-        "**⚠️ DANGER ZONE: RESTORE**\n\n"
-        "Restoring from a backup will overwrite your current configuration and database. "
+        "**⚠️ DANGER ZONE: SYSTEM RESTORE**\n\n"
+        "Restoring from a backup will overwrite the entire system. "
         "This action is irreversible. Are you sure you want to continue?",
         reply_markup=reply_markup,
         parse_mode='Markdown'
     )
     return AWAIT_RESTORE_CONFIRMATION
 
-async def restore_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Confirms the restore and asks for the backup file."""
+async def restore_system_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Confirms the system restore and asks for the backup file."""
     query = update.callback_query
     await query.answer()
-
-    if query.data == 'restore_yes':
-        await query.edit_message_text("Okay, please upload the backup file (`.zip`).")
-        return AWAIT_RESTORE_FILE
+    if query.data == 'restore_system_yes':
+        await query.edit_message_text("Okay, please upload the system backup file (`.tar.gz`).")
+        return AWAIT_SYSTEM_RESTORE_FILE
     else:
-        await query.edit_message_text("Restore cancelled.")
+        await query.edit_message_text("System restore cancelled.")
         return ConversationHandler.END
 
-async def restore_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Receives the backup file, validates it, and performs the restore."""
+async def restore_system_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Receives the system backup file and restores it."""
     document = update.message.document
-    if not document.file_name.endswith('.zip'):
-        await update.message.reply_text("Invalid file format. Please upload a `.zip` file.")
-        return AWAIT_RESTORE_FILE
-
+    if not document.file_name.endswith('.tar.gz'):
+        await update.message.reply_text("Invalid file format. Please upload a `.tar.gz` file.")
+        return AWAIT_SYSTEM_RESTORE_FILE
     backup_file = await document.get_file()
-    await backup_file.download_to_drive(document.file_name)
-
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".tar.gz") as tf:
+        temp_path = Path(tf.name)
+    await backup_file.download_to_drive(str(temp_path))
     try:
-        with zipfile.ZipFile(document.file_name, 'r') as zipf:
-            if "config.json" not in zipf.namelist() or "database.db" not in zipf.namelist():
-                raise ValueError("Backup file is missing required files.")
-            zipf.extractall()
-
-        await update.message.reply_text("✅ **Restore successful!**\n\nThe bot will now restart to apply the changes.", parse_mode='Markdown')
-
-        # This is a simplified restart. A more robust solution would use a process manager.
+        backup_manager.restore_system(temp_path)
+        await update.message.reply_text("✅ **System restore successful!**\n\nThe bot will now restart to apply the changes.", parse_mode='Markdown')
         os.execv(sys.executable, ['python'] + sys.argv)
-
     except Exception as e:
         await update.message.reply_text(f"❌ **Error:**\n`{e}`", parse_mode='Markdown')
     finally:
-        if os.path.exists(document.file_name):
-            os.remove(document.file_name)
-
+        os.remove(temp_path)
     return ConversationHandler.END
 
 async def cancel_restore(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1909,7 +1938,7 @@ def main() -> None:
 
     create_lock_file()
 
-    global ssh_manager
+    global ssh_manager, backup_manager
 
     # --- Pre-flight Checks ---
     if not config.telegram_token:
@@ -1920,6 +1949,7 @@ def main() -> None:
     try:
         initialize_database()
         ssh_manager = SSHManager()
+        backup_manager = BackupManager()
     except Exception as e:
         logger.critical(f"FATAL: Error during database or SSH manager initialization: {e}", exc_info=True)
         sys.exit(1)
@@ -1957,15 +1987,24 @@ def main() -> None:
     application.add_handler(add_server_handler)
     application.add_handler(run_command_handler)
 
-    restore_handler = ConversationHandler(
-        entry_points=[CallbackQueryHandler(restore_start, pattern='^restore$')],
+    user_restore_handler = ConversationHandler(
+        entry_points=[CallbackQueryHandler(restore_user_start, pattern='^restore_user$')],
         states={
-            AWAIT_RESTORE_CONFIRMATION: [CallbackQueryHandler(restore_confirmation)],
-            AWAIT_RESTORE_FILE: [MessageHandler(filters.ATTACHMENT, restore_file)],
+            AWAIT_USER_RESTORE_FILE: [MessageHandler(filters.ATTACHMENT, restore_user_file)],
         },
         fallbacks=[CommandHandler('cancel', cancel_restore)],
     )
-    application.add_handler(restore_handler)
+    application.add_handler(user_restore_handler)
+
+    system_restore_handler = ConversationHandler(
+        entry_points=[CallbackQueryHandler(restore_system_start, pattern='^restore_system$')],
+        states={
+            AWAIT_RESTORE_CONFIRMATION: [CallbackQueryHandler(restore_system_confirmation)],
+            AWAIT_SYSTEM_RESTORE_FILE: [MessageHandler(filters.ATTACHMENT, restore_system_file)],
+        },
+        fallbacks=[CommandHandler('cancel', cancel_restore)],
+    )
+    application.add_handler(system_restore_handler)
 
     service_management_handler = ConversationHandler(
         entry_points=[
@@ -2053,7 +2092,8 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(get_resource_usage, pattern='^resource_usage_'))
     application.add_handler(CallbackQueryHandler(live_monitoring, pattern='^live_monitoring_'))
     application.add_handler(CallbackQueryHandler(stop_live_monitoring, pattern='^stop_live_monitoring_'))
-    application.add_handler(CallbackQueryHandler(backup, pattern='^backup$'))
+    application.add_handler(CallbackQueryHandler(backup_user, pattern='^backup_user$'))
+    application.add_handler(CallbackQueryHandler(backup_system, pattern='^backup_system$'))
     application.add_handler(CallbackQueryHandler(service_management_menu, pattern='^service_management_menu_'))
     application.add_handler(CallbackQueryHandler(package_management_menu, pattern='^package_management_menu_'))
     application.add_handler(CallbackQueryHandler(package_manager_action, pattern='^pkg_update_'))

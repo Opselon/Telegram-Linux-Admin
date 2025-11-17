@@ -7,6 +7,7 @@ import sqlite3
 import threading
 from contextlib import contextmanager
 from typing import Any, Iterable, Iterator
+from pathlib import Path
 
 from .security import decrypt_secret, encrypt_secret
 
@@ -71,6 +72,33 @@ def close_db_connection() -> None:
             _conn.close()
             _conn = None
             _conn_path = None
+
+def checkpoint() -> None:
+    """Forces a WAL checkpoint to flush writes to the main DB file."""
+    conn = get_db_connection()
+    with _conn_lock:
+        try:
+            # FULL mode is aggressive and ensures all data is written.
+            conn.execute("PRAGMA wal_checkpoint(FULL)").fetchall()
+        except sqlite3.OperationalError:
+            # This can happen if the DB is not in WAL mode, which is fine.
+            pass
+
+def get_db_path() -> Path:
+    """Returns the path to the database file."""
+    return Path(_resolve_db_path())
+
+def reset_connection() -> None:
+    """Close and clear the cached connection so future queries see a new DB file."""
+    try:
+        conn = get_db_connection()
+        conn.close()
+    except Exception:
+        # Safe to ignore; maybe the connection was never created yet
+        pass
+    global _conn, _conn_path
+    _conn = None
+    _conn_path = None
 
 
 @contextmanager
@@ -410,4 +438,3 @@ def seed_users(user_ids: Iterable[int]) -> None:
         conn.execute("DELETE FROM users")
         for user_id in unique_ids:
             _ensure_user(conn, user_id, DEFAULT_PLAN)
-

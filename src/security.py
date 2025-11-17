@@ -71,9 +71,8 @@ def _read_or_create_keyfile() -> str:
         raise SecretEncryptionError("Unable to read or create the encryption key file.") from exc
 
 
-@lru_cache(maxsize=1)
 def _get_cipher() -> Fernet:
-    """Returns a cached Fernet cipher."""
+    """Returns a Fernet cipher instance."""
     key = _load_key()
     try:
         return Fernet(key)
