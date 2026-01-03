@@ -1,0 +1,20 @@
+{
+  "telegram_token": "YOUR_TELEGRAM_BOT_TOKEN",
+  "whitelisted_users": [
+    123456789
+  ],
+  "servers": [
+    {
+      "alias": "local",
+      "hostname": "localhost",
+      "user": "your_user",
+      "key_path": "/home/your_user/.ssh/id_rsa"
+    },
+    {
+      "alias": "remote",
+      "hostname": "your_remote_server.com",
+      "user": "your_user",
+      "key_path": "/home/your_user/.ssh/id_rsa"
+    }
+  ]
+}

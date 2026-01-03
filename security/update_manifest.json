@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.0",
+  "allowed_remote": "origin",
+  "allowed_remote_url": "https://github.com/Opselon/Telegram-Linux-Admin.git",
+  "allowed_branch": "main",
+  "requirements_lock": "requirements.lock",
+  "requirements_lock_sha256": "81192daa5e71fd86a4dcac3fe3cd6b414e639e4ab4227931d390a38db3468c81",
+  "service_unit": "telegram_bot.service",
+  "service_scope": "system",
+  "signature": "REPLACE_WITH_HMAC"
+}

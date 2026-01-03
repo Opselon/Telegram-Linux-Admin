@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+pip-selfcheck.json
+
+# Config
+config.json
+
+# Database
+database.db
+
+# Other
+.DS_Store
+src/telegram_linux_admin.egg-info
+database.db-shm
+database.db-wal
+var/encryption.key

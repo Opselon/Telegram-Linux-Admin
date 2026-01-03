@@ -1,0 +1,266 @@
+{
+  "name": "🚀 Release Binaries",
+  "permissions": {
+    "contents": "write",
+    "actions": "read"
+  },
+  "concurrency": {
+    "group": "release-${{ github.ref }}",
+    "cancel-in-progress": false
+  },
+  "defaults": {
+    "run": {
+      "shell": "bash"
+    }
+  },
+  "on": {
+    "push": {
+      "branches": [
+        "main"
+      ],
+      "tags": [
+        "v*"
+      ]
+    },
+    "workflow_dispatch": {
+      "inputs": {
+        "tag": {
+          "description": "Tag (optional, e.g., v1.0.0)",
+          "required": false,
+          "default": ""
+        }
+      }
+    }
+  },
+  "env": {
+    "MODEL_ID": "deepseek/DeepSeek-V3-0324",
+    "APP_NAME": "telegram-linux-admin",
+    "MAINTAINER": "Opselon <opselon@users.noreply.github.com>"
+  },
+  "jobs": {
+    "build": {
+      "name": "🧱 Build ${{ matrix.os }} / ${{ matrix.arch }}",
+      "runs-on": "${{ matrix.os }}",
+      "permissions": {
+        "contents": "read"
+      },
+      "strategy": {
+        "fail-fast": false,
+        "matrix": {
+          "include": [
+            {
+              "os": "ubuntu-latest",
+              "arch": "amd64",
+              "python_arch": "x64",
+              "binary_name": "telegram-linux-admin-linux-amd64",
+              "platform_id": "linux-amd64"
+            },
+            {
+              "os": "windows-latest",
+              "arch": "amd64",
+              "python_arch": "x64",
+              "binary_name": "telegram-linux-admin-windows-amd64.exe",
+              "platform_id": "windows-amd64"
+            },
+            {
+              "os": "macos-latest",
+              "arch": "amd64",
+              "python_arch": "x64",
+              "binary_name": "telegram-linux-admin-macos-amd64",
+              "platform_id": "macos-amd64"
+            },
+            {
+              "os": "macos-latest",
+              "arch": "arm64",
+              "python_arch": "arm64",
+              "binary_name": "telegram-linux-admin-macos-arm64",
+              "platform_id": "macos-arm64"
+            }
+          ]
+        }
+      },
+      "steps": [
+        {
+          "name": "⬇️ Checkout",
+          "uses": "actions/checkout@v4"
+        },
+        {
+          "name": "🐍 Setup Python",
+          "uses": "actions/setup-python@v5",
+          "with": {
+            "python-version": "3.11",
+            "architecture": "${{ matrix.python_arch }}"
+          }
+        },
+        {
+          "name": "📦 Cache pip",
+          "uses": "actions/cache@v4",
+          "with": {
+            "path": "${{ runner.os == 'Windows' && '~\\AppData\\Local\\pip\\Cache' || runner.os == 'Linux' && '~/.cache/pip' || '~/Library/Caches/pip' }}",
+            "key": "pip-${{ runner.os }}-${{ hashFiles('**/pyproject.toml', '**/setup.cfg', '**/requirements*.txt') }}",
+            "restore-keys": "pip-${{ runner.os }}-"
+          }
+        },
+        {
+          "name": "🧹 Clean dist",
+          "shell": "bash",
+          "run": "rm -rf dist build\nmkdir -p dist\n"
+        },
+        {
+          "name": "📦 Install dependencies (PyInstaller for all)",
+          "run": "python -m pip install --upgrade pip\npip install . pyinstaller\n"
+        },
+        {
+          "name": "🏗️ Build executable (PyInstaller for all)",
+          "run": "pyinstaller --clean --noconfirm --onefile --name \"${{ matrix.binary_name }}\" src/main.py\n"
+        },
+        {
+          "name": "🔍 Verify dist contents",
+          "shell": "bash",
+          "run": "set -euo pipefail\necho \"== dist tree ==\"\nls -lah dist || true\ntest -s \"dist/${{ matrix.binary_name }}\" || { echo \"expected file not found: dist/${{ matrix.binary_name }}\"; exit 1; }\n"
+        },
+        {
+          "name": "⬆️ Upload Raw Binary Artifact",
+          "uses": "actions/upload-artifact@v4",
+          "with": {
+            "name": "bin-${{ matrix.platform_id }}",
+            "path": "dist/${{ matrix.binary_name }}",
+            "if-no-files-found": "error",
+            "retention-days": 7
+          }
+        }
+      ]
+    },
+    "package": {
+      "name": "📦 Create Standard Packages",
+      "runs-on": "ubuntu-latest",
+      "needs": "build",
+      "if": "always()",
+      "steps": [
+        {
+          "name": "⬇️ Download all successful binaries",
+          "uses": "actions/download-artifact@v4",
+          "with": {
+            "path": "binaries",
+            "pattern": "bin-*"
+          }
+        },
+        {
+          "name": "🛠️ Setup FPM (for .deb/.rpm)",
+          "run": "sudo apt-get update && sudo apt-get install -y ruby ruby-dev build-essential\nsudo gem install fpm\n"
+        },
+        {
+          "name": "🏷️ Get Version from Tag",
+          "id": "tag",
+          "run": "TAG=${{ github.ref_name || github.event.inputs.tag }}\nif [[ -z \"$TAG\" ]]; then TAG=\"v0.0.0-dev${{ github.run_number }}\"; fi\necho \"TAG_NAME=$TAG\" >> \"$GITHUB_OUTPUT\"\necho \"VERSION=${TAG#v}\" >> \"$GITHUB_OUTPUT\"\n"
+        },
+        {
+          "name": "📦 Create Packages (.deb, .rpm, .zip, .tar.gz)",
+          "run": "set -x\nmkdir -p packages\nVERSION=${{ steps.tag.outputs.VERSION }}\n\nfor PLATFORM_DIR in binaries/bin-*; do\n  [ -d \"$PLATFORM_DIR\" ] || continue\n  PLATFORM=$(basename \"$PLATFORM_DIR\" | sed 's/bin-//')\n  BINARY_PATH=$(find \"$PLATFORM_DIR\" -type f | head -n 1)\n  BINARY_NAME=$(basename \"$BINARY_PATH\")\n  \n  if [[ \"$PLATFORM\" == *linux-amd64 ]]; then\n    fpm -s dir -t deb -n \"$APP_NAME\" -v \"$VERSION\" -a amd64 --prefix /usr/local/bin --maintainer \"$MAINTAINER\" -C \"$PLATFORM_DIR\" \"$BINARY_NAME\"\n    fpm -s dir -t rpm -n \"$APP_NAME\" -v \"$VERSION\" -a x86_64 --prefix /usr/local/bin --maintainer \"$MAINTAINER\" -C \"$PLATFORM_DIR\" \"$BINARY_NAME\"\n  fi\n\n  if [[ \"$PLATFORM\" == *windows* ]]; then\n    cp \"$BINARY_PATH\" \"packages/${APP_NAME}.exe\"\n    zip \"packages/${APP_NAME}_${VERSION}_${PLATFORM}.zip\" \"packages/${APP_NAME}.exe\"\n    rm \"packages/${APP_NAME}.exe\"\n  else\n    tar -czvf \"packages/${APP_NAME}_${VERSION}_${PLATFORM}.tar.gz\" -C \"$PLATFORM_DIR\" \"$BINARY_NAME\"\n  fi\ndone\n\nmv *.deb *.rpm packages/ 2>/dev/null || true\n"
+        },
+        {
+          "name": "⬆️ Upload Final Packages Artifact",
+          "uses": "actions/upload-artifact@v4",
+          "with": {
+            "name": "release-assets",
+            "path": "packages/",
+            "if-no-files-found": "warn"
+          }
+        }
+      ]
+    },
+    "release": {
+      "name": "🚢 Publish Release",
+      "runs-on": "ubuntu-latest",
+      "needs": ["build", "package"],
+      "if": "always()",
+      "permissions": {
+        "contents": "write",
+        "actions": "read"
+      },
+      "env": {
+        "MODELS_TOKEN": "${{ secrets.MODELS_TOKEN }}"
+      },
+      "steps": [
+        {
+          "name": "🏷️ Compute tag (with fallback)",
+          "id": "tag",
+          "run": "if [ -n \"${{ github.event.inputs.tag }}\" ]; then\n  echo \"TAG_NAME=${{ github.event.inputs.tag }}\" >> \"$GITHUB_OUTPUT\"\nelif [[ \"${{ github.ref }}\" == refs/tags/* ]]; then\n  echo \"TAG_NAME=${{ github.ref_name }}\" >> \"$GITHUB_OUTPUT\"\nelse\n  echo \"TAG_NAME=v0.0.0-manual-${{ github.run_number }}\" >> \"$GITHUB_OUTPUT\"\nfi\n"
+        },
+        {
+          "name": "🧰 Ensure jq (for LLM)",
+          "run": "if ! command -v jq >/dev/null 2>&1; then\n  sudo apt-get update -y && sudo apt-get install -y jq\nfi\n"
+        },
+        {
+          "name": "⬇️ Checkout (full history for changelog)",
+          "uses": "actions/checkout@v4",
+          "with": {
+            "fetch-depth": 0
+          }
+        },
+        {
+          "name": "⬇️ Download packages for release",
+          "uses": "actions/download-artifact@v4",
+          "with": {
+            "name": "release-assets",
+            "path": "release-assets/"
+          }
+        },
+        {
+          "name": "✅ Validate assets exist and generate status report",
+          "id": "status",
+          "run": "set -euo pipefail\n\n# Check if any assets were successfully packaged\nif [ -d release-assets ] && [ -n \"$(ls -A release-assets)\" ]; then\n  # Generate checksums\n  (cd release-assets && sha256sum * > sha256sums.txt)\n  \n  echo '### 📦 Release Assets (Checksums Included)' > status_report.md\n  echo 'The following packages and archives were successfully built and are attached below:' >> status_report.md\n  (cd release-assets && ls -1 | grep -v 'sha256sums.txt' | sed -e 's/^/- /') >> status_report.md\n  echo -e '\\n' >> status_report.md\n  \n  echo \"STATUS_CODE=SUCCESS\" >> \"$GITHUB_OUTPUT\"\nelse\n  echo '### ⚠️ PARTIAL FAILURE: No Assets' > status_report.md\n  echo 'The build or packaging stage failed to produce any final release assets.' >> status_report.md\n  echo \"STATUS_CODE=FAILURE\" >> \"$GITHUB_OUTPUT\"\nfi\n"
+        },
+        {
+          "name": "🔗 Determine range",
+          "id": "range",
+          "run": "set -euo pipefail\nTAG=\"${{ steps.tag.outputs.TAG_NAME }}\"\n\nif git rev-parse -q --verify \"refs/tags/$TAG\" >/dev/null 2>&1; then\n  mapfile -t TAGS < <(git tag --sort=-creatordate)\n  PREV=\"\"\n  for i in \"${!TAGS[@]}\"; do\n    if [[ \"${TAGS[$i]}\" == \"$TAG\" ]]; then\n      if [[ $((i+1)) -lt ${#TAGS[@]} ]]; then PREV=\"${TAGS[$((i+1))]}\"; fi\n      break\n    fi\n  done\n  if [[ -n \"$PREV\" ]]; then\n    echo \"RANGE=$PREV..$TAG\" >> \"$GITHUB_OUTPUT\"\n    echo \"COMPARE=${{ github.server_url }}/${{ github.repository }}/compare/$PREV...$TAG\" >> \"$GITHUB_OUTPUT\"\n  else\n    echo \"RANGE=$TAG\" >> \"$GITHUB_OUTPUT\"\n    echo \"COMPARE=${{ github.server_url }}/${{ github.repository }}/releases/tag/$TAG\" >> \"$GITHUB_OUTPUT\"\n  fi\nelse\n  HEAD_SHA=\"${GITHUB_SHA}\"\n  if git rev-parse -q --verify \"${HEAD_SHA}^\" >/dev/null 2>&1; then\n    BASE_SHA=$(git rev-parse \"${HEAD_SHA}^\")\n    echo \"RANGE=${BASE_SHA}..${HEAD_SHA}\" >> \"$GITHUB_OUTPUT\"\n    echo \"COMPARE=${{ github.server_url }}/${{ github.repository }}/compare/${BASE_SHA}...${HEAD_SHA}\" >> \"$GITHUB_OUTPUT\"\n  else\n    echo \"RANGE=${HEAD_SHA}\" >> \"$GITHUB_OUTPUT\"\n    echo \"COMPARE=${{ github.server_url }}/${{ github.repository }}/commit/${HEAD_SHA}\" >> \"$GITHUB_OUTPUT\"\n  fi\nfi\n"
+        },
+        {
+          "name": "🧮 Collect commits",
+          "id": "changes",
+          "run": "git log ${{ steps.range.outputs.RANGE }} --pretty='format:%h|%an|%s' > COMMITS.txt || true\n{ echo \"### Commits\"; awk -F'|' '{printf \"- (%s) %s - %s\\n\",$1,$3,$2}' COMMITS.txt; } > COMMITS.md\necho \"COMMITS_PATH=COMMITS.md\" >> \"$GITHUB_OUTPUT\"\n"
+        },
+        {
+          "name": "🧷 Build PR notes (merge descriptions first)",
+          "env": {
+            "GITHUB_TOKEN": "${{ secrets.GITHUB_TOKEN }}"
+          },
+          "run": "set -euo pipefail\ngit log ${{ steps.range.outputs.RANGE }} --merges --pretty='%s' | sed -n 's/.*#\\([0-9]\\+\\).*/\\1/p' | sort -u > PRS.txt || true\nCOUNT=$(grep -c '^[0-9]\\+$' PRS.txt || true)\n\n: > PR_NOTES.md\nif [ \"$COUNT\" -gt 0 ]; then\n  API=\"${GITHUB_API_URL:-https://api.github.com}\"\n  REPO_FULL=\"${GITHUB_REPOSITORY}\"\n  echo \"### Contributed Pull Requests\" >> PR_NOTES.md\n  while read -r PR; do\n    [ -z \"$PR\" ] && continue\n    curl -sS -H \"Authorization: Bearer $GITHUB_TOKEN\" -H \"Accept: application/vnd.github+json\" \"$API/repos/$REPO_FULL/pulls/$PR\" > \"pr_$PR.json\" || true\n    TITLE=$(jq -r '.title // \"\"' \"pr_$PR.json\")\n    URL=$(jq -r '.html_url // \"\"' \"pr_$PR.json\")\n    USER=$(jq -r '.user.login // \"\"' \"pr_$PR.json\")\n    BODY=$(jq -r '.body // \"\"' \"pr_$PR.json\" | awk 'NR<=10')\n    echo \"- **#$PR:** ${TITLE} (@${USER})\" >> PR_NOTES.md\n    if [ -n \"$BODY\" ]; then printf \"\\n> %s\\n\" \"$BODY\" | sed 's/\\n/> /g' >> PR_NOTES.md; fi\n    echo \"\" >> PR_NOTES.md\n  done < PRS.txt\nfi\n"
+        },
+        {
+          "name": "🧱 Build prompt and input for LLM (Enhanced)",
+          "id": "prompt",
+          "run": "PROMPT_TEXT=\"You are a highly-detailed release notes author for a technical audience. Your task is to create comprehensive, well-structured release notes in Markdown format.\\n\\n**Instructions:**\\n1.  **Start with 'Key Highlights':** A 2-3 sentence executive summary explaining the most important changes and their benefits.\\n2.  **Create 'Detailed Changes by Category':** Use the provided commit list and PR details to create detailed lists under these headings (omit if empty): \\`🚀 Features\\`, \\`🐛 Fixes\\`, \\`⚡️ Performance Improvements\\`, \\`🛠️ Refactoring & Internal Changes\\`, \\`📚 Documentation\\`, \\`⚠️ Breaking Changes\\`. For each item, be descriptive.\\n3.  **Style:** Use clear, professional language. Use Markdown formatting effectively.\\n4.  **Do not include the commit log or compare URL.** That will be added later by the workflow.\\n\"\n\n# FIX: Use printf to correctly handle multiline string and escaping\nprintf \"%s\" \"$PROMPT_TEXT\" > PROMPT.txt\n\n# Assemble INPUT.txt with all gathered data\n{ echo \"Tag: ${{ steps.tag.outputs.TAG_NAME }}\"; echo \"Range: ${{ steps.range.outputs.RANGE }}\"; echo \"Compare: ${{ steps.range.outputs.COMPARE }}\"; echo; if [ -s PR_NOTES.md ]; then echo \"=== PR NOTES ===\"; cat PR_NOTES.md; echo; fi; echo \"=== COMMITS ===\"; cat \"${{ steps.changes.outputs.COMMITS_PATH }}\"; } > INPUT.txt\n"
+        },
+        {
+          "name": "🧠 LLM summary (GitHub Models)",
+          "if": "${{ env.MODELS_TOKEN != '' }}",
+          "id": "llm",
+          "run": "set -euo pipefail\njq -n --arg model \"${{ env.MODEL_ID }}\" --rawfile sys PROMPT.txt --rawfile usr INPUT.txt '{model:$model, messages:[{role:\"system\",content:$sys},{role:\"user\",content:$usr}]}' > payload.json\nHTTP_CODE=$(curl -sS -o llm_raw.json -w \"%{http_code}\" -H \"Accept: application/vnd.github+json\" -H \"Authorization: Bearer $MODELS_TOKEN\" -H \"Content-Type: application/json\" -X POST \"https://models.github.ai/inference/chat/completions\" --data-binary @payload.json || echo \"000\")\necho \"LLM HTTP code: $HTTP_CODE\"\nif [ \"$HTTP_CODE\" != \"200\" ] || ! jq -e . llm_raw.json >/dev/null 2>&1; then exit 0; fi\nSUMMARY=$(jq -r '(try .choices[0].message.content catch empty) // empty' llm_raw.json)\nif [ -n \"$SUMMARY\" ]; then\n  printf \"%s\\n\" \"$SUMMARY\" > AI_NOTES.md\nelse\n  echo \"No summary in JSON response.\"\nfi\n"
+        },
+        {
+          "name": "📝 Assemble Final Release Body",
+          "id": "body",
+          "run": "set -euo pipefail\n# Start with status report\ncat status_report.md > final_release_body.md\necho -e \"\\n---\\n\" >> final_release_body.md\n\n# Choose notes: AI > PRs > Commits\nif [[ -s AI_NOTES.md ]]; then\n  echo \"Choosing AI generated notes.\"\n  cat AI_NOTES.md >> final_release_body.md\nelif [[ -s PR_NOTES.md ]]; then\n  echo \"Choosing PR notes fallback.\"\n  cat PR_NOTES.md >> final_release_body.md\nelse\n  echo \"Choosing commits fallback.\"\n  { echo \"### Changes\"; echo; echo \"No detailed PR descriptions were found. This release includes the changes listed below.\"; echo; cat \"${{ steps.changes.outputs.COMMITS_PATH }}\"; } >> final_release_body.md\nfi\n\n# Always append the checksums file and compare link\nif [ -f release-assets/sha256sums.txt ]; then\n  echo -e \"\\n### 🛡️ Asset Integrity Check (SHA256)\\n\" >> final_release_body.md\n  echo '```' >> final_release_body.md\n  cat release-assets/sha256sums.txt >> final_release_body.md\n  echo '```' >> final_release_body.md\nfi\n\necho -e \"\\n---\\n**Full Changelog**: ${{ steps.range.outputs.COMPARE }}\" >> final_release_body.md\necho \"BODY_PATH=final_release_body.md\" >> \"$GITHUB_OUTPUT\"\n"
+        },
+        {
+          "name": "🚀 Publish GitHub Release",
+          "uses": "softprops/action-gh-release@v2",
+          "with": {
+            "tag_name": "${{ steps.tag.outputs.TAG_NAME }}",
+            "name": "Release ${{ steps.tag.outputs.TAG_NAME }}",
+            "body_path": "${{ steps.body.outputs.BODY_PATH }}",
+            "files": "release-assets/**/*",
+            "draft": false,
+            "prerelease": "${{ github.event_name == 'workflow_dispatch' || contains(steps.tag.outputs.TAG_NAME, '-') }}",
+            "make_latest": "${{ github.event_name == 'push' && !contains(steps.tag.outputs.TAG_NAME, '-') }}"
+          },
+          "env": {
+            "GITHUB_TOKEN": "${{ secrets.GITHUB_TOKEN }}"
+          }
+        }
+      ]
+    }
+  }
+}
