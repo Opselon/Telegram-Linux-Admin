@@ -271,7 +271,7 @@ def _safe_send_message(
     """
     parse_mode = _get_user_parse_mode(user_id) if user_id else get_parse_mode()
     return chat.send_message(
-        text,
+        escape_text(text, parse_mode),
         parse_mode=parse_mode,
         reply_markup=reply_markup,
         **kwargs
@@ -300,7 +300,7 @@ def _safe_edit_message_text(
     if hasattr(message_or_query, 'edit_message_text'):
         # It's a CallbackQuery
         return message_or_query.edit_message_text(
-            text,
+            escape_text(text, parse_mode),
             parse_mode=parse_mode,
             reply_markup=reply_markup,
             **kwargs
@@ -308,7 +308,7 @@ def _safe_edit_message_text(
     else:
         # It's a Message
         return message_or_query.edit_text(
-            text,
+            escape_text(text, parse_mode),
             parse_mode=parse_mode,
             reply_markup=reply_markup,
             **kwargs
