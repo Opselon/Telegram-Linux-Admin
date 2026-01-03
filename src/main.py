@@ -585,9 +585,9 @@ async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     parse_mode = _get_user_parse_mode(user_id)
     if update.callback_query:
         await update.callback_query.answer()
-        await update.callback_query.edit_message_text(menu_text, reply_markup=reply_markup, parse_mode=parse_mode)
+        await update.callback_query.edit_message_text(escape_text(menu_text, parse_mode), reply_markup=reply_markup, parse_mode=parse_mode)
     else:
-        await update.message.reply_text(menu_text, reply_markup=reply_markup, parse_mode=parse_mode)
+        await update.message.reply_text(escape_text(menu_text, parse_mode), reply_markup=reply_markup, parse_mode=parse_mode)
 
 
 @authorized
