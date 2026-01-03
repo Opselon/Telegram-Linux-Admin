@@ -166,11 +166,11 @@ def escape_text(text: str, parse_mode: str | None = None) -> str:
     
     # Modern match/case statement (Python 3.10+)
     match parse_mode:
-        case PARSE_MODE_MARKDOWN_V2:
+        case "MarkdownV2":
             return escape_markdown_v2(text)
-        case PARSE_MODE_MARKDOWN:
+        case "Markdown":
             return escape_markdown(text)
-        case PARSE_MODE_HTML:
+        case "HTML":
             return escape_html(text)
         case _:
             # No escaping needed for None or unknown modes
@@ -193,11 +193,11 @@ def format_bold(text: str, parse_mode: str | None = None) -> str:
         return text
     
     match parse_mode:
-        case PARSE_MODE_MARKDOWN_V2:
+        case "MarkdownV2":
             return f"*{escape_markdown_v2(text)}*"
-        case PARSE_MODE_MARKDOWN:
+        case "Markdown":
             return f"*{escape_markdown(text)}*"
-        case PARSE_MODE_HTML:
+        case "HTML":
             return f"<b>{escape_html(text)}</b>"
         case _:
             return text
@@ -218,11 +218,11 @@ def format_italic(text: str, parse_mode: str | None = None) -> str:
         return text
     
     match parse_mode:
-        case PARSE_MODE_MARKDOWN_V2:
+        case "MarkdownV2":
             return f"_{escape_markdown_v2(text)}_"
-        case PARSE_MODE_MARKDOWN:
+        case "Markdown":
             return f"_{escape_markdown(text)}_"
-        case PARSE_MODE_HTML:
+        case "HTML":
             return f"<i>{escape_html(text)}</i>"
         case _:
             return text
@@ -243,9 +243,9 @@ def format_code(text: str, parse_mode: str | None = None) -> str:
         return text
     
     match parse_mode:
-        case PARSE_MODE_MARKDOWN_V2 | PARSE_MODE_MARKDOWN:
+        case "MarkdownV2" | "Markdown":
             return f"`{escape_markdown_v2_code(text)}`"
-        case PARSE_MODE_HTML:
+        case "HTML":
             return f"<code>{escape_html(text)}</code>"
         case _:
             return text

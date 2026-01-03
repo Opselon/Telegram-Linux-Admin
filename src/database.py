@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 import os
 import sqlite3
 import threading
