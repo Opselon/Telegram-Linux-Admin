@@ -59,6 +59,8 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "language_updated": "✅ Language updated to {language_name}.",
         "language_saved_toast": "Language saved!",
         "language_unsupported": "Unsupported language.",
+        "server_add_error": "❌ **Error adding server:**\n`{error}`",
+        "error_invalid_auth_method_input": "⚠️ Please use the buttons to select an authentication method.",
     },
     "ar": {
         "main_menu_welcome": "🐧 **مرحبًا بك في روبوت إدارة لينكس!**\n\nماذا تريد أن تفعل؟",

@@ -427,6 +427,16 @@ async def get_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     )
     return AUTH_METHOD
 
+async def auth_method_invalid_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handles invalid text input when expecting a button press for auth method."""
+    user_id = _extract_user_id(update)
+    language = _get_user_language(user_id)
+    await update.message.reply_text(
+        translate('error_invalid_auth_method_input', language),
+    )
+    # Re-ask the question without ending the conversation
+    return AUTH_METHOD
+
 async def get_auth_method(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     user_id = _extract_user_id(update)
@@ -2899,7 +2909,10 @@ def main() -> None:
             ALIAS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_alias)],
             HOSTNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_hostname)],
             USER: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_user)],
-            AUTH_METHOD: [CallbackQueryHandler(get_auth_method)],
+            AUTH_METHOD: [
+                CallbackQueryHandler(get_auth_method),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, auth_method_invalid_input)
+            ],
             PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_password)],
             KEY_PATH: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_key_path)],
         },
