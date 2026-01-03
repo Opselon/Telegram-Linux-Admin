@@ -6,11 +6,12 @@ build-backend = "setuptools.build_meta"
 name = "telegram-linux-admin"
 version = "3.0.0"
 authors = [
-    { name="Your Name", email="you@example.com" },
+    { name = "Your Name", email = "you@example.com" },
 ]
 description = "A modern, post-quantum encrypted Telegram bot for Linux server administration with 2026 standards."
 readme = "README.md"
 requires-python = ">=3.12"
+
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
@@ -21,6 +22,7 @@ classifiers = [
     "Topic :: System :: Systems Administration",
     "Topic :: Communications :: Chat",
 ]
+
 dependencies = [
     "python-telegram-bot[ext]>=21.0",
     "asyncssh>=2.14",
@@ -28,14 +30,13 @@ dependencies = [
     "async-timeout>=4.0",
     "requests>=2.31",
     "cryptography>=42.0",
-    "psutil>=5.9; extra == 'monitoring'",
-]
-dependencies-optional = [
-    "psutil>=5.9",
 ]
 
 [project.optional-dependencies]
-monitoring = ["psutil>=5.9"]
+monitoring = [
+    "psutil>=5.9",
+]
+
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
