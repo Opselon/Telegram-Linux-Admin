@@ -57,7 +57,7 @@ from .database import (
 )
 from .config import config
 from functools import wraps, cache
-from typing import Optional, Dict, TypedDict, Literal
+from typing import Optional, Dict, TypedDict, Literal, Any
 from dataclasses import dataclass, field
 from contextlib import asynccontextmanager
 import secrets
@@ -2880,7 +2880,9 @@ def main() -> None:
         .token(config.telegram_token)
         .post_init(post_init)
         .post_shutdown(post_shutdown)
-        .request(connect_timeout=30.0, read_timeout=30.0, write_timeout=30.0)
+        .connect_timeout(30.0)
+        .read_timeout(30.0)
+        .write_timeout(30.0)
         .build()
     )
 
