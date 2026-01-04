@@ -455,22 +455,25 @@ async def get_auth_method(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return KEY_PATH
 
 async def get_password(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handles receiving the password, saves the server, and ends the conversation."""
     context.user_data['password'] = update.message.text
     await save_server(update, context)
     return ConversationHandler.END
 
 async def get_key_path(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handles receiving the key path, saves the server, and ends the conversation."""
     context.user_data['key_path'] = update.message.text
     await save_server(update, context)
     return ConversationHandler.END
 
-async def save_server(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Saves the server to the database."""
+async def save_server(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Saves the server to the database. It sends a confirmation or error message
+    but does not manage the conversation state, leaving that to the handlers.
+    """
     user_id = _extract_user_id(update)
     language = _get_user_language(user_id)
     try:
-        user_id = _extract_user_id(update)
-        language = _get_user_language(user_id)
         owner_id = update.effective_user.id
         add_server(
             owner_id,
@@ -487,8 +490,6 @@ async def save_server(update: Update, context: ContextTypes.DEFAULT_TYPE):
             translate('server_add_error', language, error=str(e)),
             parse_mode='Markdown'
         )
-    finally:
-        context.user_data.clear()
 
 async def cancel_add_server(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Cancels the add server conversation."""

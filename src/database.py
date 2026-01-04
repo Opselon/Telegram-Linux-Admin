@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import base64
 import os
 import sqlite3
 import threading
@@ -108,22 +109,24 @@ def _ensure_column(conn: sqlite3.Connection, table: str, column_def: str, column
 
 
 def _encrypt_value(value: str | None) -> str | None:
-    """Encrypts a value using post-quantum encryption if available, otherwise falls back to standard encryption."""
+    """Encrypts a value and encodes it as a Base64 string for safe database storage."""
+    if value is None:
+        return None
     if PQ_ENCRYPTION_AVAILABLE:
         encrypted = encrypt_pq_secret(value)
     else:
         encrypted = encrypt_secret(value)
-    return encrypted.decode("utf-8") if encrypted else None
+    # Encode bytes to Base64 string to prevent encoding errors with the database driver
+    return base64.b64encode(encrypted).decode("utf-8")
 
 
-def _decrypt_value(value: Any) -> str | None:
-    """Decrypts a value, trying post-quantum first, then falling back to standard decryption."""
+def _decrypt_value(value: str | None) -> str | None:
+    """Decrypts a Base64 encoded value, trying post-quantum first, then falling back to standard decryption."""
     if value is None:
         return None
-    if isinstance(value, str):
-        data = value.encode("utf-8")
-    else:
-        data = value
+
+    # Decode the Base64 string back to bytes before decryption
+    data = base64.b64decode(value)
     
     # Try post-quantum decryption first
     if PQ_ENCRYPTION_AVAILABLE:
