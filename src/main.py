@@ -206,7 +206,7 @@ def admin_authorized(func):
             if update.callback_query:
                 await update.callback_query.answer("🚫 You are not authorized for this admin-only action.", show_alert=True)
             elif update.effective_message:
-                await _safe_send_message(update.effective_message, "🚫 **Access Denied**\nThis is an admin-only feature.", user_id)
+                await _safe_send_message(update.effective_chat, "🚫 **Access Denied**\nThis is an admin-only feature.", user_id)
             return
 
         await send_debug_message(update, "Admin authorization successful.")
@@ -386,14 +386,14 @@ async def get_alias(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = _extract_user_id(update)
     language = _get_user_language(user_id)
     context.user_data['alias'] = update.message.text
-    await _safe_send_message(update.message, translate('prompt_hostname', language), user_id)
+    await _safe_send_message(update.message.chat, translate('prompt_hostname', language), user_id)
     return HOSTNAME
 
 async def get_hostname(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = _extract_user_id(update)
     language = _get_user_language(user_id)
     context.user_data['hostname'] = update.message.text
-    await _safe_send_message(update.message, translate('prompt_username', language), user_id)
+    await _safe_send_message(update.message.chat, translate('prompt_username', language), user_id)
     return USER
 
 async def get_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -411,14 +411,14 @@ async def get_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         )
     ]]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await _safe_send_message(update.message, translate('prompt_auth_method', language), user_id, reply_markup=reply_markup)
+    await _safe_send_message(update.message.chat, translate('prompt_auth_method', language), user_id, reply_markup=reply_markup)
     return AUTH_METHOD
 
 async def auth_method_invalid_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Handles invalid text input when expecting a button press for auth method."""
     user_id = _extract_user_id(update)
     language = _get_user_language(user_id)
-    await _safe_send_message(update.message, translate('error_invalid_auth_method_input', language), user_id)
+    await _safe_send_message(update.message.chat, translate('error_invalid_auth_method_input', language), user_id)
     # Re-ask the question without ending the conversation
     return AUTH_METHOD
 
@@ -429,10 +429,10 @@ async def get_auth_method(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await query.answer()
 
     if query.data == 'password':
-        await _safe_send_message(query.message, translate('prompt_password', language), user_id)
+        await _safe_send_message(query.message.chat, translate('prompt_password', language), user_id)
         return PASSWORD
     else:
-        await _safe_send_message(query.message, translate('prompt_key_path', language), user_id)
+        await _safe_send_message(query.message.chat, translate('prompt_key_path', language), user_id)
         return KEY_PATH
 
 async def get_password(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -465,10 +465,10 @@ async def save_server(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             key_path=context.user_data.get('key_path')
         )
         confirmation = translate('server_added', language, alias=context.user_data['alias'])
-        await _safe_send_message(update.message, confirmation, user_id)
+        await _safe_send_message(update.message.chat, confirmation, user_id)
     except Exception as e:
         await _safe_send_message(
-            update.message,
+            update.message.chat,
             translate('server_add_error', language, error=str(e)),
             user_id
         )
@@ -477,7 +477,7 @@ async def cancel_add_server(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     """Cancels the add server conversation."""
     user_id = _extract_user_id(update)
     language = _get_user_language(user_id)
-    await _safe_send_message(update.message, translate('server_add_cancelled', language), user_id)
+    await _safe_send_message(update.message.chat, translate('server_add_cancelled', language), user_id)
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -493,7 +493,7 @@ async def remove_server_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await update.callback_query.answer()
             await _safe_edit_message_text(update.callback_query, message, user_id)
         else:
-            await _safe_send_message(update.effective_message, message, user_id)
+            await _safe_send_message(update.effective_chat, message, user_id)
         return
 
     remove_label = translate('button_remove_server', language)
@@ -514,7 +514,7 @@ async def remove_server_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.callback_query.answer()
         await _safe_edit_message_text(update.callback_query, text, user_id, reply_markup=reply_markup)
     else:
-        await _safe_send_message(update.effective_message, text, user_id, reply_markup=reply_markup)
+        await _safe_send_message(update.effective_chat, text, user_id, reply_markup=reply_markup)
 
 # --- Navigation ---
 @authorized
@@ -570,7 +570,7 @@ async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.callback_query.answer()
         await _safe_edit_message_text(update.callback_query, menu_text, user_id, reply_markup=reply_markup)
     else:
-        await _safe_send_message(update.message, menu_text, user_id, reply_markup=reply_markup)
+        await _safe_send_message(update.message.chat, menu_text, user_id, reply_markup=reply_markup)
 
 
 @authorized
@@ -592,7 +592,7 @@ async def language_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.callback_query.answer()
         await _safe_edit_message_text(update.callback_query, text, user_id, reply_markup=reply_markup)
     elif message:
-        await _safe_send_message(message, text, user_id, reply_markup=reply_markup)
+        await _safe_send_message(message.chat, text, user_id, reply_markup=reply_markup)
 
 
 @authorized
@@ -773,7 +773,7 @@ async def toggle_debug_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     DEBUG_MODE = not DEBUG_MODE
     status = "ON" if DEBUG_MODE else "OFF"
     user_id = _extract_user_id(update)
-    await _safe_send_message(update.message, f"🐞 **Debug Mode is now {status}**", user_id)
+    await _safe_send_message(update.message.chat, f"🐞 **Debug Mode is now {status}**", user_id)
 
 
 # --- Command Execution ---
@@ -803,7 +803,7 @@ async def execute_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     command = update.message.text.strip()
 
     if not alias:
-        await _safe_send_message(update.message, "⚠️ No active connection. Please connect to a server first.", user_id)
+        await _safe_send_message(update.message.chat, "⚠️ No active connection. Please connect to a server first.", user_id)
         return ConversationHandler.END
 
     # Initial message - Pro version with language-aware formatting
@@ -814,7 +814,7 @@ async def execute_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     builder.add_text(" on ")
     builder.add_code(alias)
     builder.add_text("...")
-    result_message = await _safe_send_message(update.message, builder.build(), user_id)
+    result_message = await _safe_send_message(update.message.chat, builder.build(), user_id)
 
     output_buffer: list[str] = []
     last_sent_text = ""
@@ -976,10 +976,10 @@ async def handle_shell_command(update: Update, context: ContextTypes.DEFAULT_TYP
             await update.message.reply_document(document=open(f.name, "rb"), caption=f"Shell output for `{command}`")
             os.remove(f.name)
         else:
-            await _safe_send_message(update.message, f"```\n{output}\n```", user_id)
+            await _safe_send_message(update.message.chat, f"```\n{output}\n```", user_id)
     except Exception as e:
         logger.error(f"Error in shell on {alias} for user {user_id}: {e}", exc_info=True)
-        await _safe_send_message(update.message, f"❌ **Error:**\n`{e}`", user_id)
+        await _safe_send_message(update.message.chat, f"❌ **Error:**\n`{e}`", user_id)
 
 @authorized
 async def exit_shell(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -992,7 +992,7 @@ async def exit_shell(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             await ssh_manager.disconnect(user_id, alias)
             del user_connections[user_id]
 
-        await _safe_send_message(update.message, "🔌 **Shell session terminated.**", user_id)
+        await _safe_send_message(update.message.chat, "🔌 **Shell session terminated.**", user_id)
         await main_menu(update, context)
 
 
@@ -1305,7 +1305,7 @@ async def execute_install_package(update: Update, context: ContextTypes.DEFAULT_
 
     command = f"sudo apt-get install -y {package_name}"
 
-    result_message = await _safe_send_message(update.message, f"Running `{command}` on `{alias}`...", user_id)
+    result_message = await _safe_send_message(update.message.chat, f"Running `{command}` on `{alias}`...", user_id)
 
     output = ""
     try:
@@ -1323,7 +1323,7 @@ async def execute_install_package(update: Update, context: ContextTypes.DEFAULT_
 async def cancel_install_package(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Cancels the package installation conversation."""
     user_id = _extract_user_id(update)
-    await _safe_send_message(update.message, "Package installation cancelled.", user_id)
+    await _safe_send_message(update.message.chat, "Package installation cancelled.", user_id)
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -1379,7 +1379,7 @@ async def execute_docker_action(update: Update, context: ContextTypes.DEFAULT_TY
 
     command = f"docker {action} {container_name}"
 
-    result_message = await _safe_send_message(update.message, f"Running `{command}` on `{alias}`...", user_id)
+    result_message = await _safe_send_message(update.message.chat, f"Running `{command}` on `{alias}`...", user_id)
 
     output = ""
     try:
@@ -1441,7 +1441,7 @@ async def docker_ps(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def cancel_docker_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Cancels the Docker action conversation."""
     user_id = _extract_user_id(update)
-    await _safe_send_message(update.message, "Docker action cancelled.", user_id)
+    await _safe_send_message(update.message.chat, "Docker action cancelled.", user_id)
     context.user_data.clear()
     return ConversationHandler.END
 
