@@ -263,14 +263,16 @@ async def _safe_send_message(
     Pro version: Safely sends a message with language-aware parse mode.
     
     Args:
-        chat: Chat object to send message to
+        chat: Chat or Message object to send message to.
         text: Message text
         user_id: User ID for language detection
         reply_markup: Optional reply markup
         **kwargs: Additional arguments for send_message
     """
+    # If a Message object is passed, extract its Chat object.
+    target_chat = chat.chat if hasattr(chat, 'chat') else chat
     parse_mode = _get_user_parse_mode(user_id) if user_id else get_parse_mode()
-    return await chat.send_message(
+    return await target_chat.send_message(
         escape_text(text, parse_mode),
         parse_mode=parse_mode,
         reply_markup=reply_markup,
