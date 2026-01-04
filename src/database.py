@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 from pathlib import Path
 import os
 import sqlite3
@@ -108,33 +110,54 @@ def _ensure_column(conn: sqlite3.Connection, table: str, column_def: str, column
 
 
 def _encrypt_value(value: str | None) -> str | None:
-    """Encrypts a value using post-quantum encryption if available, otherwise falls back to standard encryption."""
+    """Encrypts a value and encodes it as a Base64 string."""
+    if value is None:
+        return None
     if PQ_ENCRYPTION_AVAILABLE:
-        encrypted = encrypt_pq_secret(value)
+        encrypted_bytes = encrypt_pq_secret(value)
     else:
-        encrypted = encrypt_secret(value)
-    return encrypted.decode("utf-8") if encrypted else None
+        encrypted_bytes = encrypt_secret(value)
+
+    if encrypted_bytes:
+        return base64.b64encode(encrypted_bytes).decode("ascii")
+    return None
 
 
 def _decrypt_value(value: Any) -> str | None:
-    """Decrypts a value, trying post-quantum first, then falling back to standard decryption."""
+    """Decrypts a value, handling Base64 encoding and falling back for old data."""
     if value is None:
         return None
+
+    data: bytes
     if isinstance(value, str):
-        data = value.encode("utf-8")
+        try:
+            # New format: Base64-encoded ASCII string
+            data = base64.b64decode(value)
+        except binascii.Error:
+            # Old format: improperly stored raw bytes as a string, encode back
+            data = value.encode("utf-8")
     else:
+        # Should be bytes already if not a string
         data = value
-    
+
+    decrypted = None
     # Try post-quantum decryption first
     if PQ_ENCRYPTION_AVAILABLE:
         try:
-            return decrypt_pq_secret(data)
+            decrypted = decrypt_pq_secret(data)
         except Exception:
             # Fall back to standard decryption for backward compatibility
             pass
+
+    # If PQ decryption failed or was skipped, try standard decryption
+    if decrypted is None:
+        try:
+            decrypted = decrypt_secret(data)
+        except Exception:
+            # If both fail, there's a problem with the data
+            return None
     
-    # Standard decryption
-    return decrypt_secret(data)
+    return decrypted
 
 
 def _plan_limit(plan: str | None) -> int:
