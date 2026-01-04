@@ -618,3 +618,185 @@ def get_system_health() -> dict[str, Any]:
             "disk_free_gb": "Error"
         }
 
+
+# --- Dashboard Statistics Functions ---
+def get_total_users() -> int:
+    """Returns the total number of users."""
+    conn = get_db_connection()
+    row = conn.execute("SELECT COUNT(*) AS count FROM users").fetchone()
+    return row["count"] if row else 0
+
+
+def get_users_joined_today() -> int:
+    """Returns users who likely joined today (have preferences but no servers yet)."""
+    conn = get_db_connection()
+    row = conn.execute(
+        """
+        SELECT COUNT(DISTINCT up.telegram_id) AS count
+        FROM user_preferences up
+        LEFT JOIN servers s ON up.telegram_id = s.owner_id
+        WHERE s.owner_id IS NULL
+        """
+    ).fetchone()
+    return row["count"] if row else 0
+
+
+def get_total_servers() -> int:
+    """Returns the total number of servers."""
+    conn = get_db_connection()
+    row = conn.execute("SELECT COUNT(*) AS count FROM servers").fetchone()
+    return row["count"] if row else 0
+
+
+def get_servers_added_today() -> int:
+    """Returns the number of servers added today."""
+    conn = get_db_connection()
+    row = conn.execute(
+        """
+        SELECT COUNT(*) AS count FROM servers
+        WHERE DATE(created_at) = DATE('now')
+        """
+    ).fetchone()
+    return row["count"] if row else 0
+
+
+def get_plan_distribution() -> dict[str, int]:
+    """Returns the distribution of users by plan."""
+    conn = get_db_connection()
+    rows = conn.execute(
+        "SELECT plan, COUNT(*) AS count FROM users GROUP BY plan"
+    ).fetchall()
+    return {row["plan"]: row["count"] for row in rows}
+
+
+def get_language_distribution() -> dict[str, int]:
+    """Returns the distribution of users by language."""
+    conn = get_db_connection()
+    rows = conn.execute(
+        "SELECT language, COUNT(*) AS count FROM user_preferences GROUP BY language"
+    ).fetchall()
+    return {row["language"]: row["count"] for row in rows}
+
+
+def get_recent_servers(limit: int = 10) -> list[dict[str, Any]]:
+    """Returns the most recently added servers."""
+    conn = get_db_connection()
+    rows = conn.execute(
+        """
+        SELECT owner_id, alias, hostname, created_at
+        FROM servers
+        ORDER BY created_at DESC
+        LIMIT ?
+        """,
+        (limit,)
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_active_users_count() -> int:
+    """Returns the number of users who have at least one server."""
+    conn = get_db_connection()
+    row = conn.execute(
+        "SELECT COUNT(DISTINCT owner_id) AS count FROM servers"
+    ).fetchone()
+    return row["count"] if row else 0
+
+
+def get_servers_per_user_stats() -> dict[str, Any]:
+    """Returns statistics about servers per user."""
+    conn = get_db_connection()
+    row = conn.execute(
+        """
+        SELECT
+            AVG(server_count) AS avg_servers,
+            MAX(server_count) AS max_servers,
+            MIN(server_count) AS min_servers
+        FROM (
+            SELECT owner_id, COUNT(*) AS server_count
+            FROM servers
+            GROUP BY owner_id
+        )
+        """
+    ).fetchone()
+    return {
+        "avg": round(row["avg_servers"] or 0, 2),
+        "max": row["max_servers"] or 0,
+        "min": row["min_servers"] or 0
+    } if row else {"avg": 0, "max": 0, "min": 0}
+
+
+def get_servers_added_this_week() -> int:
+    """Returns servers added in the last 7 days."""
+    conn = get_db_connection()
+    row = conn.execute(
+        """
+        SELECT COUNT(*) AS count FROM servers
+        WHERE DATE(created_at) >= DATE('now', '-7 days')
+        """
+    ).fetchone()
+    return row["count"] if row else 0
+
+
+def get_top_users_by_servers(limit: int = 5) -> list[dict[str, Any]]:
+    """Returns top users by number of servers."""
+    conn = get_db_connection()
+    rows = conn.execute(
+        """
+        SELECT owner_id, COUNT(*) AS server_count
+        FROM servers
+        GROUP BY owner_id
+        ORDER BY server_count DESC
+        LIMIT ?
+        """,
+        (limit,)
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_database_size() -> dict[str, Any]:
+    """Returns database size information."""
+    try:
+        db_path = _resolve_db_path()
+        if os.path.exists(db_path):
+            size_bytes = os.path.getsize(db_path)
+            return {
+                "size_bytes": size_bytes,
+                "size_mb": round(size_bytes / (1024 * 1024), 2),
+                "size_kb": round(size_bytes / 1024, 2)
+            }
+    except Exception:
+        pass
+    return {"size_bytes": 0, "size_mb": 0, "size_kb": 0}
+
+
+def get_system_health() -> dict[str, Any]:
+    """Returns system health metrics."""
+    try:
+        import psutil
+        cpu_percent = psutil.cpu_percent(interval=0.1)
+        memory = psutil.virtual_memory()
+        disk = psutil.disk_usage('/')
+
+        return {
+            "cpu_percent": round(cpu_percent, 1),
+            "memory_percent": round(memory.percent, 1),
+            "memory_available_mb": round(memory.available / (1024 * 1024), 1),
+            "disk_percent": round(disk.percent, 1),
+            "disk_free_gb": round(disk.free / (1024 * 1024 * 1024), 2)
+        }
+    except ImportError:
+        return {
+            "cpu_percent": "N/A",
+            "memory_percent": "N/A",
+            "memory_available_mb": "N/A",
+            "disk_percent": "N/A",
+            "disk_free_gb": "N/A"
+        }
+    except Exception:
+        return {
+            "cpu_percent": "Error",
+            "memory_percent": "Error",
+            "memory_available_mb": "Error",
+            "disk_percent": "Error",
+            "disk_free_gb": "Error"
+        }
