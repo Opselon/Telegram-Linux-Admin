@@ -71,10 +71,6 @@ from .localization import (
 from .parse_mode import (
     get_parse_mode,
     escape_text,
-    format_bold,
-    format_code,
-    format_code_block,
-    safe_format_message,
     MessageBuilder,
 )
 
@@ -253,71 +249,105 @@ def _get_user_parse_mode(user_id: int | None) -> str | None:
     return get_parse_mode(language)
 
 
-async def _safe_send_message(
+async def _answer_callback_query_safely(query: Update.callback_query):
+    """Answers a callback query and handles any potential errors."""
+    if query:
+        try:
+            await query.answer()
+        except Exception as e:
+            logger.warning(f"Failed to answer callback query: {e}")
+
+
+async def _send_message_safely(
     chat,
     text: str,
     user_id: int | None = None,
     reply_markup=None,
+    preformatted: bool = False,
     **kwargs
 ):
     """
-    Pro version: Safely sends a message with language-aware parse mode.
-    
-    Args:
-        chat: Chat object to send message to
-        text: Message text
-        user_id: User ID for language detection
-        reply_markup: Optional reply markup
-        **kwargs: Additional arguments for send_message
+    Sends a message with fail-safe rendering. Escapes text by default.
+    Tries with a preferred parse mode first, then falls back to plain text if a
+    BadRequest error occurs.
     """
-    parse_mode = _get_user_parse_mode(user_id) if user_id else get_parse_mode()
-    return await chat.send_message(
-        text,
-        parse_mode=parse_mode,
-        reply_markup=reply_markup,
-        **kwargs
-    )
+    parse_mode = _get_user_parse_mode(user_id)
 
+    # If the text is not pre-formatted (i.e., not from MessageBuilder), escape it.
+    text_to_send = text if preformatted else escape_text(text, parse_mode)
 
-async def _safe_edit_message_text(
-    message_or_query,
-    text: str,
-    user_id: int | None = None,
-    reply_markup=None,
-    **kwargs
-):
-    """
-    Pro version: Safely edits message text with language-aware parse mode.
-    
-    Args:
-        message_or_query: Message or CallbackQuery object
-        text: New message text
-        user_id: User ID for language detection
-        reply_markup: Optional reply markup
-        **kwargs: Additional arguments for edit_message_text
-    """
-    parse_mode = _get_user_parse_mode(user_id) if user_id else get_parse_mode()
-    
     try:
-        if hasattr(message_or_query, 'edit_message_text'):
-            # It's a CallbackQuery
-            return await message_or_query.edit_message_text(
+        return await chat.send_message(
+            text_to_send,
+            parse_mode=parse_mode,
+            reply_markup=reply_markup,
+            **kwargs
+        )
+    except BadRequest as e:
+        if "Can't parse entities" in str(e):
+            logger.warning(f"Parse error with mode '{parse_mode}'. Retrying with original text and no parse mode. Error: {e}")
+            logger.debug(f"Original text: {text}")
+            # Fallback to the original, unescaped text with no parsing
+            return await chat.send_message(
                 text,
-                parse_mode=parse_mode,
+                parse_mode=None,
                 reply_markup=reply_markup,
                 **kwargs
             )
         else:
-            # It's a Message
-            return await message_or_query.edit_text(
+            raise e
+
+
+async def _edit_message_safely(
+    message_or_query,
+    text: str,
+    user_id: int | None = None,
+    reply_markup=None,
+    preformatted: bool = False,
+    **kwargs
+):
+    """
+    Edits a message with fail-safe rendering. Escapes text by default.
+    Tries with a preferred parse mode first, then falls back to plain text if a
+    BadRequest error occurs.
+    """
+    parse_mode = _get_user_parse_mode(user_id)
+
+    edit_func = None
+    if hasattr(message_or_query, 'edit_message_text'):
+        edit_func = message_or_query.edit_message_text
+    elif hasattr(message_or_query, 'edit_text'):
+        edit_func = message_or_query.edit_text
+
+    if not edit_func:
+        logger.error("Attempted to edit an object with no edit function.")
+        return
+
+    # If the text is not pre-formatted (i.e., not from MessageBuilder), escape it.
+    text_to_send = text if preformatted else escape_text(text, parse_mode)
+
+    try:
+        return await edit_func(
+            text_to_send,
+            parse_mode=parse_mode,
+            reply_markup=reply_markup,
+            **kwargs
+        )
+    except BadRequest as e:
+        if "Message is not modified" in str(e):
+            return  # This is a harmless, expected error.
+        elif "Can't parse entities" in str(e):
+            logger.warning(f"Parse error with mode '{parse_mode}'. Retrying with original text and no parse mode. Error: {e}")
+            logger.debug(f"Original text: {text}")
+            # Fallback to the original, unescaped text with no parsing
+            return await edit_func(
                 text,
-                parse_mode=parse_mode,
+                parse_mode=None,
                 reply_markup=reply_markup,
                 **kwargs
             )
-    except BadRequest as e:
-        if "Message is not modified" not in str(e):
-            logger.warning(f"UI update failed: {e}")
+        else:
+            raise e
 
 
 def _build_language_keyboard(active_language: str) -> InlineKeyboardMarkup:
@@ -349,7 +379,7 @@ async def _send_connection_error(
 ) -> None:
     """Pro version: Sends a translated connection error message with language-aware parse mode."""
     error_message = _translate_for_user(user_id, key, **kwargs)
-    await _safe_edit_message_text(query, error_message, user_id)
+    await _edit_message_safely(query, error_message, user_id)
 
 # --- Add/Remove Server ---
 @authorized
@@ -369,16 +399,16 @@ async def add_server_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         if update.callback_query:
             await update.callback_query.answer(message, show_alert=True)
         elif update.effective_message:
-            await _safe_send_message(update.effective_message, message, user_id)
+            await _send_message_safely(update.effective_message.chat, message, user_id)
         return ConversationHandler.END
 
     prompt = translate('add_server_prompt', language)
 
     if update.callback_query:
         await update.callback_query.answer()
-        await _safe_edit_message_text(update.callback_query, prompt, user_id)
+        await _edit_message_safely(update.callback_query.message, prompt, user_id)
     else:
-        await _safe_send_message(update.effective_message, prompt, user_id)
+        await _send_message_safely(update.effective_message.chat, prompt, user_id)
 
     return ALIAS
 
@@ -387,14 +417,14 @@ async def get_alias(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = _extract_user_id(update)
     language = _get_user_language(user_id)
     context.user_data['alias'] = update.message.text
-    await _safe_send_message(update.message.chat, translate('prompt_hostname', language), user_id)
+    await _send_message_safely(update.message.chat, translate('prompt_hostname', language), user_id)
     return HOSTNAME
 
 async def get_hostname(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = _extract_user_id(update)
     language = _get_user_language(user_id)
     context.user_data['hostname'] = update.message.text
-    await _safe_send_message(update.message.chat, translate('prompt_username', language), user_id)
+    await _send_message_safely(update.message.chat, translate('prompt_username', language), user_id)
     return USER
 
 async def get_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -412,14 +442,14 @@ async def get_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         )
     ]]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await _safe_send_message(update.message.chat, translate('prompt_auth_method', language), user_id, reply_markup=reply_markup)
+    await _send_message_safely(update.message.chat, translate('prompt_auth_method', language), user_id, reply_markup=reply_markup)
     return AUTH_METHOD
 
 async def auth_method_invalid_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Handles invalid text input when expecting a button press for auth method."""
     user_id = _extract_user_id(update)
     language = _get_user_language(user_id)
-    await _safe_send_message(update.message.chat, translate('error_invalid_auth_method_input', language), user_id)
+    await _send_message_safely(update.message.chat, translate('error_invalid_auth_method_input', language), user_id)
     # Re-ask the question without ending the conversation
     return AUTH_METHOD
 
@@ -430,10 +460,10 @@ async def get_auth_method(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await query.answer()
 
     if query.data == 'password':
-        await _safe_send_message(query.message.chat, translate('prompt_password', language), user_id)
+        await _send_message_safely(query.message.chat, translate('prompt_password', language), user_id)
         return PASSWORD
     else:
-        await _safe_send_message(query.message.chat, translate('prompt_key_path', language), user_id)
+        await _send_message_safely(query.message.chat, translate('prompt_key_path', language), user_id)
         return KEY_PATH
 
 async def get_password(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -466,9 +496,9 @@ async def save_server(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             key_path=context.user_data.get('key_path')
         )
         confirmation = translate('server_added', language, alias=context.user_data['alias'])
-        await _safe_send_message(update.message.chat, confirmation, user_id)
+        await _send_message_safely(update.message.chat, confirmation, user_id)
     except Exception as e:
-        await _safe_send_message(
+        await _send_message_safely(
             update.message.chat,
             translate('server_add_error', language, error=str(e)),
             user_id
@@ -478,7 +508,7 @@ async def cancel_add_server(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     """Cancels the add server conversation."""
     user_id = _extract_user_id(update)
     language = _get_user_language(user_id)
-    await _safe_send_message(update.message.chat, translate('server_add_cancelled', language), user_id)
+    await _send_message_safely(update.message.chat, translate('server_add_cancelled', language), user_id)
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -492,9 +522,9 @@ async def remove_server_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
         message = translate('no_servers_to_remove', language)
         if update.callback_query:
             await update.callback_query.answer()
-            await _safe_edit_message_text(update.callback_query, message, user_id)
+            await _edit_message_safely(update.callback_query.message, message, user_id)
         else:
-            await _safe_send_message(update.effective_chat, message, user_id)
+            await _send_message_safely(update.effective_chat, message, user_id)
         return
 
     remove_label = translate('button_remove_server', language)
@@ -513,9 +543,9 @@ async def remove_server_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
     text = '🗑️ **Select a server to remove:**'
     if update.callback_query:
         await update.callback_query.answer()
-        await _safe_edit_message_text(update.callback_query, text, user_id, reply_markup=reply_markup)
+        await _edit_message_safely(update.callback_query.message, text, user_id, reply_markup=reply_markup, preformatted=True)
     else:
-        await _safe_send_message(update.effective_chat, text, user_id, reply_markup=reply_markup)
+        await _send_message_safely(update.effective_chat, text, user_id, reply_markup=reply_markup, preformatted=True)
 
 # --- Navigation ---
 @authorized
@@ -578,9 +608,9 @@ async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     if update.callback_query:
         await update.callback_query.answer()
-        await _safe_edit_message_text(update.callback_query, menu_text, user_id, reply_markup=reply_markup)
+        await _edit_message_safely(update.callback_query.message, menu_text, user_id, reply_markup=reply_markup, preformatted=True)
     else:
-        await _safe_send_message(update.message.chat, menu_text, user_id, reply_markup=reply_markup)
+        await _send_message_safely(update.message.chat, menu_text, user_id, reply_markup=reply_markup, preformatted=True)
 
 
 @authorized
@@ -600,9 +630,9 @@ async def language_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     message = _resolve_message(update)
     if update.callback_query:
         await update.callback_query.answer()
-        await _safe_edit_message_text(update.callback_query, text, user_id, reply_markup=reply_markup)
+        await _edit_message_safely(update.callback_query.message, text, user_id, reply_markup=reply_markup)
     elif message:
-        await _safe_send_message(message.chat, text, user_id, reply_markup=reply_markup)
+        await _send_message_safely(message.chat, text, user_id, reply_markup=reply_markup)
 
 
 @authorized
@@ -628,7 +658,7 @@ async def set_language(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
     text = f"{title}\n\n{description}"
     reply_markup = _build_language_keyboard(lang_code)
-    await _safe_edit_message_text(query, text, user_id, reply_markup=reply_markup)
+    await _edit_message_safely(query.message, text, user_id, reply_markup=reply_markup)
 
 
 # --- Server Connection ---
@@ -653,8 +683,8 @@ async def connect_server_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.callback_query.answer()
-    await _safe_edit_message_text(
-        update.callback_query,
+    await _edit_message_safely(
+        update.callback_query.message,
         translate('connect_menu_prompt', language),
         user_id,
         reply_markup=reply_markup
@@ -696,26 +726,8 @@ async def handle_server_connection(update: Update, context: ContextTypes.DEFAULT
     language = _get_user_language(user_id)
     await query.answer() # پاسخ به کال‌بک تلگرام تا لودینگ بالای صفحه بره
 
-    # --- Helper: Pro Safe Edit ---
-    async def safe_edit(text_key: str, reply_markup: InlineKeyboardMarkup = None, **kwargs):
-        """Pro version: Safely edit message text with language-aware parse mode."""
-        try:
-            text = translate(text_key, language, **kwargs)
-            parse_mode = get_parse_mode(language)
-            await query.edit_message_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
-        except BadRequest as e:
-            # Ignore "Message is not modified" errors - this is expected when content hasn't changed
-            if "Message is not modified" in str(e):
-                logger.debug(f"Message not modified (expected) for {alias}: {text_key}")
-            else:
-                logger.warning(f"UI update failed for {alias}: {e}")
-        except Exception as e:
-            # Handle other exceptions (like timeouts) gracefully
-            logger.warning(f"Unexpected error in safe_edit for {alias}: {e}")
-            # Don't raise - continue execution
-
     try:
-        await safe_edit('connecting_to_server', alias=alias)
+        await _edit_message_safely(query.message, translate('connecting_to_server', language, alias=alias), user_id)
 
         # 3. SECURITY: Hard Timeout (جلوگیری از فریز شدن ربات)
         # اتصال نباید بیشتر از ۱۰ ثانیه طول بکشه.
@@ -729,7 +741,7 @@ async def handle_server_connection(update: Update, context: ContextTypes.DEFAULT
                 await _connect_with_timeout()
         except TimeoutError:
             logger.warning(f"Connection timeout for {alias} (User: {user_id})")
-            await safe_edit('error_connection_refused', alias=alias) # پیام مناسب تایم‌اوت
+            await _edit_message_safely(query.message, translate('error_connection_refused', language, alias=alias), user_id)
             return
 
         # ثبت موفقیت
@@ -751,7 +763,8 @@ async def handle_server_connection(update: Update, context: ContextTypes.DEFAULT
             [InlineKeyboardButton("🔌 Disconnect", callback_data=f"disconnect_{alias}")]
         ]
         
-        await safe_edit('connected_to_server', reply_markup=InlineKeyboardMarkup(keyboard), alias=alias)
+        text = translate('connected_to_server', language, alias=alias)
+        await _edit_message_safely(query.message, text, user_id, reply_markup=InlineKeyboardMarkup(keyboard))
 
     # --- Secure Error Handling ---
     # ارورها رو کامل لاگ می‌کنیم ولی به کاربر جزئیات فنی نمیدیم
@@ -774,7 +787,7 @@ async def send_debug_message(update: Update, text: str):
     """Sends a debug message to the user if debug mode is enabled."""
     if DEBUG_MODE:
         user_id = _extract_user_id(update)
-        await _safe_send_message(update.effective_chat, f"🐞 **DEBUG:** {text}", user_id)
+        await _send_message_safely(update.effective_chat, f"🐞 **DEBUG:** {text}", user_id, preformatted=True)
 
 @authorized
 async def toggle_debug_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -783,7 +796,7 @@ async def toggle_debug_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     DEBUG_MODE = not DEBUG_MODE
     status = "ON" if DEBUG_MODE else "OFF"
     user_id = _extract_user_id(update)
-    await _safe_send_message(update.message.chat, f"🐞 **Debug Mode is now {status}**", user_id)
+    await _send_message_safely(update.message.chat, f"🐞 **Debug Mode is now {status}**", user_id, preformatted=True)
 
 
 # --- Command Execution ---
@@ -802,7 +815,7 @@ async def run_command_start(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     builder.add_text("Ok, please send the command you want to run on ")
     builder.add_bold(alias)
     builder.add_text(".")
-    await _safe_edit_message_text(query, builder.build(), user_id)
+    await _edit_message_safely(query.message, builder.build(), user_id, preformatted=True)
     return AWAIT_COMMAND
 
 @authorized
@@ -813,7 +826,7 @@ async def execute_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     command = update.message.text.strip()
 
     if not alias:
-        await _safe_send_message(update.message.chat, "⚠️ No active connection. Please connect to a server first.", user_id)
+        await _send_message_safely(update.message.chat, "⚠️ No active connection. Please connect to a server first.", user_id, preformatted=True)
         return ConversationHandler.END
 
     # Initial message - Pro version with language-aware formatting
@@ -824,7 +837,7 @@ async def execute_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     builder.add_text(" on ")
     builder.add_code(alias)
     builder.add_text("...")
-    result_message = await _safe_send_message(update.message.chat, builder.build(), user_id)
+    result_message = await _send_message_safely(update.message.chat, builder.build(), user_id, preformatted=True)
 
     output_buffer: list[str] = []
     last_sent_text = ""
@@ -849,7 +862,7 @@ async def execute_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                         try:
                             # Use language-aware parse mode for code blocks
                             code_block = format_code_block(partial_output, "", parse_mode)
-                            await _safe_edit_message_text(result_message, code_block, user_id)
+                            await _edit_message_safely(result_message, code_block, user_id, preformatted=True)
                             last_sent_text = partial_output
                         except BadRequest as e:
                             if "Message is not modified" not in str(e):
@@ -879,27 +892,31 @@ async def execute_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             caption_builder = MessageBuilder(parse_mode)
             caption_builder.add_text("Output for ")
             caption_builder.add_code(command)
-            await update.message.reply_document(
-                document=open(f.name, "rb"),
-                caption=caption_builder.build(),
-                parse_mode=parse_mode
+            await _send_message_safely(
+                update.message.chat,
+                caption_builder.build(),
+                user_id,
+                preformatted=True,
+                document=open(f.name, "rb")
             )
             os.remove(f.name)
         else:
-            await _safe_edit_message_text(result_message, final_text, user_id)
+            await _edit_message_safely(result_message, final_text, user_id, preformatted=True)
 
     except asyncio.TimeoutError:
-        await _safe_edit_message_text(
+        await _edit_message_safely(
             result_message,
             f"⏰ **Timeout:** Command `{command}` took too long and was terminated.",
-            user_id
+            user_id,
+            preformatted=True
         )
     except Exception as e:
         logger.error(f"Error executing '{command}' on '{alias}': {e}", exc_info=True)
-        await _safe_edit_message_text(
+        await _edit_message_safely(
             result_message,
             f"❌ **Error while executing command:**\n`{e}`",
-            user_id
+            user_id,
+            preformatted=True
         )
 
     return ConversationHandler.END
@@ -924,7 +941,7 @@ async def cancel_command_callback(update: Update, context: ContextTypes.DEFAULT_
         builder.add_bold(") cancelled on ")
         builder.add_code(alias)
         builder.add_text(".")
-        await _safe_edit_message_text(query, builder.build(), user_id)
+        await _edit_message_safely(query.message, builder.build(), user_id, preformatted=True)
     except Exception as e:
         user_id = update.effective_user.id
         parse_mode = _get_user_parse_mode(user_id)
@@ -934,7 +951,7 @@ async def cancel_command_callback(update: Update, context: ContextTypes.DEFAULT_
         builder.add_text(" Could not cancel command.")
         builder.add_line()
         builder.add_code(str(e))
-        await _safe_edit_message_text(query, builder.build(), user_id)
+        await _edit_message_safely(query.message, builder.build(), user_id, preformatted=True)
 
 
 # --- Interactive Shell ---
@@ -950,15 +967,16 @@ async def start_shell_session(update: Update, context: ContextTypes.DEFAULT_TYPE
         await ssh_manager.start_shell_session(user_id, alias)
         SHELL_MODE_USERS.add(user_id)
         user_connections[user_id] = alias  # Ensure connection is tracked
-        await _safe_edit_message_text(
-            query,
+        await _edit_message_safely(
+            query.message,
             f"🖥️ **Interactive shell started on `{alias}`.**\n\n"
             "Send any message to execute it as a command. Send `/exit_shell` to end the session.",
-            user_id
+            user_id,
+            preformatted=True
         )
     except Exception as e:
         logger.error(f"Error starting shell on {alias} for user {user_id}: {e}", exc_info=True)
-        await _safe_edit_message_text(query, f"❌ **Error:** Could not start shell.\n`{e}`", user_id)
+        await _edit_message_safely(query.message, f"❌ **Error:** Could not start shell.\n`{e}`", user_id, preformatted=True)
 
 async def handle_shell_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles commands sent by a user in shell mode."""
@@ -986,10 +1004,10 @@ async def handle_shell_command(update: Update, context: ContextTypes.DEFAULT_TYP
             await update.message.reply_document(document=open(f.name, "rb"), caption=f"Shell output for `{command}`")
             os.remove(f.name)
         else:
-            await _safe_send_message(update.message.chat, f"```\n{output}\n```", user_id)
+            await _send_message_safely(update.message.chat, f"```\n{output}\n```", user_id, preformatted=True)
     except Exception as e:
         logger.error(f"Error in shell on {alias} for user {user_id}: {e}", exc_info=True)
-        await _safe_send_message(update.message.chat, f"❌ **Error:**\n`{e}`", user_id)
+        await _send_message_safely(update.message.chat, f"❌ **Error:**\n`{e}`", user_id, preformatted=True)
 
 @authorized
 async def exit_shell(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1002,7 +1020,7 @@ async def exit_shell(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             await ssh_manager.disconnect(user_id, alias)
             del user_connections[user_id]
 
-        await _safe_send_message(update.message.chat, "🔌 **Shell session terminated.**", user_id)
+        await _send_message_safely(update.message.chat, "🔌 **Shell session terminated.**", user_id, preformatted=True)
         await main_menu(update, context)
 
 
@@ -1039,10 +1057,11 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
         if isinstance(update, Update) and update.effective_chat:
             user_id = _extract_user_id(update)
             try:
-                await _safe_send_message(
+                await _send_message_safely(
                     update.effective_chat,
                     "⚠️ **Connection timeout**\n\nThe request took too long to complete. Please try again.",
-                    user_id
+                    user_id,
+                    preformatted=True
                 )
             except Exception as e:
                 logger.error(f"Failed to send timeout error message: {e}")
@@ -1065,15 +1084,16 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
             error_message = error_message[:4090] + "\n...```"
 
         try:
-            await _safe_send_message(update.effective_chat, error_message, user_id)
+            await _send_message_safely(update.effective_chat, error_message, user_id, preformatted=True)
         except Exception as e:
             logger.error(f"Failed to send detailed error message to user: {e}", exc_info=True)
             # Fallback to a simpler message if the detailed one fails
             try:
-                await _safe_send_message(
+                await _send_message_safely(
                     update.effective_chat,
                     "❌ **An unexpected error occurred.**\nThe technical details have been logged.",
-                    user_id
+                    user_id,
+                    preformatted=True
                 )
             except Exception as fallback_e:
                 logger.error(f"Failed to send even the fallback error message: {fallback_e}", exc_info=True)
@@ -1094,11 +1114,12 @@ async def server_status_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
         [InlineKeyboardButton("🔙 Back to Server Menu", callback_data=f"connect_{alias}")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await _safe_edit_message_text(
-        query,
+    await _edit_message_safely(
+        query.message,
         f"**📊 Server Status for {alias}**\n\nSelect an option:",
         user_id,
-        reply_markup=reply_markup
+        reply_markup=reply_markup,
+        preformatted=True
     )
 
 @authorized
@@ -1131,7 +1152,7 @@ async def get_static_info(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     keyboard = [[InlineKeyboardButton("🔙 Back to Status Menu", callback_data=f"server_status_menu_{alias}")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    await _safe_edit_message_text(query, info_message, user_id, reply_markup=reply_markup)
+    await _edit_message_safely(query.message, info_message, user_id, reply_markup=reply_markup, preformatted=True)
 
 @authorized
 async def get_resource_usage(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1162,7 +1183,7 @@ async def get_resource_usage(update: Update, context: ContextTypes.DEFAULT_TYPE)
     keyboard = [[InlineKeyboardButton("🔙 Back to Status Menu", callback_data=f"server_status_menu_{alias}")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    await _safe_edit_message_text(query, usage_message, user_id, reply_markup=reply_markup)
+    await _edit_message_safely(query.message, usage_message, user_id, reply_markup=reply_markup, preformatted=True)
 
 
 @authorized
@@ -1179,11 +1200,12 @@ async def live_monitoring(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     keyboard = [[InlineKeyboardButton("⏹️ Stop Monitoring", callback_data=f"stop_live_monitoring_{alias}")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    message = await _safe_edit_message_text(
-        query,
+    message = await _edit_message_safely(
+        query.message,
         f"**🔴 Live Monitoring for {alias}**\n\nStarting...",
         user_id,
-        reply_markup=reply_markup
+        reply_markup=reply_markup,
+        preformatted=True
     )
 
     async def _update_stats():
@@ -1195,18 +1217,20 @@ async def live_monitoring(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 async for item, stream in ssh_manager.run_command(user_id, alias, command):
                     if stream in ('stdout', 'stderr'):
                         output += item
-                await _safe_edit_message_text(
+                await _edit_message_safely(
                     message,
                     f"**🔴 Live Monitoring for {alias}**\n\n```{output.strip()}```",
                     user_id,
-                    reply_markup=reply_markup
+                    reply_markup=reply_markup,
+                    preformatted=True
                 )
             except Exception as e:
-                await _safe_edit_message_text(
+                await _edit_message_safely(
                     message,
                     f"**🔴 Live Monitoring for {alias}**\n\n`Error fetching info: {str(e)}`",
                     user_id,
-                    reply_markup=reply_markup
+                    reply_markup=reply_markup,
+                    preformatted=True
                 )
             await asyncio.sleep(5)
 
@@ -1227,11 +1251,12 @@ async def stop_live_monitoring(update: Update, context: ContextTypes.DEFAULT_TYP
     keyboard = [[InlineKeyboardButton("🔙 Back to Status Menu", callback_data=f"server_status_menu_{alias}")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    await _safe_edit_message_text(
-        query,
+    await _edit_message_safely(
+        query.message,
         f"**🔴 Live Monitoring for {alias}**\n\nMonitoring stopped.",
         user_id,
-        reply_markup=reply_markup
+        reply_markup=reply_markup,
+        preformatted=True
     )
 
 @authorized
@@ -1249,11 +1274,12 @@ async def package_management_menu(update: Update, context: ContextTypes.DEFAULT_
         [InlineKeyboardButton("🔙 Back to Server Menu", callback_data=f"connect_{alias}")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await _safe_edit_message_text(
-        query,
+    await _edit_message_safely(
+        query.message,
         f"**📦 Package Management for {alias}**\n\nSelect an action:",
         user_id,
-        reply_markup=reply_markup
+        reply_markup=reply_markup,
+        preformatted=True
     )
 
 @authorized
@@ -1272,7 +1298,7 @@ async def package_manager_action(update: Update, context: ContextTypes.DEFAULT_T
     else:
         return
 
-    result_message = await _safe_edit_message_text(query, f"Running `{command}` on `{alias}`...", user_id)
+    result_message = await _edit_message_safely(query.message, f"Running `{command}` on `{alias}`...", user_id, preformatted=True)
 
     output = ""
     try:
@@ -1289,10 +1315,10 @@ async def package_manager_action(update: Update, context: ContextTypes.DEFAULT_T
             await query.message.reply_document(document=open(f.name, "rb"), caption=f"Command output for `{command}`")
             os.remove(f.name)
         else:
-            await _safe_edit_message_text(result_message, final_message, user_id)
+            await _edit_message_safely(result_message, final_message, user_id, preformatted=True)
 
     except Exception as e:
-        await _safe_edit_message_text(result_message, f"❌ **Error:**\n`{str(e)}`", user_id)
+        await _edit_message_safely(result_message, f"❌ **Error:**\n`{str(e)}`", user_id, preformatted=True)
 
 @authorized
 async def install_package_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1304,7 +1330,7 @@ async def install_package_start(update: Update, context: ContextTypes.DEFAULT_TY
     context.user_data['alias'] = alias
     user_id = _extract_user_id(update)
 
-    await _safe_edit_message_text(query, f"Please enter the name of the package to install on `{alias}`.", user_id)
+    await _edit_message_safely(query.message, f"Please enter the name of the package to install on `{alias}`.", user_id, preformatted=True)
     return AWAIT_PACKAGE_NAME
 
 async def execute_install_package(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1315,7 +1341,7 @@ async def execute_install_package(update: Update, context: ContextTypes.DEFAULT_
 
     command = f"sudo apt-get install -y {package_name}"
 
-    result_message = await _safe_send_message(update.message.chat, f"Running `{command}` on `{alias}`...", user_id)
+    result_message = await _send_message_safely(update.message.chat, f"Running `{command}` on `{alias}`...", user_id, preformatted=True)
 
     output = ""
     try:
@@ -1323,9 +1349,9 @@ async def execute_install_package(update: Update, context: ContextTypes.DEFAULT_
         async for item, stream in ssh_manager.run_command(user_id, alias, command):
             if stream in ('stdout', 'stderr'):
                 output += item
-        await _safe_edit_message_text(result_message, f"✅ **Command completed on `{alias}`**\n\n```{output.strip()}```", user_id)
+        await _edit_message_safely(result_message, f"✅ **Command completed on `{alias}`**\n\n```{output.strip()}```", user_id, preformatted=True)
     except Exception as e:
-        await _safe_edit_message_text(result_message, f"❌ **Error:**\n`{str(e)}`", user_id)
+        await _edit_message_safely(result_message, f"❌ **Error:**\n`{str(e)}`", user_id, preformatted=True)
 
     context.user_data.clear()
     return ConversationHandler.END
@@ -1333,7 +1359,7 @@ async def execute_install_package(update: Update, context: ContextTypes.DEFAULT_
 async def cancel_install_package(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Cancels the package installation conversation."""
     user_id = _extract_user_id(update)
-    await _safe_send_message(update.message.chat, "Package installation cancelled.", user_id)
+    await _send_message_safely(update.message.chat, "Package installation cancelled.", user_id)
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -1355,11 +1381,12 @@ async def docker_management_menu(update: Update, context: ContextTypes.DEFAULT_T
         [InlineKeyboardButton("🔙 Back to Server Menu", callback_data=f"connect_{alias}")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await _safe_edit_message_text(
-        query,
+    await _edit_message_safely(
+        query.message,
         f"**🐳 Docker Management for {alias}**\n\nSelect an action:",
         user_id,
-        reply_markup=reply_markup
+        reply_markup=reply_markup,
+        preformatted=True
     )
 
 
@@ -1376,7 +1403,7 @@ async def docker_action_start(update: Update, context: ContextTypes.DEFAULT_TYPE
     context.user_data['docker_action'] = action
     context.user_data['alias'] = alias
 
-    await _safe_edit_message_text(query, f"Please enter the name or ID of the container to `{action}`.", user_id)
+    await _edit_message_safely(query.message, f"Please enter the name or ID of the container to `{action}`.", user_id, preformatted=True)
     return AWAIT_CONTAINER_NAME
 
 
@@ -1389,7 +1416,7 @@ async def execute_docker_action(update: Update, context: ContextTypes.DEFAULT_TY
 
     command = f"docker {action} {container_name}"
 
-    result_message = await _safe_send_message(update.message.chat, f"Running `{command}` on `{alias}`...", user_id)
+    result_message = await _send_message_safely(update.message.chat, f"Running `{command}` on `{alias}`...", user_id, preformatted=True)
 
     output = ""
     try:
@@ -1406,9 +1433,9 @@ async def execute_docker_action(update: Update, context: ContextTypes.DEFAULT_TY
             await update.message.reply_document(document=open(f.name, "rb"), caption=f"Command output for `{command}`")
             os.remove(f.name)
         else:
-            await _safe_edit_message_text(result_message, final_message, user_id)
+            await _edit_message_safely(result_message, final_message, user_id, preformatted=True)
     except Exception as e:
-        await _safe_edit_message_text(result_message, f"❌ **Error:**\n`{str(e)}`", user_id)
+        await _edit_message_safely(result_message, f"❌ **Error:**\n`{str(e)}`", user_id, preformatted=True)
 
     context.user_data.clear()
     return ConversationHandler.END
@@ -1426,7 +1453,7 @@ async def docker_ps(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     alias = query.data.split('_', 2)[-1]
     user_id = update.effective_user.id
 
-    result_message = await _safe_edit_message_text(query, f"Running `{command}` on `{alias}`...", user_id)
+    result_message = await _edit_message_safely(query.message, f"Running `{command}` on `{alias}`...", user_id, preformatted=True)
 
     output = ""
     try:
@@ -1443,15 +1470,15 @@ async def docker_ps(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await query.message.reply_document(document=open(f.name, "rb"), caption=f"Command output for `{command}`")
             os.remove(f.name)
         else:
-            await _safe_edit_message_text(result_message, final_message, user_id)
+            await _edit_message_safely(result_message, final_message, user_id, preformatted=True)
     except Exception as e:
-        await _safe_edit_message_text(result_message, f"❌ **Error:**\n`{str(e)}`", user_id)
+        await _edit_message_safely(result_message, f"❌ **Error:**\n`{str(e)}`", user_id, preformatted=True)
 
 
 async def cancel_docker_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Cancels the Docker action conversation."""
     user_id = _extract_user_id(update)
-    await _safe_send_message(update.message.chat, "Docker action cancelled.", user_id)
+    await _send_message_safely(update.message.chat, "Docker action cancelled.", user_id)
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -1471,11 +1498,12 @@ async def file_manager_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         [InlineKeyboardButton("🔙 Back to Server Menu", callback_data=f"connect_{alias}")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await _safe_edit_message_text(
-        query,
+    await _edit_message_safely(
+        query.message,
         f"**📁 File Manager for {alias}**\n\nSelect an action:",
         user_id,
-        reply_markup=reply_markup
+        reply_markup=reply_markup,
+        preformatted=True
     )
 
 
@@ -1497,16 +1525,17 @@ async def file_manager_action_start(update: Update, context: ContextTypes.DEFAUL
     elif action == "download":
         prompt = "Please enter the full path of the file to download."
     elif action == "upload":
-        await _safe_edit_message_text(query, f"Please enter the full destination path on `{alias}`.", user_id)
+        await _edit_message_safely(query.message, f"Please enter the full destination path on `{alias}`.", user_id, preformatted=True)
         return AWAIT_FILE_PATH
 
-    await _safe_edit_message_text(query, prompt, user_id)
+    await _edit_message_safely(query.message, prompt, user_id)
     return AWAIT_FILE_PATH
 
 
 async def file_manager_dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Dispatches to the correct file manager function based on the action."""
     action = context.user_data.get('file_manager_action')
+    user_id = _extract_user_id(update)
     if action == "ls":
         return await list_files(update, context)
     elif action == "download":
@@ -1514,7 +1543,7 @@ async def file_manager_dispatch(update: Update, context: ContextTypes.DEFAULT_TY
     elif action == "upload":
         return await upload_file_path(update, context)
     else:
-        await update.message.reply_text("Unknown file manager action.")
+        await _send_message_safely(update.message.chat, "Unknown file manager action.", user_id)
         return ConversationHandler.END
 
 async def list_files(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1524,7 +1553,7 @@ async def list_files(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
     command = f"ls -la {path}"
 
-    result_message = await update.message.reply_text(f"Running `{command}` on `{alias}`...", parse_mode='Markdown')
+    result_message = await _send_message_safely(update.message.chat, f"Running `{command}` on `{alias}`...", user_id, preformatted=True)
 
     output = ""
     try:
@@ -1541,9 +1570,9 @@ async def list_files(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             await update.message.reply_document(document=open(f.name, "rb"), caption=f"File list for `{path}`")
             os.remove(f.name)
         else:
-            await result_message.edit_text(final_message, parse_mode='Markdown')
+            await _edit_message_safely(result_message, final_message, user_id, preformatted=True)
     except Exception as e:
-        await result_message.edit_text(f"❌ **Error:**\n`{str(e)}`", parse_mode='Markdown')
+        await _edit_message_safely(result_message, f"❌ **Error:**\n`{str(e)}`", user_id, preformatted=True)
 
     context.user_data.clear()
     return ConversationHandler.END
@@ -1555,7 +1584,7 @@ async def download_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     alias = context.user_data['alias']
     user_id = update.effective_user.id
 
-    await update.message.reply_text(f"📥 Downloading `{remote_path}` from `{alias}`...", parse_mode='Markdown')
+    await _send_message_safely(update.message.chat, f"📥 Downloading `{remote_path}` from `{alias}`...", user_id, preformatted=True)
 
     try:
         with tempfile.NamedTemporaryFile(delete=False) as f:
@@ -1564,7 +1593,7 @@ async def download_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         await update.message.reply_document(document=open(local_path, 'rb'))
         os.remove(local_path)
     except Exception as e:
-        await update.message.reply_text(f"❌ **Error:**\n`{e}`", parse_mode='Markdown')
+        await _send_message_safely(update.message.chat, f"❌ **Error:**\n`{e}`", user_id, preformatted=True)
 
     context.user_data.clear()
     return ConversationHandler.END
@@ -1573,7 +1602,8 @@ async def download_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 async def upload_file_path(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Gets the destination path for the file upload."""
     context.user_data['remote_path'] = update.message.text
-    await update.message.reply_text("Okay, now please upload the file to be sent to the server.")
+    user_id = _extract_user_id(update)
+    await _send_message_safely(update.message.chat, "Okay, now please upload the file to be sent to the server.", user_id)
     return AWAIT_UPLOAD_FILE
 
 
@@ -1588,13 +1618,13 @@ async def upload_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     file = await document.get_file()
     await file.download_to_drive(local_path)
 
-    await update.message.reply_text(f"📤 Uploading `{local_path}` to `{remote_path}` on `{alias}`...", parse_mode='Markdown')
+    await _send_message_safely(update.message.chat, f"📤 Uploading `{local_path}` to `{remote_path}` on `{alias}`...", user_id, preformatted=True)
 
     try:
         await ssh_manager.upload_file(user_id, alias, local_path, remote_path)
-        await update.message.reply_text("✅ **File uploaded successfully!**", parse_mode='Markdown')
+        await _send_message_safely(update.message.chat, "✅ **File uploaded successfully!**", user_id, preformatted=True)
     except Exception as e:
-        await update.message.reply_text(f"❌ **Error:**\n`{e}`", parse_mode='Markdown')
+        await _send_message_safely(update.message.chat, f"❌ **Error:**\n`{e}`", user_id, preformatted=True)
     finally:
         os.remove(local_path)
 
@@ -1604,7 +1634,8 @@ async def upload_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 
 async def cancel_file_manager_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Cancels the file manager action conversation."""
-    await update.message.reply_text("File manager action cancelled.")
+    user_id = _extract_user_id(update)
+    await _send_message_safely(update.message.chat, "File manager action cancelled.", user_id)
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -1615,6 +1646,7 @@ async def process_management_menu(update: Update, context: ContextTypes.DEFAULT_
     query = update.callback_query
     await query.answer()
     alias = query.data.split('_', 3)[3]
+    user_id = _extract_user_id(update)
 
     keyboard = [
         [InlineKeyboardButton("📜 List Processes", callback_data=f"ps_aux_{alias}")],
@@ -1622,10 +1654,12 @@ async def process_management_menu(update: Update, context: ContextTypes.DEFAULT_
         [InlineKeyboardButton("🔙 Back to Server Menu", callback_data=f"connect_{alias}")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(
+    await _edit_message_safely(
+        query.message,
         f"**⚙️ Process Management for {alias}**\n\nSelect an action:",
+        user_id,
         reply_markup=reply_markup,
-        parse_mode='Markdown'
+        preformatted=True
     )
 
 
@@ -1638,7 +1672,7 @@ async def list_processes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user_id = update.effective_user.id
 
     command = "ps aux"
-    result_message = await query.edit_message_text(f"Running `{command}` on `{alias}`...", parse_mode='Markdown')
+    result_message = await _edit_message_safely(query.message, f"Running `{command}` on `{alias}`...", user_id, preformatted=True)
 
     output = ""
     try:
@@ -1655,9 +1689,9 @@ async def list_processes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await query.message.reply_document(document=open(f.name, "rb"), caption=f"Command output for `{command}`")
             os.remove(f.name)
         else:
-            await result_message.edit_text(final_message, parse_mode='Markdown')
+            await _edit_message_safely(result_message, final_message, user_id, preformatted=True)
     except Exception as e:
-        await result_message.edit_text(f"❌ **Error:**\n`{str(e)}`", parse_mode='Markdown')
+        await _edit_message_safely(result_message, f"❌ **Error:**\n`{str(e)}`", user_id, preformatted=True)
 
 
 @authorized
@@ -1668,8 +1702,9 @@ async def kill_process_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     alias = query.data.split('_', 2)[2]
     context.user_data['alias'] = alias
+    user_id = _extract_user_id(update)
 
-    await query.edit_message_text(f"Please enter the PID of the process to kill on `{alias}`.", parse_mode='Markdown')
+    await _edit_message_safely(query.message, f"Please enter the PID of the process to kill on `{alias}`.", user_id, preformatted=True)
     return AWAIT_PID
 
 
@@ -1681,7 +1716,7 @@ async def execute_kill_process(update: Update, context: ContextTypes.DEFAULT_TYP
 
     command = f"kill -9 {pid}"
 
-    result_message = await update.message.reply_text(f"Running `{command}` on `{alias}`...", parse_mode='Markdown')
+    result_message = await _send_message_safely(update.message.chat, f"Running `{command}` on `{alias}`...", user_id, preformatted=True)
 
     output = ""
     try:
@@ -1689,9 +1724,9 @@ async def execute_kill_process(update: Update, context: ContextTypes.DEFAULT_TYP
         async for item, stream in ssh_manager.run_command(user_id, alias, command):
             if stream in ('stdout', 'stderr'):
                 output += item
-        await result_message.edit_text(f"✅ **Command completed on `{alias}`**\n\n```{output.strip()}```", parse_mode='Markdown')
+        await _edit_message_safely(result_message, f"✅ **Command completed on `{alias}`**\n\n```{output.strip()}```", user_id, preformatted=True)
     except Exception as e:
-        await result_message.edit_text(f"❌ **Error:**\n`{str(e)}`", parse_mode='Markdown')
+        await _edit_message_safely(result_message, f"❌ **Error:**\n`{str(e)}`", user_id, preformatted=True)
 
     context.user_data.clear()
     return ConversationHandler.END
@@ -1699,7 +1734,8 @@ async def execute_kill_process(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def cancel_kill_process(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Cancels the kill process conversation."""
-    await update.message.reply_text("Kill process cancelled.")
+    user_id = _extract_user_id(update)
+    await _send_message_safely(update.message.chat, "Kill process cancelled.", user_id)
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -1710,6 +1746,7 @@ async def firewall_management_menu(update: Update, context: ContextTypes.DEFAULT
     query = update.callback_query
     await query.answer()
     alias = query.data.split('_', 3)[3]
+    user_id = _extract_user_id(update)
 
     keyboard = [
         [InlineKeyboardButton("📜 View Rules", callback_data=f"fw_status_{alias}")],
@@ -1719,10 +1756,12 @@ async def firewall_management_menu(update: Update, context: ContextTypes.DEFAULT
         [InlineKeyboardButton("🔙 Back to Server Menu", callback_data=f"connect_{alias}")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(
+    await _edit_message_safely(
+        query.message,
         f"**🔥 Firewall Management for {alias}**\n\nSelect an action:",
+        user_id,
         reply_markup=reply_markup,
-        parse_mode='Markdown'
+        preformatted=True
     )
 
 @authorized
@@ -1742,9 +1781,9 @@ async def firewall_status(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 output += item
         keyboard = [[InlineKeyboardButton("🔙 Back to Firewall Menu", callback_data=f"firewall_management_menu_{alias}")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(f"**🔥 Firewall Status for `{alias}`**\n\n```{output.strip()}```", reply_markup=reply_markup, parse_mode='Markdown')
+        await _edit_message_safely(query.message, f"**🔥 Firewall Status for `{alias}`**\n\n```{output.strip()}```", user_id, reply_markup=reply_markup, preformatted=True)
     except Exception as e:
-        await query.edit_message_text(f"❌ **Error:**\n`{str(e)}`", parse_mode='Markdown')
+        await _edit_message_safely(query.message, f"❌ **Error:**\n`{str(e)}`", user_id, preformatted=True)
 
 
 # --- Firewall Management ---
@@ -1756,6 +1795,7 @@ async def firewall_action_start(update: Update, context: ContextTypes.DEFAULT_TY
 
     action = query.data.split('_')[1]
     alias = query.data.split('_', 2)[2]
+    user_id = _extract_user_id(update)
 
     context.user_data['firewall_action'] = action
     context.user_data['alias'] = alias
@@ -1765,7 +1805,7 @@ async def firewall_action_start(update: Update, context: ContextTypes.DEFAULT_TY
     else:
         prompt = f"Please enter the port number to `{action}`."
 
-    await query.edit_message_text(prompt, parse_mode='Markdown')
+    await _edit_message_safely(query.message, prompt, user_id, preformatted=True)
     return AWAIT_FIREWALL_RULE
 
 async def execute_firewall_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1777,7 +1817,7 @@ async def execute_firewall_action(update: Update, context: ContextTypes.DEFAULT_
 
     command = f"sudo ufw {action} {rule}"
 
-    result_message = await update.message.reply_text(f"Running `{command}` on `{alias}`...", parse_mode='Markdown')
+    result_message = await _send_message_safely(update.message.chat, f"Running `{command}` on `{alias}`...", user_id, preformatted=True)
 
     output = ""
     try:
@@ -1785,16 +1825,17 @@ async def execute_firewall_action(update: Update, context: ContextTypes.DEFAULT_
         async for item, stream in ssh_manager.run_command(user_id, alias, command):
             if stream in ('stdout', 'stderr'):
                 output += item
-        await result_message.edit_text(f"✅ **Command completed on `{alias}`**\n\n```{output.strip()}```", parse_mode='Markdown')
+        await _edit_message_safely(result_message, f"✅ **Command completed on `{alias}`**\n\n```{output.strip()}```", user_id, preformatted=True)
     except Exception as e:
-        await result_message.edit_text(f"❌ **Error:**\n`{str(e)}`", parse_mode='Markdown')
+        await _edit_message_safely(result_message, f"❌ **Error:**\n`{str(e)}`", user_id, preformatted=True)
 
     context.user_data.clear()
     return ConversationHandler.END
 
 async def cancel_firewall_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Cancels the firewall management conversation."""
-    await update.message.reply_text("Firewall action cancelled.")
+    user_id = _extract_user_id(update)
+    await _send_message_safely(update.message.chat, "Firewall action cancelled.", user_id)
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -1805,6 +1846,7 @@ async def service_management_menu(update: Update, context: ContextTypes.DEFAULT_
     query = update.callback_query
     await query.answer()
     alias = query.data.split('_', 3)[3]
+    user_id = _extract_user_id(update)
 
     keyboard = [
         [InlineKeyboardButton("🔍 Check Service Status", callback_data=f"check_service_{alias}")],
@@ -1814,10 +1856,12 @@ async def service_management_menu(update: Update, context: ContextTypes.DEFAULT_
         [InlineKeyboardButton("🔙 Back to Server Menu", callback_data=f"connect_{alias}")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(
+    await _edit_message_safely(
+        query.message,
         f"**🔧 Service Management for {alias}**\n\nSelect an action:",
+        user_id,
         reply_markup=reply_markup,
-        parse_mode='Markdown'
+        preformatted=True
     )
 
 # --- Service Management ---
@@ -1829,11 +1873,12 @@ async def service_action_start(update: Update, context: ContextTypes.DEFAULT_TYP
 
     action = query.data.split('_')[0]
     alias = query.data.split('_', 2)[2]
+    user_id = _extract_user_id(update)
 
     context.user_data['service_action'] = action
     context.user_data['alias'] = alias
 
-    await query.edit_message_text(f"Please enter the name of the service to `{action}`.", parse_mode='Markdown')
+    await _edit_message_safely(query.message, f"Please enter the name of the service to `{action}`.", user_id, preformatted=True)
     return AWAIT_SERVICE_NAME
 
 async def execute_service_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1845,7 +1890,7 @@ async def execute_service_action(update: Update, context: ContextTypes.DEFAULT_T
 
     command = f"systemctl {action} {service_name}"
 
-    result_message = await update.message.reply_text(f"Running `{command}` on `{alias}`...", parse_mode='Markdown')
+    result_message = await _send_message_safely(update.message.chat, f"Running `{command}` on `{alias}`...", user_id, preformatted=True)
 
     output = ""
     try:
@@ -1853,16 +1898,17 @@ async def execute_service_action(update: Update, context: ContextTypes.DEFAULT_T
         async for item, stream in ssh_manager.run_command(user_id, alias, command):
             if stream in ('stdout', 'stderr'):
                 output += item
-        await result_message.edit_text(f"✅ **Command completed on `{alias}`**\n\n```{output.strip()}```", parse_mode='Markdown')
+        await _edit_message_safely(result_message, f"✅ **Command completed on `{alias}`**\n\n```{output.strip()}```", user_id, preformatted=True)
     except Exception as e:
-        await result_message.edit_text(f"❌ **Error:**\n`{str(e)}`", parse_mode='Markdown')
+        await _edit_message_safely(result_message, f"❌ **Error:**\n`{str(e)}`", user_id, preformatted=True)
 
     context.user_data.clear()
     return ConversationHandler.END
 
 async def cancel_service_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Cancels the service management conversation."""
-    await update.message.reply_text("Service action cancelled.")
+    user_id = _extract_user_id(update)
+    await _send_message_safely(update.message.chat, "Service action cancelled.", user_id)
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -1872,6 +1918,7 @@ async def system_commands_menu(update: Update, context: ContextTypes.DEFAULT_TYP
     query = update.callback_query
     await query.answer()
     alias = query.data.split('_', 3)[3]
+    user_id = _extract_user_id(update)
 
     keyboard = [
         [InlineKeyboardButton("💾 Disk Usage", callback_data=f"disk_usage_{alias}")],
@@ -1882,10 +1929,12 @@ async def system_commands_menu(update: Update, context: ContextTypes.DEFAULT_TYP
         [InlineKeyboardButton("🔙 Back to Server Menu", callback_data=f"connect_{alias}")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(
+    await _edit_message_safely(
+        query.message,
         f"**⚙️ System Commands for {alias}**\n\nSelect an action:",
+        user_id,
         reply_markup=reply_markup,
-        parse_mode='Markdown'
+        preformatted=True
     )
 
 @authorized
@@ -1896,6 +1945,7 @@ async def confirm_system_command(update: Update, context: ContextTypes.DEFAULT_T
 
     action = query.data.split('_')[0]
     alias = query.data.split('_', 1)[1]
+    user_id = _extract_user_id(update)
 
     keyboard = [
         [
@@ -1904,10 +1954,12 @@ async def confirm_system_command(update: Update, context: ContextTypes.DEFAULT_T
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(
+    await _edit_message_safely(
+        query.message,
         f"**⚠️ Are you sure you want to {action} the server `{alias}`?**",
+        user_id,
         reply_markup=reply_markup,
-        parse_mode='Markdown'
+        preformatted=True
     )
 
 @authorized
@@ -1930,9 +1982,9 @@ async def execute_system_command(update: Update, context: ContextTypes.DEFAULT_T
         # We only need to start the command, not wait for output
         async for _, __ in ssh_manager.run_command(user_id, alias, f"sudo {command}"):
             pass
-        await query.edit_message_text(f"✅ **Command `{command}` sent to `{alias}` successfully.**", parse_mode='Markdown')
+        await _edit_message_safely(query.message, f"✅ **Command `{command}` sent to `{alias}` successfully.**", user_id, preformatted=True)
     except Exception as e:
-        await query.edit_message_text(f"❌ **Error:**\n`{e}`", parse_mode='Markdown')
+        await _edit_message_safely(query.message, f"❌ **Error:**\n`{e}`", user_id, preformatted=True)
 
 @authorized
 async def get_disk_usage(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1951,9 +2003,9 @@ async def get_disk_usage(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 output += item
         keyboard = [[InlineKeyboardButton("🔙 Back to System Commands", callback_data=f"system_commands_menu_{alias}")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(f"**💾 Disk Usage for `{alias}`**\n\n```{output.strip()}```", reply_markup=reply_markup, parse_mode='Markdown')
+        await _edit_message_safely(query.message, f"**💾 Disk Usage for `{alias}`**\n\n```{output.strip()}```", user_id, reply_markup=reply_markup, preformatted=True)
     except Exception as e:
-        await query.edit_message_text(f"❌ **Error:**\n`{str(e)}`", parse_mode='Markdown')
+        await _edit_message_safely(query.message, f"❌ **Error:**\n`{str(e)}`", user_id, preformatted=True)
 
 @authorized
 async def get_network_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1972,9 +2024,9 @@ async def get_network_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 output += item
         keyboard = [[InlineKeyboardButton("🔙 Back to System Commands", callback_data=f"system_commands_menu_{alias}")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(f"**🌐 Network Info for `{alias}`**\n\n```{output.strip()}```", reply_markup=reply_markup, parse_mode='Markdown')
+        await _edit_message_safely(query.message, f"**🌐 Network Info for `{alias}`**\n\n```{output.strip()}```", user_id, reply_markup=reply_markup, preformatted=True)
     except Exception as e:
-        await query.edit_message_text(f"❌ **Error:**\n`{str(e)}`", parse_mode='Markdown')
+        await _edit_message_safely(query.message, f"❌ **Error:**\n`{str(e)}`", user_id, preformatted=True)
 
 @authorized
 async def get_open_ports(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1993,9 +2045,9 @@ async def get_open_ports(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 output += item
         keyboard = [[InlineKeyboardButton("🔙 Back to System Commands", callback_data=f"system_commands_menu_{alias}")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(f"**🔌 Open Ports for `{alias}`**\n\n```{output.strip()}```", reply_markup=reply_markup, parse_mode='Markdown')
+        await _edit_message_safely(query.message, f"**🔌 Open Ports for `{alias}`**\n\n```{output.strip()}```", user_id, reply_markup=reply_markup, preformatted=True)
     except Exception as e:
-        await query.edit_message_text(f"❌ **Error:**\n`{str(e)}`", parse_mode='Markdown')
+        await _edit_message_safely(query.message, f"❌ **Error:**\n`{str(e)}`", user_id, preformatted=True)
 
 
 async def disconnect(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2011,12 +2063,12 @@ async def disconnect(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             del user_connections[user_id]
 
         logger.info(f"User {user_id} disconnected from {alias}.")
-        await query.edit_message_text("🔌 **Disconnected successfully.**", parse_mode='Markdown')
+        await _edit_message_safely(query.message, "🔌 **Disconnected successfully.**", user_id, preformatted=True)
         await main_menu(update, context)
 
     except Exception as e:
         logger.error(f"Error disconnecting from {alias} for user {user_id}: {e}", exc_info=True)
-        await query.edit_message_text(f"❌ **Error:** Could not disconnect.\n`{e}`", parse_mode='Markdown')
+        await _edit_message_safely(query.message, f"❌ **Error:** Could not disconnect.\n`{e}`", user_id, preformatted=True)
 
 
 @admin_authorized
@@ -2027,12 +2079,11 @@ async def backup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     query = update.callback_query
     user_id = update.effective_user.id
-    parse_mode = _get_user_parse_mode(user_id)
     
     await query.answer()
     
     # Show progress message
-    progress_msg = await query.message.reply_text("🔄 **Creating backup...**", parse_mode=parse_mode)
+    progress_msg = await _send_message_safely(query.message.chat, "🔄 **Creating backup...**", user_id, preformatted=True)
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     backup_dir = tempfile.mkdtemp(prefix="tla_backup_")
@@ -2250,7 +2301,7 @@ async def restore_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     builder.add_line()
     builder.add_text("Are you sure you want to continue?")
     
-    await query.message.reply_text(builder.build(), reply_markup=reply_markup, parse_mode=parse_mode)
+    await _send_message_safely(query.message.chat, builder.build(), user_id, reply_markup=reply_markup, preformatted=True)
     return AWAIT_RESTORE_CONFIRMATION
 
 async def restore_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -2272,12 +2323,12 @@ async def restore_confirmation(update: Update, context: ContextTypes.DEFAULT_TYP
         builder.add_line()
         builder.add_line()
         builder.add_text("The file will be validated before restore.")
-        await query.edit_message_text(builder.build(), parse_mode=parse_mode)
+        await _edit_message_safely(query.message, builder.build(), user_id, preformatted=True)
         return AWAIT_RESTORE_FILE
     else:
         builder = MessageBuilder(parse_mode)
         builder.add_text("❌ Restore cancelled.")
-        await query.edit_message_text(builder.build(), parse_mode=parse_mode)
+        await _edit_message_safely(query.message, builder.build(), user_id, preformatted=True)
         return ConversationHandler.END
 
 async def restore_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -2301,7 +2352,7 @@ async def restore_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         builder.add_text("Please upload a ")
         builder.add_code(".zip")
         builder.add_text(" file.")
-        await update.message.reply_text(builder.build(), parse_mode=parse_mode)
+        await _send_message_safely(update.message.chat, builder.build(), user_id, preformatted=True)
         return AWAIT_RESTORE_FILE
     
     # Check file size (max 100MB)
@@ -2313,11 +2364,11 @@ async def restore_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         builder.add_line()
         builder.add_line()
         builder.add_text(f"File size ({document.file_size / 1024 / 1024:.2f} MB) exceeds maximum (100 MB).")
-        await update.message.reply_text(builder.build(), parse_mode=parse_mode)
+        await _send_message_safely(update.message.chat, builder.build(), user_id, preformatted=True)
         return AWAIT_RESTORE_FILE
     
     # Show progress
-    progress_msg = await update.message.reply_text("🔄 **Starting restore process...**", parse_mode=parse_mode)
+    progress_msg = await _send_message_safely(update.message.chat, "🔄 **Starting restore process...**", user_id, preformatted=True)
     
     backup_dir = tempfile.mkdtemp(prefix="tla_restore_")
     downloaded_file = os.path.join(backup_dir, document.file_name)
@@ -2549,11 +2600,10 @@ async def restore_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 async def cancel_restore(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Pro version: Cancels the restore conversation."""
     user_id = update.effective_user.id
-    parse_mode = _get_user_parse_mode(user_id)
     
-    builder = MessageBuilder(parse_mode)
+    builder = MessageBuilder(_get_user_parse_mode(user_id))
     builder.add_text("❌ Restore cancelled.")
-    await update.message.reply_text(builder.build(), parse_mode=parse_mode)
+    await _send_message_safely(update.message.chat, builder.build(), user_id, preformatted=True)
     return ConversationHandler.END
 
 async def remove_server_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2566,15 +2616,17 @@ async def remove_server_confirm(update: Update, context: ContextTypes.DEFAULT_TY
     success = remove_server(user_id, alias)
     language = _get_user_language(user_id)
     if not success:
-        await query.edit_message_text(
+        await _edit_message_safely(
+            query.message,
             translate('server_not_found', language, alias=alias),
-            parse_mode='Markdown'
+            user_id
         )
         return
 
-    await query.edit_message_text(
+    await _edit_message_safely(
+        query.message,
         translate('server_removed', language, alias=alias),
-        parse_mode='Markdown'
+        user_id
     )
 
 # --- Admin Dashboard ---
@@ -2591,10 +2643,9 @@ async def dashboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     - Server statistics
     """
     user_id = update.effective_user.id
-    parse_mode = _get_user_parse_mode(user_id)
     
     # Show loading message
-    loading_msg = await update.message.reply_text("📊 **Loading dashboard...**", parse_mode=parse_mode)
+    loading_msg = await _send_message_safely(update.message.chat, "📊 **Loading dashboard...**", user_id, preformatted=True)
     
     try:
         # Gather all statistics in parallel
@@ -2807,20 +2858,24 @@ async def update_bot_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         else: # For Windows, Popen is detached by default
             subprocess.Popen([python_executable, updater_script, "--auto"])
 
-        await base_message.reply_text(
+        await _send_message_safely(
+            base_message.chat,
             "✅ **Update process started successfully!**\n\n"
             "The bot will restart shortly to apply the new version. "
             "You can check `updater.log` for progress details.",
-            parse_mode='Markdown'
+            user_id,
+            preformatted=True
         )
 
     except Exception as exc:
         logger.error("Failed to launch the update process: %s", exc, exc_info=True)
-        await base_message.reply_text(
+        await _send_message_safely(
+            base_message.chat,
             f"❌ **Failed to start the update process.**\n\n"
             f"An error occurred: `{exc}`\n"
             "Please check the bot's main log for more details.",
-            parse_mode='Markdown'
+            user_id,
+            preformatted=True
         )
 
 
