@@ -346,8 +346,10 @@ class MessageBuilder:
     """
     Professional message builder that handles formatting based on parse mode.
     """
-    
-    
+    def __init__(self, parse_mode: Optional[str] = None):
+        self.parse_mode = parse_mode
+        self._parts: list[str] = []
+
     def add_text(self, text: str, escape: bool = True) -> "MessageBuilder":
         """
         Add plain text to the message (2026 standards).

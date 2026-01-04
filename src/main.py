@@ -179,7 +179,7 @@ def authorized(func):
             if update and update.callback_query:
                 await update.callback_query.answer("🚫 Unable to identify user.", show_alert=True)
             elif update and update.effective_chat:
-                await update.effective_chat.send_message("🚫 **Access Denied**\nWe could not verify your identity.", parse_mode='Markdown')
+                await _safe_send_message(update.effective_chat, "🚫 **Access Denied**\nWe could not verify your identity.", user_id)
             return
 
         # No whitelist check, all users are welcome.
@@ -197,7 +197,7 @@ def admin_authorized(func):
             if update and update.callback_query:
                 await update.callback_query.answer("🚫 Unable to identify user.", show_alert=True)
             elif update and update.effective_chat:
-                await update.effective_chat.send_message("🚫 **Access Denied**\nWe could not verify your identity.", parse_mode='Markdown')
+                await _safe_send_message(update.effective_chat, "🚫 **Access Denied**\nWe could not verify your identity.", user_id)
             return
 
         # Ensure there is a whitelist and the user is the first one in it
@@ -206,7 +206,7 @@ def admin_authorized(func):
             if update.callback_query:
                 await update.callback_query.answer("🚫 You are not authorized for this admin-only action.", show_alert=True)
             elif update.effective_message:
-                await update.effective_message.reply_text("🚫 **Access Denied**\nThis is an admin-only feature.", parse_mode='Markdown')
+                await _safe_send_message(update.effective_message, "🚫 **Access Denied**\nThis is an admin-only feature.", user_id)
             return
 
         await send_debug_message(update, "Admin authorization successful.")
@@ -252,7 +252,7 @@ def _get_user_parse_mode(user_id: int | None) -> str | None:
     return get_parse_mode(language)
 
 
-def _safe_send_message(
+async def _safe_send_message(
     chat,
     text: str,
     user_id: int | None = None,
@@ -270,7 +270,7 @@ def _safe_send_message(
         **kwargs: Additional arguments for send_message
     """
     parse_mode = _get_user_parse_mode(user_id) if user_id else get_parse_mode()
-    return chat.send_message(
+    return await chat.send_message(
         escape_text(text, parse_mode),
         parse_mode=parse_mode,
         reply_markup=reply_markup,
@@ -278,7 +278,7 @@ def _safe_send_message(
     )
 
 
-def _safe_edit_message_text(
+async def _safe_edit_message_text(
     message_or_query,
     text: str,
     user_id: int | None = None,
@@ -297,22 +297,26 @@ def _safe_edit_message_text(
     """
     parse_mode = _get_user_parse_mode(user_id) if user_id else get_parse_mode()
     
-    if hasattr(message_or_query, 'edit_message_text'):
-        # It's a CallbackQuery
-        return message_or_query.edit_message_text(
-            escape_text(text, parse_mode),
-            parse_mode=parse_mode,
-            reply_markup=reply_markup,
-            **kwargs
-        )
-    else:
-        # It's a Message
-        return message_or_query.edit_text(
-            escape_text(text, parse_mode),
-            parse_mode=parse_mode,
-            reply_markup=reply_markup,
-            **kwargs
-        )
+    try:
+        if hasattr(message_or_query, 'edit_message_text'):
+            # It's a CallbackQuery
+            return await message_or_query.edit_message_text(
+                escape_text(text, parse_mode),
+                parse_mode=parse_mode,
+                reply_markup=reply_markup,
+                **kwargs
+            )
+        else:
+            # It's a Message
+            return await message_or_query.edit_text(
+                escape_text(text, parse_mode),
+                parse_mode=parse_mode,
+                reply_markup=reply_markup,
+                **kwargs
+            )
+    except BadRequest as e:
+        if "Message is not modified" not in str(e):
+            logger.warning(f"UI update failed: {e}")
 
 
 def _build_language_keyboard(active_language: str) -> InlineKeyboardMarkup:
@@ -343,18 +347,8 @@ async def _send_connection_error(
     **kwargs: str,
 ) -> None:
     """Pro version: Sends a translated connection error message with language-aware parse mode."""
-    try:
-        error_message = _translate_for_user(user_id, key, **kwargs)
-        parse_mode = _get_user_parse_mode(user_id)
-        await query.edit_message_text(error_message, parse_mode=parse_mode)
-    except BadRequest as e:
-        # Ignore "Message is not modified" errors - this happens when the message content hasn't changed
-        if "Message is not modified" in str(e):
-            logger.debug(f"Message not modified when sending connection error (expected): {key}")
-        else:
-            logger.warning(f"Failed to send connection error message: {e}")
-    except Exception as e:
-        logger.warning(f"Unexpected error when sending connection error: {e}")
+    error_message = _translate_for_user(user_id, key, **kwargs)
+    await _safe_edit_message_text(query, error_message, user_id)
 
 # --- Add/Remove Server ---
 @authorized
@@ -374,16 +368,16 @@ async def add_server_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         if update.callback_query:
             await update.callback_query.answer(message, show_alert=True)
         elif update.effective_message:
-            await update.effective_message.reply_text(message)
+            await _safe_send_message(update.effective_message, message, user_id)
         return ConversationHandler.END
 
     prompt = translate('add_server_prompt', language)
 
     if update.callback_query:
         await update.callback_query.answer()
-        await update.callback_query.edit_message_text(prompt, parse_mode='Markdown')
+        await _safe_edit_message_text(update.callback_query, prompt, user_id)
     else:
-        await update.effective_message.reply_text(prompt, parse_mode='Markdown')
+        await _safe_send_message(update.effective_message, prompt, user_id)
 
     return ALIAS
 
@@ -392,18 +386,14 @@ async def get_alias(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = _extract_user_id(update)
     language = _get_user_language(user_id)
     context.user_data['alias'] = update.message.text
-    await update.message.reply_text(
-        translate('prompt_hostname', language),
-    )
+    await _safe_send_message(update.message, translate('prompt_hostname', language), user_id)
     return HOSTNAME
 
 async def get_hostname(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = _extract_user_id(update)
     language = _get_user_language(user_id)
     context.user_data['hostname'] = update.message.text
-    await update.message.reply_text(
-        translate('prompt_username', language),
-    )
+    await _safe_send_message(update.message, translate('prompt_username', language), user_id)
     return USER
 
 async def get_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -421,19 +411,14 @@ async def get_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         )
     ]]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(
-        translate('prompt_auth_method', language),
-        reply_markup=reply_markup,
-    )
+    await _safe_send_message(update.message, translate('prompt_auth_method', language), user_id, reply_markup=reply_markup)
     return AUTH_METHOD
 
 async def auth_method_invalid_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Handles invalid text input when expecting a button press for auth method."""
     user_id = _extract_user_id(update)
     language = _get_user_language(user_id)
-    await update.message.reply_text(
-        translate('error_invalid_auth_method_input', language),
-    )
+    await _safe_send_message(update.message, translate('error_invalid_auth_method_input', language), user_id)
     # Re-ask the question without ending the conversation
     return AUTH_METHOD
 
@@ -444,14 +429,10 @@ async def get_auth_method(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await query.answer()
 
     if query.data == 'password':
-        await query.message.reply_text(
-            translate('prompt_password', language),
-        )
+        await _safe_send_message(query.message, translate('prompt_password', language), user_id)
         return PASSWORD
     else:
-        await query.message.reply_text(
-            translate('prompt_key_path', language),
-        )
+        await _safe_send_message(query.message, translate('prompt_key_path', language), user_id)
         return KEY_PATH
 
 async def get_password(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -484,20 +465,19 @@ async def save_server(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             key_path=context.user_data.get('key_path')
         )
         confirmation = translate('server_added', language, alias=context.user_data['alias'])
-        await update.message.reply_text(confirmation, parse_mode='Markdown')
+        await _safe_send_message(update.message, confirmation, user_id)
     except Exception as e:
-        await update.message.reply_text(
+        await _safe_send_message(
+            update.message,
             translate('server_add_error', language, error=str(e)),
-            parse_mode='Markdown'
+            user_id
         )
 
 async def cancel_add_server(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Cancels the add server conversation."""
     user_id = _extract_user_id(update)
     language = _get_user_language(user_id)
-    await update.message.reply_text(
-        translate('server_add_cancelled', language),
-    )
+    await _safe_send_message(update.message, translate('server_add_cancelled', language), user_id)
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -511,9 +491,9 @@ async def remove_server_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
         message = translate('no_servers_to_remove', language)
         if update.callback_query:
             await update.callback_query.answer()
-            await update.callback_query.edit_message_text(message, parse_mode='Markdown')
+            await _safe_edit_message_text(update.callback_query, message, user_id)
         else:
-            await update.effective_message.reply_text(message, parse_mode='Markdown')
+            await _safe_send_message(update.effective_message, message, user_id)
         return
 
     remove_label = translate('button_remove_server', language)
@@ -529,19 +509,12 @@ async def remove_server_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
     ])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
+    text = '🗑️ **Select a server to remove:**'
     if update.callback_query:
         await update.callback_query.answer()
-        await update.callback_query.edit_message_text(
-            '🗑️ **Select a server to remove:**',
-            reply_markup=reply_markup,
-            parse_mode='Markdown'
-        )
+        await _safe_edit_message_text(update.callback_query, text, user_id, reply_markup=reply_markup)
     else:
-        await update.effective_message.reply_text(
-            '🗑️ **Select a server to remove:**',
-            reply_markup=reply_markup,
-            parse_mode='Markdown'
-        )
+        await _safe_send_message(update.effective_message, text, user_id, reply_markup=reply_markup)
 
 # --- Navigation ---
 @authorized
@@ -593,12 +566,11 @@ async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     reply_markup = InlineKeyboardMarkup(keyboard)
     menu_text = _translate_for_user(user_id, 'main_menu_welcome')
 
-    parse_mode = _get_user_parse_mode(user_id)
     if update.callback_query:
         await update.callback_query.answer()
-        await update.callback_query.edit_message_text(escape_text(menu_text, parse_mode), reply_markup=reply_markup, parse_mode=parse_mode)
+        await _safe_edit_message_text(update.callback_query, menu_text, user_id, reply_markup=reply_markup)
     else:
-        await update.message.reply_text(escape_text(menu_text, parse_mode), reply_markup=reply_markup, parse_mode=parse_mode)
+        await _safe_send_message(update.message, menu_text, user_id, reply_markup=reply_markup)
 
 
 @authorized
@@ -618,11 +590,9 @@ async def language_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     message = _resolve_message(update)
     if update.callback_query:
         await update.callback_query.answer()
-        parse_mode = _get_user_parse_mode(user_id)
-        await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
+        await _safe_edit_message_text(update.callback_query, text, user_id, reply_markup=reply_markup)
     elif message:
-        parse_mode = _get_user_parse_mode(user_id)
-        await message.reply_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
+        await _safe_send_message(message, text, user_id, reply_markup=reply_markup)
 
 
 @authorized
@@ -648,7 +618,7 @@ async def set_language(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
     text = f"{title}\n\n{description}"
     reply_markup = _build_language_keyboard(lang_code)
-    await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+    await _safe_edit_message_text(query, text, user_id, reply_markup=reply_markup)
 
 
 # --- Server Connection ---
@@ -673,11 +643,11 @@ async def connect_server_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.callback_query.answer()
-    parse_mode = get_parse_mode(language)
-    await update.callback_query.edit_message_text(
+    await _safe_edit_message_text(
+        update.callback_query,
         translate('connect_menu_prompt', language),
-        reply_markup=reply_markup,
-        parse_mode=parse_mode
+        user_id,
+        reply_markup=reply_markup
     )
 
 _user_cooldowns = {}
@@ -722,7 +692,7 @@ async def handle_server_connection(update: Update, context: ContextTypes.DEFAULT
         try:
             text = translate(text_key, language, **kwargs)
             parse_mode = get_parse_mode(language)
-            await query.edit_message_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
+            await query.edit_message_text(escape_text(text, parse_mode), reply_markup=reply_markup, parse_mode=parse_mode)
         except BadRequest as e:
             # Ignore "Message is not modified" errors - this is expected when content hasn't changed
             if "Message is not modified" in str(e):
@@ -793,7 +763,8 @@ async def handle_server_connection(update: Update, context: ContextTypes.DEFAULT
 async def send_debug_message(update: Update, text: str):
     """Sends a debug message to the user if debug mode is enabled."""
     if DEBUG_MODE:
-        await update.effective_chat.send_message(f"🐞 **DEBUG:** {text}", parse_mode='Markdown')
+        user_id = _extract_user_id(update)
+        await _safe_send_message(update.effective_chat, f"🐞 **DEBUG:** {text}", user_id)
 
 @authorized
 async def toggle_debug_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -801,7 +772,8 @@ async def toggle_debug_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     global DEBUG_MODE
     DEBUG_MODE = not DEBUG_MODE
     status = "ON" if DEBUG_MODE else "OFF"
-    await update.message.reply_text(f"🐞 **Debug Mode is now {status}**", parse_mode='Markdown')
+    user_id = _extract_user_id(update)
+    await _safe_send_message(update.message, f"🐞 **Debug Mode is now {status}**", user_id)
 
 
 # --- Command Execution ---
@@ -820,7 +792,7 @@ async def run_command_start(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     builder.add_text("Ok, please send the command you want to run on ")
     builder.add_bold(alias)
     builder.add_text(".")
-    await query.edit_message_text(builder.build(), parse_mode=parse_mode)
+    await _safe_edit_message_text(query, builder.build(), user_id)
     return AWAIT_COMMAND
 
 @authorized
@@ -831,7 +803,7 @@ async def execute_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     command = update.message.text.strip()
 
     if not alias:
-        await update.message.reply_text("⚠️ No active connection. Please connect to a server first.")
+        await _safe_send_message(update.message, "⚠️ No active connection. Please connect to a server first.", user_id)
         return ConversationHandler.END
 
     # Initial message - Pro version with language-aware formatting
@@ -842,7 +814,7 @@ async def execute_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     builder.add_text(" on ")
     builder.add_code(alias)
     builder.add_text("...")
-    result_message = await update.message.reply_text(builder.build(), parse_mode=parse_mode)
+    result_message = await _safe_send_message(update.message, builder.build(), user_id)
 
     output_buffer: list[str] = []
     last_sent_text = ""
@@ -867,7 +839,7 @@ async def execute_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                         try:
                             # Use language-aware parse mode for code blocks
                             code_block = format_code_block(partial_output, "", parse_mode)
-                            await result_message.edit_text(code_block, parse_mode=parse_mode)
+                            await _safe_edit_message_text(result_message, code_block, user_id)
                             last_sent_text = partial_output
                         except BadRequest as e:
                             if "Message is not modified" not in str(e):
@@ -904,18 +876,20 @@ async def execute_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             )
             os.remove(f.name)
         else:
-            await result_message.edit_text(final_text, parse_mode=parse_mode)
+            await _safe_edit_message_text(result_message, final_text, user_id)
 
     except asyncio.TimeoutError:
-        await result_message.edit_text(
+        await _safe_edit_message_text(
+            result_message,
             f"⏰ **Timeout:** Command `{command}` took too long and was terminated.",
-            parse_mode='Markdown'
+            user_id
         )
     except Exception as e:
         logger.error(f"Error executing '{command}' on '{alias}': {e}", exc_info=True)
-        await result_message.edit_text(
+        await _safe_edit_message_text(
+            result_message,
             f"❌ **Error while executing command:**\n`{e}`",
-            parse_mode='Markdown'
+            user_id
         )
 
     return ConversationHandler.END
@@ -940,7 +914,7 @@ async def cancel_command_callback(update: Update, context: ContextTypes.DEFAULT_
         builder.add_bold(") cancelled on ")
         builder.add_code(alias)
         builder.add_text(".")
-        await query.edit_message_text(builder.build(), parse_mode=parse_mode)
+        await _safe_edit_message_text(query, builder.build(), user_id)
     except Exception as e:
         user_id = update.effective_user.id
         parse_mode = _get_user_parse_mode(user_id)
@@ -950,7 +924,7 @@ async def cancel_command_callback(update: Update, context: ContextTypes.DEFAULT_
         builder.add_text(" Could not cancel command.")
         builder.add_line()
         builder.add_code(str(e))
-        await query.edit_message_text(builder.build(), parse_mode=parse_mode)
+        await _safe_edit_message_text(query, builder.build(), user_id)
 
 
 # --- Interactive Shell ---
@@ -966,14 +940,15 @@ async def start_shell_session(update: Update, context: ContextTypes.DEFAULT_TYPE
         await ssh_manager.start_shell_session(user_id, alias)
         SHELL_MODE_USERS.add(user_id)
         user_connections[user_id] = alias  # Ensure connection is tracked
-        await query.edit_message_text(
+        await _safe_edit_message_text(
+            query,
             f"🖥️ **Interactive shell started on `{alias}`.**\n\n"
             "Send any message to execute it as a command. Send `/exit_shell` to end the session.",
-            parse_mode='Markdown'
+            user_id
         )
     except Exception as e:
         logger.error(f"Error starting shell on {alias} for user {user_id}: {e}", exc_info=True)
-        await query.edit_message_text(f"❌ **Error:** Could not start shell.\n`{e}`", parse_mode='Markdown')
+        await _safe_edit_message_text(query, f"❌ **Error:** Could not start shell.\n`{e}`", user_id)
 
 async def handle_shell_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles commands sent by a user in shell mode."""
@@ -1001,10 +976,10 @@ async def handle_shell_command(update: Update, context: ContextTypes.DEFAULT_TYP
             await update.message.reply_document(document=open(f.name, "rb"), caption=f"Shell output for `{command}`")
             os.remove(f.name)
         else:
-            await update.message.reply_text(f"```\n{output}\n```", parse_mode='Markdown')
+            await _safe_send_message(update.message, f"```\n{output}\n```", user_id)
     except Exception as e:
         logger.error(f"Error in shell on {alias} for user {user_id}: {e}", exc_info=True)
-        await update.message.reply_text(f"❌ **Error:**\n`{e}`", parse_mode='Markdown')
+        await _safe_send_message(update.message, f"❌ **Error:**\n`{e}`", user_id)
 
 @authorized
 async def exit_shell(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1017,7 +992,7 @@ async def exit_shell(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             await ssh_manager.disconnect(user_id, alias)
             del user_connections[user_id]
 
-        await update.message.reply_text("🔌 **Shell session terminated.**", parse_mode='Markdown')
+        await _safe_send_message(update.message, "🔌 **Shell session terminated.**", user_id)
         await main_menu(update, context)
 
 
@@ -1052,10 +1027,12 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
         # Network/timeout errors - log but don't spam user with technical details
         logger.warning("Network/timeout error occurred: %s", error)
         if isinstance(update, Update) and update.effective_chat:
+            user_id = _extract_user_id(update)
             try:
-                await update.effective_chat.send_message(
+                await _safe_send_message(
+                    update.effective_chat,
                     "⚠️ **Connection timeout**\n\nThe request took too long to complete. Please try again.",
-                    parse_mode='Markdown'
+                    user_id
                 )
             except Exception as e:
                 logger.error(f"Failed to send timeout error message: {e}")
@@ -1065,6 +1042,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     logger.error("Exception while handling an update:", exc_info=error)
 
     if isinstance(update, Update) and update.effective_chat:
+        user_id = _extract_user_id(update)
         # Format the traceback
         tb_list = traceback.format_exception(None, error, error.__traceback__)
         tb_string = "".join(tb_list)
@@ -1077,14 +1055,15 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
             error_message = error_message[:4090] + "\n...```"
 
         try:
-            await update.effective_chat.send_message(error_message, parse_mode='Markdown')
+            await _safe_send_message(update.effective_chat, error_message, user_id)
         except Exception as e:
             logger.error(f"Failed to send detailed error message to user: {e}", exc_info=True)
             # Fallback to a simpler message if the detailed one fails
             try:
-                await update.effective_chat.send_message(
+                await _safe_send_message(
+                    update.effective_chat,
                     "❌ **An unexpected error occurred.**\nThe technical details have been logged.",
-                    parse_mode='Markdown'
+                    user_id
                 )
             except Exception as fallback_e:
                 logger.error(f"Failed to send even the fallback error message: {fallback_e}", exc_info=True)
@@ -1096,6 +1075,7 @@ async def server_status_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
     query = update.callback_query
     await query.answer()
     alias = query.data.split('_', 3)[3]
+    user_id = _extract_user_id(update)
 
     keyboard = [
         [InlineKeyboardButton("ℹ️ System Info", callback_data=f"static_info_{alias}")],
@@ -1104,10 +1084,11 @@ async def server_status_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
         [InlineKeyboardButton("🔙 Back to Server Menu", callback_data=f"connect_{alias}")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(
+    await _safe_edit_message_text(
+        query,
         f"**📊 Server Status for {alias}**\n\nSelect an option:",
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
+        user_id,
+        reply_markup=reply_markup
     )
 
 @authorized
@@ -1140,7 +1121,7 @@ async def get_static_info(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     keyboard = [[InlineKeyboardButton("🔙 Back to Status Menu", callback_data=f"server_status_menu_{alias}")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    await query.edit_message_text(info_message, reply_markup=reply_markup, parse_mode='Markdown')
+    await _safe_edit_message_text(query, info_message, user_id, reply_markup=reply_markup)
 
 @authorized
 async def get_resource_usage(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1171,7 +1152,7 @@ async def get_resource_usage(update: Update, context: ContextTypes.DEFAULT_TYPE)
     keyboard = [[InlineKeyboardButton("🔙 Back to Status Menu", callback_data=f"server_status_menu_{alias}")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    await query.edit_message_text(usage_message, reply_markup=reply_markup, parse_mode='Markdown')
+    await _safe_edit_message_text(query, usage_message, user_id, reply_markup=reply_markup)
 
 
 @authorized
@@ -1188,10 +1169,11 @@ async def live_monitoring(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     keyboard = [[InlineKeyboardButton("⏹️ Stop Monitoring", callback_data=f"stop_live_monitoring_{alias}")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    message = await query.edit_message_text(
+    message = await _safe_edit_message_text(
+        query,
         f"**🔴 Live Monitoring for {alias}**\n\nStarting...",
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
+        user_id,
+        reply_markup=reply_markup
     )
 
     async def _update_stats():
@@ -1203,16 +1185,18 @@ async def live_monitoring(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 async for item, stream in ssh_manager.run_command(user_id, alias, command):
                     if stream in ('stdout', 'stderr'):
                         output += item
-                await message.edit_text(
+                await _safe_edit_message_text(
+                    message,
                     f"**🔴 Live Monitoring for {alias}**\n\n```{output.strip()}```",
-                    reply_markup=reply_markup,
-                    parse_mode='Markdown'
+                    user_id,
+                    reply_markup=reply_markup
                 )
             except Exception as e:
-                await message.edit_text(
+                await _safe_edit_message_text(
+                    message,
                     f"**🔴 Live Monitoring for {alias}**\n\n`Error fetching info: {str(e)}`",
-                    reply_markup=reply_markup,
-                    parse_mode='Markdown'
+                    user_id,
+                    reply_markup=reply_markup
                 )
             await asyncio.sleep(5)
 
@@ -1233,10 +1217,11 @@ async def stop_live_monitoring(update: Update, context: ContextTypes.DEFAULT_TYP
     keyboard = [[InlineKeyboardButton("🔙 Back to Status Menu", callback_data=f"server_status_menu_{alias}")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    await query.edit_message_text(
+    await _safe_edit_message_text(
+        query,
         f"**🔴 Live Monitoring for {alias}**\n\nMonitoring stopped.",
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
+        user_id,
+        reply_markup=reply_markup
     )
 
 @authorized
@@ -1245,6 +1230,7 @@ async def package_management_menu(update: Update, context: ContextTypes.DEFAULT_
     query = update.callback_query
     await query.answer()
     alias = query.data.split('_', 3)[3]
+    user_id = _extract_user_id(update)
 
     keyboard = [
         [InlineKeyboardButton("🔄 Update Package Lists", callback_data=f"pkg_update_{alias}")],
@@ -1253,10 +1239,11 @@ async def package_management_menu(update: Update, context: ContextTypes.DEFAULT_
         [InlineKeyboardButton("🔙 Back to Server Menu", callback_data=f"connect_{alias}")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(
+    await _safe_edit_message_text(
+        query,
         f"**📦 Package Management for {alias}**\n\nSelect an action:",
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
+        user_id,
+        reply_markup=reply_markup
     )
 
 @authorized
@@ -1275,7 +1262,7 @@ async def package_manager_action(update: Update, context: ContextTypes.DEFAULT_T
     else:
         return
 
-    result_message = await query.edit_message_text(f"Running `{command}` on `{alias}`...", parse_mode='Markdown')
+    result_message = await _safe_edit_message_text(query, f"Running `{command}` on `{alias}`...", user_id)
 
     output = ""
     try:
@@ -1292,10 +1279,10 @@ async def package_manager_action(update: Update, context: ContextTypes.DEFAULT_T
             await query.message.reply_document(document=open(f.name, "rb"), caption=f"Command output for `{command}`")
             os.remove(f.name)
         else:
-            await result_message.edit_text(final_message, parse_mode='Markdown')
+            await _safe_edit_message_text(result_message, final_message, user_id)
 
     except Exception as e:
-        await result_message.edit_text(f"❌ **Error:**\n`{str(e)}`", parse_mode='Markdown')
+        await _safe_edit_message_text(result_message, f"❌ **Error:**\n`{str(e)}`", user_id)
 
 @authorized
 async def install_package_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1305,8 +1292,9 @@ async def install_package_start(update: Update, context: ContextTypes.DEFAULT_TY
 
     alias = query.data.split('_', 2)[2]
     context.user_data['alias'] = alias
+    user_id = _extract_user_id(update)
 
-    await query.edit_message_text(f"Please enter the name of the package to install on `{alias}`.", parse_mode='Markdown')
+    await _safe_edit_message_text(query, f"Please enter the name of the package to install on `{alias}`.", user_id)
     return AWAIT_PACKAGE_NAME
 
 async def execute_install_package(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1317,7 +1305,7 @@ async def execute_install_package(update: Update, context: ContextTypes.DEFAULT_
 
     command = f"sudo apt-get install -y {package_name}"
 
-    result_message = await update.message.reply_text(f"Running `{command}` on `{alias}`...", parse_mode='Markdown')
+    result_message = await _safe_send_message(update.message, f"Running `{command}` on `{alias}`...", user_id)
 
     output = ""
     try:
@@ -1325,16 +1313,17 @@ async def execute_install_package(update: Update, context: ContextTypes.DEFAULT_
         async for item, stream in ssh_manager.run_command(user_id, alias, command):
             if stream in ('stdout', 'stderr'):
                 output += item
-        await result_message.edit_text(f"✅ **Command completed on `{alias}`**\n\n```{output.strip()}```", parse_mode='Markdown')
+        await _safe_edit_message_text(result_message, f"✅ **Command completed on `{alias}`**\n\n```{output.strip()}```", user_id)
     except Exception as e:
-        await result_message.edit_text(f"❌ **Error:**\n`{str(e)}`", parse_mode='Markdown')
+        await _safe_edit_message_text(result_message, f"❌ **Error:**\n`{str(e)}`", user_id)
 
     context.user_data.clear()
     return ConversationHandler.END
 
 async def cancel_install_package(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Cancels the package installation conversation."""
-    await update.message.reply_text("Package installation cancelled.")
+    user_id = _extract_user_id(update)
+    await _safe_send_message(update.message, "Package installation cancelled.", user_id)
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -1345,6 +1334,7 @@ async def docker_management_menu(update: Update, context: ContextTypes.DEFAULT_T
     query = update.callback_query
     await query.answer()
     alias = query.data.split('_', 3)[3]
+    user_id = _extract_user_id(update)
 
     keyboard = [
         [InlineKeyboardButton("📜 List Containers", callback_data=f"docker_ps_{alias}")],
@@ -1355,10 +1345,11 @@ async def docker_management_menu(update: Update, context: ContextTypes.DEFAULT_T
         [InlineKeyboardButton("🔙 Back to Server Menu", callback_data=f"connect_{alias}")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(
+    await _safe_edit_message_text(
+        query,
         f"**🐳 Docker Management for {alias}**\n\nSelect an action:",
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
+        user_id,
+        reply_markup=reply_markup
     )
 
 
@@ -1370,11 +1361,12 @@ async def docker_action_start(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     action = query.data.split('_')[1]
     alias = query.data.split('_', 2)[2]
+    user_id = _extract_user_id(update)
 
     context.user_data['docker_action'] = action
     context.user_data['alias'] = alias
 
-    await query.edit_message_text(f"Please enter the name or ID of the container to `{action}`.", parse_mode='Markdown')
+    await _safe_edit_message_text(query, f"Please enter the name or ID of the container to `{action}`.", user_id)
     return AWAIT_CONTAINER_NAME
 
 
@@ -1387,7 +1379,7 @@ async def execute_docker_action(update: Update, context: ContextTypes.DEFAULT_TY
 
     command = f"docker {action} {container_name}"
 
-    result_message = await update.message.reply_text(f"Running `{command}` on `{alias}`...", parse_mode='Markdown')
+    result_message = await _safe_send_message(update.message, f"Running `{command}` on `{alias}`...", user_id)
 
     output = ""
     try:
@@ -1404,9 +1396,9 @@ async def execute_docker_action(update: Update, context: ContextTypes.DEFAULT_TY
             await update.message.reply_document(document=open(f.name, "rb"), caption=f"Command output for `{command}`")
             os.remove(f.name)
         else:
-            await result_message.edit_text(final_message, parse_mode='Markdown')
+            await _safe_edit_message_text(result_message, final_message, user_id)
     except Exception as e:
-        await result_message.edit_text(f"❌ **Error:**\n`{str(e)}`", parse_mode='Markdown')
+        await _safe_edit_message_text(result_message, f"❌ **Error:**\n`{str(e)}`", user_id)
 
     context.user_data.clear()
     return ConversationHandler.END
@@ -1424,7 +1416,7 @@ async def docker_ps(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     alias = query.data.split('_', 2)[-1]
     user_id = update.effective_user.id
 
-    result_message = await query.edit_message_text(f"Running `{command}` on `{alias}`...", parse_mode='Markdown')
+    result_message = await _safe_edit_message_text(query, f"Running `{command}` on `{alias}`...", user_id)
 
     output = ""
     try:
@@ -1441,14 +1433,15 @@ async def docker_ps(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await query.message.reply_document(document=open(f.name, "rb"), caption=f"Command output for `{command}`")
             os.remove(f.name)
         else:
-            await result_message.edit_text(final_message, parse_mode='Markdown')
+            await _safe_edit_message_text(result_message, final_message, user_id)
     except Exception as e:
-        await result_message.edit_text(f"❌ **Error:**\n`{str(e)}`", parse_mode='Markdown')
+        await _safe_edit_message_text(result_message, f"❌ **Error:**\n`{str(e)}`", user_id)
 
 
 async def cancel_docker_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Cancels the Docker action conversation."""
-    await update.message.reply_text("Docker action cancelled.")
+    user_id = _extract_user_id(update)
+    await _safe_send_message(update.message, "Docker action cancelled.", user_id)
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -1459,6 +1452,7 @@ async def file_manager_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     query = update.callback_query
     await query.answer()
     alias = query.data.split('_', 3)[3]
+    user_id = _extract_user_id(update)
 
     keyboard = [
         [InlineKeyboardButton("📜 List Files", callback_data=f"fm_ls_{alias}")],
@@ -1467,10 +1461,11 @@ async def file_manager_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         [InlineKeyboardButton("🔙 Back to Server Menu", callback_data=f"connect_{alias}")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(
+    await _safe_edit_message_text(
+        query,
         f"**📁 File Manager for {alias}**\n\nSelect an action:",
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
+        user_id,
+        reply_markup=reply_markup
     )
 
 
@@ -1482,6 +1477,7 @@ async def file_manager_action_start(update: Update, context: ContextTypes.DEFAUL
 
     action = query.data.split('_')[1]
     alias = query.data.split('_', 2)[2]
+    user_id = _extract_user_id(update)
 
     context.user_data['file_manager_action'] = action
     context.user_data['alias'] = alias
@@ -1491,10 +1487,10 @@ async def file_manager_action_start(update: Update, context: ContextTypes.DEFAUL
     elif action == "download":
         prompt = "Please enter the full path of the file to download."
     elif action == "upload":
-        await query.edit_message_text(f"Please enter the full destination path on `{alias}`.", parse_mode='Markdown')
+        await _safe_edit_message_text(query, f"Please enter the full destination path on `{alias}`.", user_id)
         return AWAIT_FILE_PATH
 
-    await query.edit_message_text(prompt, parse_mode='Markdown')
+    await _safe_edit_message_text(query, prompt, user_id)
     return AWAIT_FILE_PATH
 
 
