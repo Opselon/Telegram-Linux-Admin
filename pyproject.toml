@@ -30,13 +30,10 @@ dependencies = [
     "async-timeout>=4.0",
     "requests>=2.31",
     "cryptography>=42.0",
-]
-
-[project.optional-dependencies]
-monitoring = [
     "psutil>=5.9",
 ]
 
+[project.optional-dependencies]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",

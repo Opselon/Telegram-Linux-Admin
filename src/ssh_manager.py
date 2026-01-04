@@ -69,7 +69,7 @@ class SSHManager:
         connect_args = {
             'username': config.get('user'),
             'password': config.get('password'),
-            'client_keys': [config['key_path']] if config.get('key_path') else None,
+            'client_keys': [config['key_path']] if config.get('key_path') else [],
             'known_hosts': None  # For simplicity; in production, consider verifying hosts
         }
 

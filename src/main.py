@@ -249,47 +249,40 @@ def _get_user_parse_mode(user_id: int | None) -> str | None:
     return get_parse_mode(language)
 
 
-async def _answer_callback_query_safely(query: Update.callback_query):
-    """Answers a callback query and handles any potential errors."""
-    if query:
-        try:
-            await query.answer()
-        except Exception as e:
-            logger.warning(f"Failed to answer callback query: {e}")
-
-
 async def _send_message_safely(
     chat,
-    text: str,
+    content: str | MessageBuilder,
     user_id: int | None = None,
     reply_markup=None,
     preformatted: bool = False,
     **kwargs
 ):
     """
-    Sends a message with fail-safe rendering. Escapes text by default.
-    Tries with a preferred parse mode first, then falls back to plain text if a
-    BadRequest error occurs.
+    Sends a message with fail-safe rendering. Handles both plain text and MessageBuilder objects.
     """
-    parse_mode = _get_user_parse_mode(user_id)
-
-    # If the text is not pre-formatted (i.e., not from MessageBuilder), escape it.
-    text_to_send = text if preformatted else escape_text(text, parse_mode)
+    if isinstance(content, MessageBuilder):
+        text = content.build()
+        parse_mode = content.parse_mode
+    else:
+        text = content
+        parse_mode = _get_user_parse_mode(user_id)
+        if not preformatted:
+            text = escape_text(text, parse_mode)
 
     try:
         return await chat.send_message(
-            text_to_send,
+            text,
             parse_mode=parse_mode,
             reply_markup=reply_markup,
             **kwargs
         )
     except BadRequest as e:
         if "Can't parse entities" in str(e):
-            logger.warning(f"Parse error with mode '{parse_mode}'. Retrying with original text and no parse mode. Error: {e}")
-            logger.debug(f"Original text: {text}")
-            # Fallback to the original, unescaped text with no parsing
+            logger.warning(f"Parse error with mode '{parse_mode}'. Retrying with plain text. Error: {e}")
+            # Use original text from builder if it exists, otherwise the plain text
+            original_text = content.build() if isinstance(content, MessageBuilder) else content
             return await chat.send_message(
-                text,
+                original_text,
                 parse_mode=None,
                 reply_markup=reply_markup,
                 **kwargs
@@ -300,18 +293,23 @@ async def _send_message_safely(
 
 async def _edit_message_safely(
     message_or_query,
-    text: str,
+    content: str | MessageBuilder,
     user_id: int | None = None,
     reply_markup=None,
     preformatted: bool = False,
     **kwargs
 ):
     """
-    Edits a message with fail-safe rendering. Escapes text by default.
-    Tries with a preferred parse mode first, then falls back to plain text if a
-    BadRequest error occurs.
+    Edits a message with fail-safe rendering. Handles both plain text and MessageBuilder objects.
     """
-    parse_mode = _get_user_parse_mode(user_id)
+    if isinstance(content, MessageBuilder):
+        text = content.build()
+        parse_mode = content.parse_mode
+    else:
+        text = content
+        parse_mode = _get_user_parse_mode(user_id)
+        if not preformatted:
+            text = escape_text(text, parse_mode)
 
     edit_func = None
     if hasattr(message_or_query, 'edit_message_text'):
@@ -323,12 +321,9 @@ async def _edit_message_safely(
         logger.error("Attempted to edit an object with no edit function.")
         return
 
-    # If the text is not pre-formatted (i.e., not from MessageBuilder), escape it.
-    text_to_send = text if preformatted else escape_text(text, parse_mode)
-
     try:
         return await edit_func(
-            text_to_send,
+            text,
             parse_mode=parse_mode,
             reply_markup=reply_markup,
             **kwargs
@@ -337,11 +332,10 @@ async def _edit_message_safely(
         if "Message is not modified" in str(e):
             return  # This is a harmless, expected error.
         elif "Can't parse entities" in str(e):
-            logger.warning(f"Parse error with mode '{parse_mode}'. Retrying with original text and no parse mode. Error: {e}")
-            logger.debug(f"Original text: {text}")
-            # Fallback to the original, unescaped text with no parsing
+            logger.warning(f"Parse error with mode '{parse_mode}'. Retrying with plain text. Error: {e}")
+            original_text = content.build() if isinstance(content, MessageBuilder) else content
             return await edit_func(
-                text,
+                original_text,
                 parse_mode=None,
                 reply_markup=reply_markup,
                 **kwargs
@@ -596,21 +590,25 @@ async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    # Pro version: Use MessageBuilder for safe, rich text formatting
     parse_mode = _get_user_parse_mode(user_id)
     builder = MessageBuilder(parse_mode)
-    builder.add_bold("🐧 Welcome to your Linux Admin Bot!")
-    builder.add_line()
-    builder.add_line()
-    builder.add_text("What would you like to do?")
-
-    menu_text = builder.build()
+    builder.add_bold(_translate_for_user(user_id, 'main_menu_welcome'))
 
     if update.callback_query:
         await update.callback_query.answer()
-        await _edit_message_safely(update.callback_query.message, menu_text, user_id, reply_markup=reply_markup, preformatted=True)
+        await _edit_message_safely(
+            update.callback_query.message,
+            builder,
+            user_id,
+            reply_markup=reply_markup
+        )
     else:
-        await _send_message_safely(update.message.chat, menu_text, user_id, reply_markup=reply_markup, preformatted=True)
+        await _send_message_safely(
+            update.message.chat,
+            builder,
+            user_id,
+            reply_markup=reply_markup
+        )
 
 
 @authorized
@@ -715,14 +713,14 @@ async def handle_server_connection(update: Update, context: ContextTypes.DEFAULT
         await query.answer("❌ Invalid request data.", show_alert=True)
         return
 
-    # 2. SECURITY: Strict Input Validation (جلوگیری از تزریق کد یا کاراکتر مخرب)
-    # فقط حروف انگلیسی، اعداد، آندرلاین و خط تیره مجازه.
-    if not re.match(r'^[a-zA-Z0-9_-]+$', raw_alias):
-        logger.warning(f"SECURITY ALERT: User {user_id} tried malicious alias: '{raw_alias}'")
-        await query.answer("🚫 Security Violation: Invalid alias format.", show_alert=True)
+    alias = raw_alias
+
+    # 2. SECURITY: Alias Validation (جلوگیری از حملات تزریق دستور)
+    # اطمینان از اینکه نام مستعار فقط شامل کاراکترهای مجاز است.
+    if not re.match(r"^[a-zA-Z0-9_-]+$", alias):
+        await query.answer("Security Violation: Invalid alias format.", show_alert=True)
         return
 
-    alias = raw_alias # حالا که تمیزه، استفاده‌ش می‌کنیم
     language = _get_user_language(user_id)
     await query.answer() # پاسخ به کال‌بک تلگرام تا لودینگ بالای صفحه بره
 
@@ -815,7 +813,7 @@ async def run_command_start(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     builder.add_text("Ok, please send the command you want to run on ")
     builder.add_bold(alias)
     builder.add_text(".")
-    await _edit_message_safely(query.message, builder.build(), user_id, preformatted=True)
+    await _edit_message_safely(query.message, builder, user_id)
     return AWAIT_COMMAND
 
 @authorized
@@ -837,7 +835,7 @@ async def execute_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     builder.add_text(" on ")
     builder.add_code(alias)
     builder.add_text("...")
-    result_message = await _send_message_safely(update.message.chat, builder.build(), user_id, preformatted=True)
+    result_message = await _send_message_safely(update.message.chat, builder, user_id)
 
     output_buffer: list[str] = []
     last_sent_text = ""
@@ -894,14 +892,13 @@ async def execute_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             caption_builder.add_code(command)
             await _send_message_safely(
                 update.message.chat,
-                caption_builder.build(),
+                caption_builder,
                 user_id,
-                preformatted=True,
                 document=open(f.name, "rb")
             )
             os.remove(f.name)
         else:
-            await _edit_message_safely(result_message, final_text, user_id, preformatted=True)
+            await _edit_message_safely(result_message, builder, user_id)
 
     except asyncio.TimeoutError:
         await _edit_message_safely(
@@ -941,7 +938,7 @@ async def cancel_command_callback(update: Update, context: ContextTypes.DEFAULT_
         builder.add_bold(") cancelled on ")
         builder.add_code(alias)
         builder.add_text(".")
-        await _edit_message_safely(query.message, builder.build(), user_id, preformatted=True)
+        await _edit_message_safely(query.message, builder, user_id)
     except Exception as e:
         user_id = update.effective_user.id
         parse_mode = _get_user_parse_mode(user_id)
@@ -951,7 +948,7 @@ async def cancel_command_callback(update: Update, context: ContextTypes.DEFAULT_
         builder.add_text(" Could not cancel command.")
         builder.add_line()
         builder.add_code(str(e))
-        await _edit_message_safely(query.message, builder.build(), user_id, preformatted=True)
+        await _edit_message_safely(query.message, builder, user_id)
 
 
 # --- Interactive Shell ---
@@ -2109,11 +2106,9 @@ async def backup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     
     try:
         # Update progress
-        builder = MessageBuilder(parse_mode)
-        builder.add_text("📦 **Backup in Progress**")
-        builder.add_line()
-        builder.add_text("Validating files...")
-        await progress_msg.edit_text(builder.build(), parse_mode=parse_mode)
+        builder = MessageBuilder(_get_user_parse_mode(user_id))
+        builder.add_bold("📦 Backup in Progress").add_line().add_text("Validating files...")
+        await _edit_message_safely(progress_msg, builder, user_id)
         
         # Validate and collect files with metadata
         validated_files = []
@@ -2176,10 +2171,8 @@ async def backup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         
         # Update progress
         builder.clear()
-        builder.add_text("📦 **Backup in Progress**")
-        builder.add_line()
-        builder.add_text(f"Compressing {len(validated_files)} file(s)...")
-        await progress_msg.edit_text(builder.build(), parse_mode=parse_mode)
+        builder.add_bold("📦 Backup in Progress").add_line().add_text(f"Compressing {len(validated_files)} file(s)...")
+        await _edit_message_safely(progress_msg, builder, user_id)
         
         # Create compressed backup with maximum compression
         with zipfile.ZipFile(backup_filename, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as zipf:
@@ -2197,10 +2190,8 @@ async def backup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         
         # Update progress
         builder.clear()
-        builder.add_text("📦 **Backup in Progress**")
-        builder.add_line()
-        builder.add_text("Verifying backup integrity...")
-        await progress_msg.edit_text(builder.build(), parse_mode=parse_mode)
+        builder.add_bold("📦 Backup in Progress").add_line().add_text("Verifying backup integrity...")
+        await _edit_message_safely(progress_msg, builder, user_id)
         
         # Verify ZIP file integrity
         with zipfile.ZipFile(backup_filename, 'r') as zipf:
@@ -2209,10 +2200,8 @@ async def backup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         
         # Update progress
         builder.clear()
-        builder.add_text("📦 **Backup in Progress**")
-        builder.add_line()
-        builder.add_text("Uploading backup...")
-        await progress_msg.edit_text(builder.build(), parse_mode=parse_mode)
+        builder.add_bold("📦 Backup in Progress").add_line().add_text("Uploading backup...")
+        await _edit_message_safely(progress_msg, builder, user_id)
         
         # Send backup file
         with open(backup_filename, 'rb') as backup_file:
@@ -2241,7 +2230,7 @@ async def backup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         builder.add_line()
         builder.add_text("🔒 Integrity: Verified")
         
-        await progress_msg.edit_text(builder.build(), reply_markup=reply_markup, parse_mode=parse_mode)
+        await _edit_message_safely(progress_msg, builder, user_id, reply_markup=reply_markup)
         logger.info(f"Backup created successfully: {backup_filename} ({backup_size} bytes)")
 
     except Exception as e:
@@ -2253,7 +2242,7 @@ async def backup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         builder.add_line()
         builder.add_text("Error: ")
         builder.add_code(str(e))
-        await progress_msg.edit_text(builder.build(), parse_mode=parse_mode)
+        await _edit_message_safely(progress_msg, builder, user_id)
     finally:
         # Cleanup
         try:
@@ -2301,7 +2290,7 @@ async def restore_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     builder.add_line()
     builder.add_text("Are you sure you want to continue?")
     
-    await _send_message_safely(query.message.chat, builder.build(), user_id, reply_markup=reply_markup, preformatted=True)
+    await _send_message_safely(query.message.chat, builder, user_id, reply_markup=reply_markup)
     return AWAIT_RESTORE_CONFIRMATION
 
 async def restore_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -2323,12 +2312,12 @@ async def restore_confirmation(update: Update, context: ContextTypes.DEFAULT_TYP
         builder.add_line()
         builder.add_line()
         builder.add_text("The file will be validated before restore.")
-        await _edit_message_safely(query.message, builder.build(), user_id, preformatted=True)
+        await _edit_message_safely(query.message, builder, user_id)
         return AWAIT_RESTORE_FILE
     else:
         builder = MessageBuilder(parse_mode)
         builder.add_text("❌ Restore cancelled.")
-        await _edit_message_safely(query.message, builder.build(), user_id, preformatted=True)
+        await _edit_message_safely(query.message, builder, user_id)
         return ConversationHandler.END
 
 async def restore_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -2352,7 +2341,7 @@ async def restore_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         builder.add_text("Please upload a ")
         builder.add_code(".zip")
         builder.add_text(" file.")
-        await _send_message_safely(update.message.chat, builder.build(), user_id, preformatted=True)
+        await _send_message_safely(update.message.chat, builder, user_id)
         return AWAIT_RESTORE_FILE
     
     # Check file size (max 100MB)
@@ -2364,11 +2353,13 @@ async def restore_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         builder.add_line()
         builder.add_line()
         builder.add_text(f"File size ({document.file_size / 1024 / 1024:.2f} MB) exceeds maximum (100 MB).")
-        await _send_message_safely(update.message.chat, builder.build(), user_id, preformatted=True)
+        await _send_message_safely(update.message.chat, builder, user_id)
         return AWAIT_RESTORE_FILE
     
     # Show progress
-    progress_msg = await _send_message_safely(update.message.chat, "🔄 **Starting restore process...**", user_id, preformatted=True)
+    builder = MessageBuilder(parse_mode)
+    builder.add_text("🔄 ").add_bold("Starting restore process...")
+    progress_msg = await _send_message_safely(update.message.chat, builder, user_id)
     
     backup_dir = tempfile.mkdtemp(prefix="tla_restore_")
     downloaded_file = os.path.join(backup_dir, document.file_name)
@@ -2377,11 +2368,9 @@ async def restore_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     
     try:
         # Step 1: Download file
-        builder = MessageBuilder(parse_mode)
-        builder.add_text("🔄 **Restore Progress**")
-        builder.add_line()
-        builder.add_text("📥 Downloading backup file...")
-        await progress_msg.edit_text(builder.build(), parse_mode=parse_mode)
+        builder.clear()
+        builder.add_bold("🔄 Restore Progress").add_line().add_text("📥 Downloading backup file...")
+        await _edit_message_safely(progress_msg, builder, user_id)
         
         # Download file with proper error handling
         backup_file = await document.get_file()
@@ -2395,10 +2384,8 @@ async def restore_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         
         # Step 2: Validate ZIP file
         builder.clear()
-        builder.add_text("🔄 **Restore Progress**")
-        builder.add_line()
-        builder.add_text("🔍 Validating backup file...")
-        await progress_msg.edit_text(builder.build(), parse_mode=parse_mode)
+        builder.add_bold("🔄 Restore Progress").add_line().add_text("🔍 Validating backup file...")
+        await _edit_message_safely(progress_msg, builder, user_id)
         
         try:
             with zipfile.ZipFile(downloaded_file, 'r') as zipf:
@@ -2429,10 +2416,8 @@ async def restore_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         
         # Step 3: Create safety backup of current state
         builder.clear()
-        builder.add_text("🔄 **Restore Progress**")
-        builder.add_line()
-        builder.add_text("💾 Creating safety backup of current state...")
-        await progress_msg.edit_text(builder.build(), parse_mode=parse_mode)
+        builder.add_bold("🔄 Restore Progress").add_line().add_text("💾 Creating safety backup of current state...")
+        await _edit_message_safely(progress_msg, builder, user_id)
         
         safety_backup_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         safety_backup_file = os.path.join(safety_backup_dir, f"safety_backup_{safety_backup_timestamp}.zip")
@@ -2445,10 +2430,8 @@ async def restore_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         
         # Step 4: Extract backup files
         builder.clear()
-        builder.add_text("🔄 **Restore Progress**")
-        builder.add_line()
-        builder.add_text("📦 Extracting backup files...")
-        await progress_msg.edit_text(builder.build(), parse_mode=parse_mode)
+        builder.add_bold("🔄 Restore Progress").add_line().add_text("📦 Extracting backup files...")
+        await _edit_message_safely(progress_msg, builder, user_id)
         
         extract_dir = os.path.join(backup_dir, "extracted")
         os.makedirs(extract_dir, exist_ok=True)
@@ -2458,10 +2441,8 @@ async def restore_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         
         # Step 5: Verify extracted files
         builder.clear()
-        builder.add_text("🔄 **Restore Progress**")
-        builder.add_line()
-        builder.add_text("✅ Verifying extracted files...")
-        await progress_msg.edit_text(builder.build(), parse_mode=parse_mode)
+        builder.add_bold("🔄 Restore Progress").add_line().add_text("✅ Verifying extracted files...")
+        await _edit_message_safely(progress_msg, builder, user_id)
         
         extracted_config = os.path.join(extract_dir, "config.json")
         extracted_db = os.path.join(extract_dir, "database.db")
@@ -2480,10 +2461,8 @@ async def restore_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         
         # Step 6: Backup current files and restore
         builder.clear()
-        builder.add_text("🔄 **Restore Progress**")
-        builder.add_line()
-        builder.add_text("🔄 Restoring files...")
-        await progress_msg.edit_text(builder.build(), parse_mode=parse_mode)
+        builder.add_bold("🔄 Restore Progress").add_line().add_text("🔄 Restoring files...")
+        await _edit_message_safely(progress_msg, builder, user_id)
         
         # Backup and replace files atomically
         files_to_restore = [
@@ -2503,10 +2482,8 @@ async def restore_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         
         # Step 7: Verify restore
         builder.clear()
-        builder.add_text("🔄 **Restore Progress**")
-        builder.add_line()
-        builder.add_text("✅ Verifying restore...")
-        await progress_msg.edit_text(builder.build(), parse_mode=parse_mode)
+        builder.add_bold("🔄 Restore Progress").add_line().add_text("✅ Verifying restore...")
+        await _edit_message_safely(progress_msg, builder, user_id)
         
         # Verify files exist and are valid
         for target_file, _ in files_to_restore:
@@ -2531,7 +2508,7 @@ async def restore_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         builder.add_line()
         builder.add_text("🔄 The bot will restart to apply changes...")
         
-        await progress_msg.edit_text(builder.build(), parse_mode=parse_mode)
+        await _edit_message_safely(progress_msg, builder, user_id)
         
         logger.info(f"Restore completed successfully. Safety backup: {safety_backup_file}")
         
@@ -2579,7 +2556,7 @@ async def restore_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         if safety_backup_files:
             builder.add_text("⚠️ Attempted to restore from safety backup.")
         
-        await progress_msg.edit_text(builder.build(), parse_mode=parse_mode)
+        await _edit_message_safely(progress_msg, builder, user_id)
         
     finally:
         # Cleanup temporary files (with delay to ensure files are closed)
@@ -2603,7 +2580,7 @@ async def cancel_restore(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     
     builder = MessageBuilder(_get_user_parse_mode(user_id))
     builder.add_text("❌ Restore cancelled.")
-    await _send_message_safely(update.message.chat, builder.build(), user_id, preformatted=True)
+    await _send_message_safely(update.message.chat, builder, user_id)
     return ConversationHandler.END
 
 async def remove_server_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2643,9 +2620,12 @@ async def dashboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     - Server statistics
     """
     user_id = update.effective_user.id
-    
+    parse_mode = _get_user_parse_mode(user_id)
+
     # Show loading message
-    loading_msg = await _send_message_safely(update.message.chat, "📊 **Loading dashboard...**", user_id, preformatted=True)
+    builder = MessageBuilder(parse_mode)
+    builder.add_text("📊 ").add_bold("Loading dashboard...")
+    loading_msg = await _send_message_safely(update.message.chat, builder, user_id)
     
     try:
         # Gather all statistics in parallel
@@ -2817,8 +2797,8 @@ async def dashboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         builder.add_line()
         builder.add_text("📅 Last updated: ")
         builder.add_text(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-        
-        await loading_msg.edit_text(builder.build(), parse_mode=parse_mode)
+
+        await _edit_message_safely(loading_msg, builder, user_id)
         
     except Exception as e:
         logger.error(f"Error generating dashboard: {e}", exc_info=True)
@@ -2829,7 +2809,7 @@ async def dashboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         builder.add_line()
         builder.add_text("Error: ")
         builder.add_code(str(e))
-        await loading_msg.edit_text(builder.build(), parse_mode=parse_mode)
+        await _edit_message_safely(loading_msg, builder, user_id)
 
 
 # --- Update ---
