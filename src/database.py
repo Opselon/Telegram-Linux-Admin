@@ -11,13 +11,6 @@ from contextlib import contextmanager
 from typing import Any, Iterable, Iterator
 
 from .security import decrypt_secret, encrypt_secret
-try:
-    from .pqcrypto import encrypt_pq_secret, decrypt_pq_secret
-    PQ_ENCRYPTION_AVAILABLE = True
-except ImportError:
-    PQ_ENCRYPTION_AVAILABLE = False
-    encrypt_pq_secret = encrypt_secret
-    decrypt_pq_secret = decrypt_secret
 
 DEFAULT_DB_FILE = "database.db"
 
@@ -112,29 +105,18 @@ def _encrypt_value(value: str | None) -> str | None:
     """Encrypts a value and encodes it as a Base64 string for safe database storage."""
     if value is None:
         return None
-    if PQ_ENCRYPTION_AVAILABLE:
-        encrypted = encrypt_pq_secret(value)
-    else:
-        encrypted = encrypt_secret(value)
+    encrypted = encrypt_secret(value)
     # Encode bytes to Base64 string to prevent encoding errors with the database driver
     return base64.b64encode(encrypted).decode("utf-8")
 
 
 def _decrypt_value(value: str | None) -> str | None:
-    """Decrypts a Base64 encoded value, trying post-quantum first, then falling back to standard decryption."""
+    """Decrypts a Base64 encoded value."""
     if value is None:
         return None
 
     # Decode the Base64 string back to bytes before decryption
     data = base64.b64decode(value)
-    
-    # Try post-quantum decryption first
-    if PQ_ENCRYPTION_AVAILABLE:
-        try:
-            return decrypt_pq_secret(data)
-        except Exception:
-            # Fall back to standard decryption for backward compatibility
-            pass
     
     # Standard decryption
     return decrypt_secret(data)
@@ -429,6 +411,21 @@ def get_user_language_preference(telegram_id: int) -> str | None:
     return row["language"] if row else None
 
 
+def get_all_user_language_preferences() -> dict[int, str]:
+    """Fetches all user language preferences from the database."""
+    conn = get_db_connection()
+    try:
+        rows = conn.execute(
+            "SELECT telegram_id, language FROM user_preferences"
+        ).fetchall()
+        return {row["telegram_id"]: row["language"] for row in rows}
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc):
+            initialize_database()
+            return {}
+        raise
+
+
 def seed_users(user_ids: Iterable[int]) -> None:
     """Replaces the whitelist with a new set of user IDs."""
     unique_ids = list(dict.fromkeys(user_ids))
@@ -631,42 +628,8 @@ def get_total_users() -> int:
 
 
 def get_users_joined_today() -> int:
-    """Returns the number of users who joined today."""
-    conn = get_db_connection()
-    row = conn.execute(
-        """
-        SELECT COUNT(*) AS count FROM users
-        WHERE DATE(telegram_id) = DATE('now')
-        OR id IN (
-            SELECT id FROM users
-            WHERE id NOT IN (SELECT DISTINCT owner_id FROM servers WHERE owner_id IS NOT NULL)
-            AND id IN (SELECT telegram_id FROM user_preferences WHERE DATE(telegram_id) = DATE('now'))
-        )
-        """
-    ).fetchone()
-    # Since we don't have a join_date column, we'll use a different approach
-    # Count users who have no servers (likely new) or check preferences
-    row = conn.execute(
-        """
-        SELECT COUNT(DISTINCT u.telegram_id) AS count
-        FROM users u
-        LEFT JOIN servers s ON u.telegram_id = s.owner_id
-        WHERE s.owner_id IS NULL
-        OR u.telegram_id IN (
-            SELECT telegram_id FROM user_preferences
-            WHERE telegram_id NOT IN (SELECT DISTINCT owner_id FROM servers WHERE owner_id IS NOT NULL)
-        )
-        """
-    ).fetchone()
-    # Better approach: count users with preferences but no servers (new users)
-    # For now, return users created today based on a heuristic
-    return 0  # Will be improved with proper tracking
-
-
-def get_users_joined_today_v2() -> int:
     """Returns users who likely joined today (have preferences but no servers yet)."""
     conn = get_db_connection()
-    # This is a heuristic - users with preferences but no servers are likely new
     row = conn.execute(
         """
         SELECT COUNT(DISTINCT up.telegram_id) AS count
@@ -744,7 +707,7 @@ def get_servers_per_user_stats() -> dict[str, Any]:
     conn = get_db_connection()
     row = conn.execute(
         """
-        SELECT 
+        SELECT
             AVG(server_count) AS avg_servers,
             MAX(server_count) AS max_servers,
             MIN(server_count) AS min_servers
@@ -761,3 +724,79 @@ def get_servers_per_user_stats() -> dict[str, Any]:
         "min": row["min_servers"] or 0
     } if row else {"avg": 0, "max": 0, "min": 0}
 
+
+def get_servers_added_this_week() -> int:
+    """Returns servers added in the last 7 days."""
+    conn = get_db_connection()
+    row = conn.execute(
+        """
+        SELECT COUNT(*) AS count FROM servers
+        WHERE DATE(created_at) >= DATE('now', '-7 days')
+        """
+    ).fetchone()
+    return row["count"] if row else 0
+
+
+def get_top_users_by_servers(limit: int = 5) -> list[dict[str, Any]]:
+    """Returns top users by number of servers."""
+    conn = get_db_connection()
+    rows = conn.execute(
+        """
+        SELECT owner_id, COUNT(*) AS server_count
+        FROM servers
+        GROUP BY owner_id
+        ORDER BY server_count DESC
+        LIMIT ?
+        """,
+        (limit,)
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_database_size() -> dict[str, Any]:
+    """Returns database size information."""
+    try:
+        db_path = _resolve_db_path()
+        if os.path.exists(db_path):
+            size_bytes = os.path.getsize(db_path)
+            return {
+                "size_bytes": size_bytes,
+                "size_mb": round(size_bytes / (1024 * 1024), 2),
+                "size_kb": round(size_bytes / 1024, 2)
+            }
+    except Exception:
+        pass
+    return {"size_bytes": 0, "size_mb": 0, "size_kb": 0}
+
+
+def get_system_health() -> dict[str, Any]:
+    """Returns system health metrics."""
+    try:
+        import psutil
+        cpu_percent = psutil.cpu_percent(interval=0.1)
+        memory = psutil.virtual_memory()
+        disk = psutil.disk_usage('/')
+
+        return {
+            "cpu_percent": round(cpu_percent, 1),
+            "memory_percent": round(memory.percent, 1),
+            "memory_available_mb": round(memory.available / (1024 * 1024), 1),
+            "disk_percent": round(disk.percent, 1),
+            "disk_free_gb": round(disk.free / (1024 * 1024 * 1024), 2)
+        }
+    except ImportError:
+        return {
+            "cpu_percent": "N/A",
+            "memory_percent": "N/A",
+            "memory_available_mb": "N/A",
+            "disk_percent": "N/A",
+            "disk_free_gb": "N/A"
+        }
+    except Exception:
+        return {
+            "cpu_percent": "Error",
+            "memory_percent": "Error",
+            "memory_available_mb": "Error",
+            "disk_percent": "Error",
+            "disk_free_gb": "Error"
+        }
