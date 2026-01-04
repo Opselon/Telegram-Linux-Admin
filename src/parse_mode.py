@@ -10,81 +10,77 @@ from functools import cache
 import re
 
 # Telegram parse modes
-PARSE_MODE_MARKDOWN = "Markdown"
 PARSE_MODE_MARKDOWN_V2 = "MarkdownV2"
 PARSE_MODE_HTML = "HTML"
-PARSE_MODE_NONE = None
-
-# Language-specific parse mode preferences
-# MarkdownV2 is better for most languages but requires proper escaping
-# HTML is better for RTL languages and complex formatting
-# Markdown (V1) is legacy but simpler for basic cases
-LANGUAGE_PARSE_MODE: dict[str, Optional[str]] = {
-    "en": PARSE_MODE_MARKDOWN_V2,  # English - MarkdownV2 for better formatting
-    "ar": PARSE_MODE_HTML,  # Arabic - HTML for better RTL support
-    "fa": PARSE_MODE_HTML,  # Persian - HTML for better RTL support
-    "fr": PARSE_MODE_MARKDOWN_V2,  # French
-    "de": PARSE_MODE_MARKDOWN_V2,  # German
-    "es": PARSE_MODE_MARKDOWN_V2,  # Spanish
-    "pt": PARSE_MODE_MARKDOWN_V2,  # Portuguese
-    "it": PARSE_MODE_MARKDOWN_V2,  # Italian
-    "ru": PARSE_MODE_MARKDOWN_V2,  # Russian
-    "tr": PARSE_MODE_MARKDOWN_V2,  # Turkish
-    "zh": PARSE_MODE_HTML,  # Chinese - HTML for better CJK support
-    "ja": PARSE_MODE_HTML,  # Japanese - HTML for better CJK support
-    "ko": PARSE_MODE_HTML,  # Korean - HTML for better CJK support
-    "hi": PARSE_MODE_HTML,  # Hindi - HTML for better Devanagari support
-    "ur": PARSE_MODE_HTML,  # Urdu - HTML for better RTL support
-}
 
 # Default parse mode
 DEFAULT_PARSE_MODE = PARSE_MODE_MARKDOWN_V2
 
+@cache
+def get_parse_mode(language: str | None = None, force_markdown: bool = False) -> str | None:
+    """
+    Returns the best parse mode for a given language, prioritizing safety.
+    HTML is preferred for RTL and CJK languages unless markdown is forced.
+    """
+    if force_markdown:
+        return PARSE_MODE_MARKDOWN_V2
+    
+    if language in {'ar', 'fa', 'he', 'ur', 'zh', 'ja', 'ko'}:
+        return PARSE_MODE_HTML
+        
+    return DEFAULT_PARSE_MODE
+
+# --- Idempotent Escaping ---
+MARKDOWN_V2_SPECIAL_CHARS = r'_*[]()~`>#+-=|{}.!'
+HTML_SPECIAL_CHARS = {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}
 
 @cache
-def get_parse_mode(language: str | None = None) -> str | None:
-    """
-    Returns the best parse mode for the given language.
-    
-    Args:
-        language: Language code (e.g., 'en', 'ar', 'fa')
-        
-    Returns:
-        Parse mode string or None
-    """
-    if not language:
-        return DEFAULT_PARSE_MODE
-    return LANGUAGE_PARSE_MODE.get(language, DEFAULT_PARSE_MODE)
-
-
-# --- MarkdownV2 Escaping ---
-# Characters that need escaping in MarkdownV2
-MARKDOWN_V2_SPECIAL = r'_*[]()~`>#+-=|{}.!'
-
 def escape_markdown_v2(text: str) -> str:
-    """
-    Escapes special characters for MarkdownV2 parse mode.
-    
-    Args:
-        text: Text to escape
-        
-    Returns:
-        Escaped text safe for MarkdownV2
-    """
+    """Idempotent and Unicode-safe MarkdownV2 escaper."""
     if not text:
-        return text
-    
-    # Escape all special characters
-    escaped = ""
-    for char in text:
-        if char in MARKDOWN_V2_SPECIAL:
-            escaped += "\\" + char
-        else:
-            escaped += char
-    return escaped
+        return ''
+    # This regex ensures that we only escape a character if it's not already preceded by a backslash
+    return re.sub(f'(?<!\\\\)([{re.escape(MARKDOWN_V2_SPECIAL_CHARS)}])', r'\\\1', text)
 
+@cache
+def escape_html(text: str, quote: bool = True) -> str:
+    """Idempotent and Unicode-safe HTML escaper."""
+    if not text:
+        return ''
+    text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    if quote:
+        text = text.replace('"', "&quot;")
+    return text
 
-def escape_markdown_v2_code(text: str) -> str:
+def escape_text(text: str, parse_mode: str | None) -> str:
+    """Universal escaper that delegates to the correct function."""
+    if parse_mode == PARSE_MODE_MARKDOWN_V2:
+        return escape_markdown_v2(text)
+    if parse_mode == PARSE_MODE_HTML:
+        return escape_html(text)
+    return text
+
+# --- Smart Formatting Functions ---
+
+def format_bold(text: str, parse_mode: str | None) -> str:
+    """Formats text as bold, automatically escaping content."""
+    if parse_mode == PARSE_MODE_MARKDOWN_V2:
+        return f"*{escape_markdown_v2(text)}*"
+    if parse_mode == PARSE_MODE_HTML:
+        return f"<b>{escape_html(text)}</b>"
+    return text
+
+def format_code(text: str, parse_mode: str | None) -> str:
+    """Formats text as inline code, automatically escaping content."""
+    if parse_mode == PARSE_MODE_MARKDOWN_V2:
+        # For inline code, only backticks and backslashes need escaping
+        escaped_text = text.replace('\\', '\\\\').replace('`', '\\`')
+        return f"`{escaped_text}`"
+    if parse_mode == PARSE_MODE_HTML:
+        return f"<code>{escape_html(text)}</code>"
+    return text
+
+def format_code_block(text: str, language: str = "", parse_mode: str | None = None) -> str:
     """
     Escapes text for use inside code blocks in MarkdownV2.
     Code blocks need less escaping, but backticks still need escaping.
