@@ -54,6 +54,7 @@ from .database import (
     get_top_users_by_servers,
     get_database_size,
     get_system_health,
+    get_all_user_language_preferences,
 )
 from .config import config
 from functools import wraps, cache
@@ -271,7 +272,7 @@ async def _safe_send_message(
     """
     parse_mode = _get_user_parse_mode(user_id) if user_id else get_parse_mode()
     return await chat.send_message(
-        escape_text(text, parse_mode),
+        text,
         parse_mode=parse_mode,
         reply_markup=reply_markup,
         **kwargs
@@ -301,7 +302,7 @@ async def _safe_edit_message_text(
         if hasattr(message_or_query, 'edit_message_text'):
             # It's a CallbackQuery
             return await message_or_query.edit_message_text(
-                escape_text(text, parse_mode),
+                text,
                 parse_mode=parse_mode,
                 reply_markup=reply_markup,
                 **kwargs
@@ -309,7 +310,7 @@ async def _safe_edit_message_text(
         else:
             # It's a Message
             return await message_or_query.edit_text(
-                escape_text(text, parse_mode),
+                text,
                 parse_mode=parse_mode,
                 reply_markup=reply_markup,
                 **kwargs
@@ -564,7 +565,16 @@ async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         keyboard.extend(admin_buttons)
 
     reply_markup = InlineKeyboardMarkup(keyboard)
-    menu_text = _translate_for_user(user_id, 'main_menu_welcome')
+
+    # Pro version: Use MessageBuilder for safe, rich text formatting
+    parse_mode = _get_user_parse_mode(user_id)
+    builder = MessageBuilder(parse_mode)
+    builder.add_bold("🐧 Welcome to your Linux Admin Bot!")
+    builder.add_line()
+    builder.add_line()
+    builder.add_text("What would you like to do?")
+
+    menu_text = builder.build()
 
     if update.callback_query:
         await update.callback_query.answer()
@@ -692,7 +702,7 @@ async def handle_server_connection(update: Update, context: ContextTypes.DEFAULT
         try:
             text = translate(text_key, language, **kwargs)
             parse_mode = get_parse_mode(language)
-            await query.edit_message_text(escape_text(text, parse_mode), reply_markup=reply_markup, parse_mode=parse_mode)
+            await query.edit_message_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
         except BadRequest as e:
             # Ignore "Message is not modified" errors - this is expected when content hasn't changed
             if "Message is not modified" in str(e):
@@ -2587,16 +2597,26 @@ async def dashboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     loading_msg = await update.message.reply_text("📊 **Loading dashboard...**", parse_mode=parse_mode)
     
     try:
-        # Gather all statistics
-        total_users = get_total_users()
-        users_today = get_users_joined_today()
-        total_servers = get_total_servers()
-        servers_today = get_servers_added_today()
-        active_users = get_active_users_count()
-        plan_dist = get_plan_distribution()
-        lang_dist = get_language_distribution()
-        recent_servers = get_recent_servers(5)
-        server_stats = get_servers_per_user_stats()
+        # Gather all statistics in parallel
+        (
+            total_users, users_today, total_servers, servers_today,
+            active_users, plan_dist, lang_dist, recent_servers,
+            server_stats, servers_week, top_users, health, db_size
+        ) = await asyncio.gather(
+            asyncio.to_thread(get_total_users),
+            asyncio.to_thread(get_users_joined_today),
+            asyncio.to_thread(get_total_servers),
+            asyncio.to_thread(get_servers_added_today),
+            asyncio.to_thread(get_active_users_count),
+            asyncio.to_thread(get_plan_distribution),
+            asyncio.to_thread(get_language_distribution),
+            asyncio.to_thread(get_recent_servers, 5),
+            asyncio.to_thread(get_servers_per_user_stats),
+            asyncio.to_thread(get_servers_added_this_week),
+            asyncio.to_thread(get_top_users_by_servers, 3),
+            asyncio.to_thread(get_system_health),
+            asyncio.to_thread(get_database_size)
+        )
         
         # Build dashboard message
         builder = MessageBuilder(parse_mode)
@@ -2690,7 +2710,6 @@ async def dashboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             builder.add_line()
         
         # Weekly Statistics
-        servers_week = get_servers_added_this_week()
         builder.add_line()
         builder.add_text("📈 ")
         builder.add_bold("Weekly Stats")
@@ -2701,7 +2720,6 @@ async def dashboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         builder.add_line()
         
         # Top Users
-        top_users = get_top_users_by_servers(3)
         if top_users:
             builder.add_text("🏆 ")
             builder.add_bold("Top Users")
@@ -2716,7 +2734,6 @@ async def dashboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             builder.add_line()
         
         # System Health
-        health = get_system_health()
         builder.add_text("💚 ")
         builder.add_bold("System Health")
         builder.add_line()
@@ -2737,7 +2754,6 @@ async def dashboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         builder.add_line()
         
         # Database Info
-        db_size = get_database_size()
         builder.add_text("💾 ")
         builder.add_bold("Database")
         builder.add_line()
@@ -2833,8 +2849,20 @@ async def post_shutdown(application: Application) -> None:
     close_db_connection()
 
 
+async def load_languages_into_cache():
+    """Loads all user language preferences from the database into the cache."""
+    logger.info("Loading user language preferences into cache...")
+    try:
+        preferences = await asyncio.to_thread(get_all_user_language_preferences)
+        user_language_cache.update(preferences)
+        logger.info(f"Loaded {len(preferences)} language preferences.")
+    except Exception as e:
+        logger.error(f"Failed to load language preferences: {e}", exc_info=True)
+
+
 async def post_init(application: Application):
     """Actions to run after the bot has been initialized."""
+    await load_languages_into_cache()
     await application.bot.set_my_commands([
         BotCommand("start", "Display the main menu"),
         BotCommand("add_server", "Start the guided process to add a new server"),

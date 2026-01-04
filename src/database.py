@@ -11,13 +11,6 @@ from contextlib import contextmanager
 from typing import Any, Iterable, Iterator
 
 from .security import decrypt_secret, encrypt_secret
-try:
-    from .pqcrypto import encrypt_pq_secret, decrypt_pq_secret
-    PQ_ENCRYPTION_AVAILABLE = True
-except ImportError:
-    PQ_ENCRYPTION_AVAILABLE = False
-    encrypt_pq_secret = encrypt_secret
-    decrypt_pq_secret = decrypt_secret
 
 DEFAULT_DB_FILE = "database.db"
 
@@ -112,29 +105,18 @@ def _encrypt_value(value: str | None) -> str | None:
     """Encrypts a value and encodes it as a Base64 string for safe database storage."""
     if value is None:
         return None
-    if PQ_ENCRYPTION_AVAILABLE:
-        encrypted = encrypt_pq_secret(value)
-    else:
-        encrypted = encrypt_secret(value)
+    encrypted = encrypt_secret(value)
     # Encode bytes to Base64 string to prevent encoding errors with the database driver
     return base64.b64encode(encrypted).decode("utf-8")
 
 
 def _decrypt_value(value: str | None) -> str | None:
-    """Decrypts a Base64 encoded value, trying post-quantum first, then falling back to standard decryption."""
+    """Decrypts a Base64 encoded value."""
     if value is None:
         return None
 
     # Decode the Base64 string back to bytes before decryption
     data = base64.b64decode(value)
-    
-    # Try post-quantum decryption first
-    if PQ_ENCRYPTION_AVAILABLE:
-        try:
-            return decrypt_pq_secret(data)
-        except Exception:
-            # Fall back to standard decryption for backward compatibility
-            pass
     
     # Standard decryption
     return decrypt_secret(data)
@@ -429,6 +411,21 @@ def get_user_language_preference(telegram_id: int) -> str | None:
     return row["language"] if row else None
 
 
+def get_all_user_language_preferences() -> dict[int, str]:
+    """Fetches all user language preferences from the database."""
+    conn = get_db_connection()
+    try:
+        rows = conn.execute(
+            "SELECT telegram_id, language FROM user_preferences"
+        ).fetchall()
+        return {row["telegram_id"]: row["language"] for row in rows}
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc):
+            initialize_database()
+            return {}
+        raise
+
+
 def seed_users(user_ids: Iterable[int]) -> None:
     """Replaces the whitelist with a new set of user IDs."""
     unique_ids = list(dict.fromkeys(user_ids))
@@ -620,144 +617,4 @@ def get_system_health() -> dict[str, Any]:
             "disk_percent": "Error",
             "disk_free_gb": "Error"
         }
-
-
-# --- Dashboard Statistics Functions ---
-def get_total_users() -> int:
-    """Returns the total number of users."""
-    conn = get_db_connection()
-    row = conn.execute("SELECT COUNT(*) AS count FROM users").fetchone()
-    return row["count"] if row else 0
-
-
-def get_users_joined_today() -> int:
-    """Returns the number of users who joined today."""
-    conn = get_db_connection()
-    row = conn.execute(
-        """
-        SELECT COUNT(*) AS count FROM users
-        WHERE DATE(telegram_id) = DATE('now')
-        OR id IN (
-            SELECT id FROM users
-            WHERE id NOT IN (SELECT DISTINCT owner_id FROM servers WHERE owner_id IS NOT NULL)
-            AND id IN (SELECT telegram_id FROM user_preferences WHERE DATE(telegram_id) = DATE('now'))
-        )
-        """
-    ).fetchone()
-    # Since we don't have a join_date column, we'll use a different approach
-    # Count users who have no servers (likely new) or check preferences
-    row = conn.execute(
-        """
-        SELECT COUNT(DISTINCT u.telegram_id) AS count
-        FROM users u
-        LEFT JOIN servers s ON u.telegram_id = s.owner_id
-        WHERE s.owner_id IS NULL
-        OR u.telegram_id IN (
-            SELECT telegram_id FROM user_preferences
-            WHERE telegram_id NOT IN (SELECT DISTINCT owner_id FROM servers WHERE owner_id IS NOT NULL)
-        )
-        """
-    ).fetchone()
-    # Better approach: count users with preferences but no servers (new users)
-    # For now, return users created today based on a heuristic
-    return 0  # Will be improved with proper tracking
-
-
-def get_users_joined_today_v2() -> int:
-    """Returns users who likely joined today (have preferences but no servers yet)."""
-    conn = get_db_connection()
-    # This is a heuristic - users with preferences but no servers are likely new
-    row = conn.execute(
-        """
-        SELECT COUNT(DISTINCT up.telegram_id) AS count
-        FROM user_preferences up
-        LEFT JOIN servers s ON up.telegram_id = s.owner_id
-        WHERE s.owner_id IS NULL
-        """
-    ).fetchone()
-    return row["count"] if row else 0
-
-
-def get_total_servers() -> int:
-    """Returns the total number of servers."""
-    conn = get_db_connection()
-    row = conn.execute("SELECT COUNT(*) AS count FROM servers").fetchone()
-    return row["count"] if row else 0
-
-
-def get_servers_added_today() -> int:
-    """Returns the number of servers added today."""
-    conn = get_db_connection()
-    row = conn.execute(
-        """
-        SELECT COUNT(*) AS count FROM servers
-        WHERE DATE(created_at) = DATE('now')
-        """
-    ).fetchone()
-    return row["count"] if row else 0
-
-
-def get_plan_distribution() -> dict[str, int]:
-    """Returns the distribution of users by plan."""
-    conn = get_db_connection()
-    rows = conn.execute(
-        "SELECT plan, COUNT(*) AS count FROM users GROUP BY plan"
-    ).fetchall()
-    return {row["plan"]: row["count"] for row in rows}
-
-
-def get_language_distribution() -> dict[str, int]:
-    """Returns the distribution of users by language."""
-    conn = get_db_connection()
-    rows = conn.execute(
-        "SELECT language, COUNT(*) AS count FROM user_preferences GROUP BY language"
-    ).fetchall()
-    return {row["language"]: row["count"] for row in rows}
-
-
-def get_recent_servers(limit: int = 10) -> list[dict[str, Any]]:
-    """Returns the most recently added servers."""
-    conn = get_db_connection()
-    rows = conn.execute(
-        """
-        SELECT owner_id, alias, hostname, created_at
-        FROM servers
-        ORDER BY created_at DESC
-        LIMIT ?
-        """,
-        (limit,)
-    ).fetchall()
-    return [dict(row) for row in rows]
-
-
-def get_active_users_count() -> int:
-    """Returns the number of users who have at least one server."""
-    conn = get_db_connection()
-    row = conn.execute(
-        "SELECT COUNT(DISTINCT owner_id) AS count FROM servers"
-    ).fetchone()
-    return row["count"] if row else 0
-
-
-def get_servers_per_user_stats() -> dict[str, Any]:
-    """Returns statistics about servers per user."""
-    conn = get_db_connection()
-    row = conn.execute(
-        """
-        SELECT 
-            AVG(server_count) AS avg_servers,
-            MAX(server_count) AS max_servers,
-            MIN(server_count) AS min_servers
-        FROM (
-            SELECT owner_id, COUNT(*) AS server_count
-            FROM servers
-            GROUP BY owner_id
-        )
-        """
-    ).fetchone()
-    return {
-        "avg": round(row["avg_servers"] or 0, 2),
-        "max": row["max_servers"] or 0,
-        "min": row["min_servers"] or 0
-    } if row else {"avg": 0, "max": 0, "min": 0}
 

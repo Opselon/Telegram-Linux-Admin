@@ -26,7 +26,7 @@ LANGUAGE_LABELS = {
 
 TRANSLATIONS: Dict[str, Dict[str, str]] = {
     "en": {
-        "main_menu_welcome": "🐧 **Welcome to your Linux Admin Bot!**\n\nWhat would you like to do?",
+        "main_menu_welcome": "🐧 Welcome to your Linux Admin Bot!\n\nWhat would you like to do?",
         "button_connect_server": "🔌 Connect to a Server",
         "button_add_server": "➕ Add Server",
         "button_remove_server": "➖ Remove Server",
