@@ -185,7 +185,10 @@ def apply_update(is_auto: bool = False) -> str:
         # Create backup directory with timestamp
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         backup_dir = REPO_ROOT / f"backup_{timestamp}"
+        # Optional files are skipped (with a warning) when absent; critical files must exist.
         data_files = ["config.json", "database.db", "var/encryption.key", "var/pq_encryption.key"]
+        optional_data_files = {"var/encryption.key", "var/pq_encryption.key"}
+        critical_data_files = {"config.json", "database.db"}
         
         log_message("[2/8] Creating comprehensive backup...")
         try:
@@ -194,11 +197,18 @@ def apply_update(is_auto: bool = False) -> str:
             # Backup critical files
             for file in data_files:
                 src_path = REPO_ROOT / file
-                if src_path.exists():
-                    dst_path = backup_dir / file
-                    dst_path.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(src_path, dst_path)
-                    log_message(f"  ✓ Backed up {file}")
+                if not src_path.exists():
+                    if file in optional_data_files:
+                        logger.warning(f"Optional file {file} not found - skipping backup")
+                        continue
+                    raise FileNotFoundError(f"Required data file missing: {file}")
+                if src_path.stat().st_size == 0:
+                    logger.warning(f"File {file} is empty - skipping backup")
+                    continue
+                dst_path = backup_dir / file
+                dst_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src_path, dst_path)
+                log_message(f"  ✓ Backed up {file}")
             
             # Backup source code (excluding large dirs)
             ignore_patterns = shutil.ignore_patterns(
@@ -219,12 +229,12 @@ def apply_update(is_auto: bool = False) -> str:
         time.sleep(3)  # Additional wait time
         
         log_message("[4/8] Validating backup integrity...")
-        # Verify critical files exist in backup
+        # Verify critical files exist in backup (optional files may have been skipped)
         for file in ["config.json", "database.db"]:
             backup_file = backup_dir / file
-            if not backup_file.exists():
+            if file in critical_data_files and not backup_file.exists():
                 raise ValueError(f"Critical file missing in backup: {file}")
-            if backup_file.stat().st_size == 0:
+            if backup_file.exists() and backup_file.stat().st_size == 0:
                 raise ValueError(f"Backup file is empty: {file}")
         
         log_message("[5/8] Downloading new version...")
