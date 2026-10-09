@@ -77,6 +77,10 @@ async def test_handle_server_connection_e2e(mocker, conn_type):
     # Patch the config to authorize the user
     mocker.patch.object(main.config, 'whitelisted_users', [user_id])
 
+    # handle_server_connection rate-limits per user_id (3s). The parametrized cases
+    # share a user id, so clear the cooldown to avoid an early return.
+    main._user_cooldowns.clear()
+
 
     # 2. Execute the handler
     try:
@@ -99,7 +103,8 @@ async def test_handle_server_connection_e2e(mocker, conn_type):
         assert mock_conn.waited
 
     # Verify bot interactions
-    update.callback_query.edit_message_text.assert_called()
+    # handle_server_connection edits query.message via _edit_message_safely()
+    update.callback_query.message.edit_message_text.assert_called()
     # The text is in the second call to edit_message_text
-    final_call_args = update.callback_query.edit_message_text.call_args_list[1]
+    final_call_args = update.callback_query.message.edit_message_text.call_args_list[1]
     assert "Connected to" in final_call_args.args[0]

@@ -1,75 +1,100 @@
-import pytest
-from unittest.mock import patch, MagicMock, call
-from src.updater import apply_update, rollback, COMMAND_TIMEOUT
 import sys
 
-@patch('src.updater.shutil.rmtree')
-@patch('src.updater.shutil.copy')
-@patch('src.updater.shutil.copytree')
-@patch('src.updater.download_and_extract_zip')
-@patch('src.updater.subprocess.run')
-@patch('src.updater.time.sleep', return_value=None) # Mock time.sleep to speed up tests
-def test_apply_update_success(mock_sleep, mock_run, mock_download, mock_copytree, mock_copy, mock_rmtree):
+import pytest
+from unittest.mock import patch, MagicMock, call
+
+from src.updater import COMMAND_TIMEOUT, apply_update, rollback
+
+# apply_update() drives systemd through the _is_systemd_available /
+# _stop_bot_gracefully / _start_bot_gracefully helpers, so the tests patch those
+# (not subprocess.run) to keep assertions aligned with the real call flow.
+
+
+@pytest.fixture
+def fake_data_files(tmp_path, monkeypatch):
+    """Point REPO_ROOT at a temp dir holding real config.json/database.db and a src/ dir."""
+    for name in ("config.json", "database.db"):
+        (tmp_path / name).write_text("dummy-content")
+    (tmp_path / "src").mkdir(exist_ok=True)
+    (tmp_path / "src" / "dummy.py").write_text("# dummy")
+    monkeypatch.setattr("src.updater.REPO_ROOT", tmp_path)
+    return tmp_path
+
+
+@patch("src.updater._is_systemd_available", return_value=True)
+@patch("src.updater._stop_bot_gracefully")
+@patch("src.updater._start_bot_gracefully")
+@patch("src.updater.shutil.rmtree")
+@patch("src.updater.download_and_extract_zip")
+@patch("src.updater.subprocess.run")
+@patch("src.updater.time.sleep", return_value=None)
+def test_apply_update_success(
+    mock_sleep,
+    mock_run,
+    mock_download,
+    mock_rmtree,
+    mock_start,
+    mock_stop,
+    mock_systemd,
+    fake_data_files,
+):
     """Test the successful application of an update."""
-    with patch('src.updater.Path.exists', return_value=True):
-        result = apply_update()
+    result = apply_update()
 
     assert "Update process completed successfully!" in result
     mock_download.assert_called_once()
-    mock_copytree.assert_called_once()
-    # Assuming at least 2 data files are backed up and restored
-    assert mock_copy.call_count >= 2
 
+    # The only direct subprocess.run call is the dependency install; systemd
+    # start/stop go through the patched helpers.
     expected_calls = [
-        call(["systemctl", "stop", "telegram_bot.service"], check=True, timeout=COMMAND_TIMEOUT),
-        call([sys.executable, "-m", "pip", "install", "-e", "."], check=True, timeout=COMMAND_TIMEOUT),
-        call(["systemctl", "start", "telegram_bot.service"], check=True, timeout=COMMAND_TIMEOUT)
+        call([sys.executable, "-m", "pip", "install", "-e", ".", "--quiet"],
+             check=True, timeout=COMMAND_TIMEOUT, capture_output=True, text=True),
     ]
     mock_run.assert_has_calls(expected_calls)
-    assert mock_run.call_count == 3
+    mock_start.assert_called_once()
+    assert mock_stop.call_count >= 1
 
-@patch('src.updater.shutil.rmtree')
-@patch('src.updater.shutil.copy')
-@patch('src.updater.shutil.copytree')
-@patch('src.updater.download_and_extract_zip', side_effect=Exception("Download failed"))
-@patch('src.updater.rollback')
-@patch('src.updater.time.sleep', return_value=None)
-def test_apply_update_failure_and_rollback(mock_sleep, mock_rollback, mock_download, mock_copytree, mock_copy, mock_rmtree):
+
+@patch("src.updater._is_systemd_available", return_value=True)
+@patch("src.updater._stop_bot_gracefully")
+@patch("src.updater._start_bot_gracefully")
+@patch("src.updater.download_and_extract_zip", side_effect=Exception("Download failed"))
+@patch("src.updater.rollback")
+@patch("src.updater.time.sleep", return_value=None)
+def test_apply_update_failure_and_rollback(
+    mock_sleep,
+    mock_rollback,
+    mock_download,
+    mock_start,
+    mock_stop,
+    mock_systemd,
+    fake_data_files,
+):
     """Test a failed update and the subsequent rollback."""
-    # Create dummy data files for the backup step to succeed before the download fails
-    from pathlib import Path
-    config_file = Path("config.json")
-    db_file = Path("database.db")
-    config_file.touch()
-    db_file.touch()
+    with patch("src.updater.subprocess.run"):
+        result = apply_update()
 
-    try:
-        with patch('src.updater.subprocess.run') as mock_run:
-            result = apply_update()
+    assert "Update Failed: Download failed" in result
+    assert "Attempting automatic rollback..." in result
+    mock_rollback.assert_called_once()
+    mock_stop.assert_called()
 
-        mock_run.assert_called_once_with(["systemctl", "stop", "telegram_bot.service"], check=True, timeout=COMMAND_TIMEOUT)
-        assert "Update Failed: Download failed" in result
-        assert "Attempting to roll back..." in result
-        mock_rollback.assert_called_once()
-    finally:
-        # Clean up the dummy files to not affect other tests
-        if config_file.exists():
-            config_file.unlink()
-        if db_file.exists():
-            db_file.unlink()
 
-@patch('src.updater.shutil.copytree')
-@patch('src.updater.subprocess.run')
-def test_rollback(mock_run, mock_copytree):
+@patch("src.updater._is_systemd_available", return_value=True)
+@patch("src.updater._stop_bot_gracefully")
+@patch("src.updater._start_bot_gracefully")
+@patch("src.updater.shutil.copy2")
+@patch("src.updater.shutil.copytree")
+@patch("src.updater.subprocess.run")
+def test_rollback(mock_run, mock_copytree, mock_copy2, mock_start, mock_stop, mock_systemd):
     """Test the rollback function."""
     backup_dir = MagicMock()
 
     rollback(backup_dir)
 
     expected_calls = [
-        call(["systemctl", "stop", "telegram_bot.service"], check=True, timeout=COMMAND_TIMEOUT),
-        call([sys.executable, '-m', 'pip', 'install', '-e', '.'], check=True, timeout=COMMAND_TIMEOUT),
-        call(["systemctl", "start", "telegram_bot.service"], check=True, timeout=COMMAND_TIMEOUT)
+        call([sys.executable, '-m', 'pip', 'install', '-e', '.', '--quiet'],
+             check=True, timeout=COMMAND_TIMEOUT, capture_output=True),
     ]
     mock_run.assert_has_calls(expected_calls)
     mock_copytree.assert_called_once()

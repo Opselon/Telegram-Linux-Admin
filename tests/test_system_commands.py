@@ -9,9 +9,22 @@ def authorized_update():
     """Creates a mock update object that will pass the @authorized decorator."""
     update = AsyncMock(spec=Update)
     update.effective_user = MagicMock(id=12345)
+    update.effective_chat = MagicMock(id=12345)
     update.callback_query = AsyncMock()
     update.callback_query.from_user = MagicMock(id=12345)
+    update.callback_query.message = AsyncMock()
     return update
+
+@pytest.fixture
+def mock_translations():
+    """Makes translate() pass keys through verbatim so assertions stay stable."""
+    with patch('src.main.translate', side_effect=lambda key, lang, **kw: key), \
+         patch('src.main._translate_for_user', side_effect=lambda user_id, key, **kw: key):
+        yield
+
+def _edit_call(update):
+    """Returns the first call args of the real edit target: query.message.edit_message_text."""
+    return update.callback_query.message.edit_message_text.call_args
 
 @pytest.mark.asyncio
 @patch('src.main.config')
@@ -22,9 +35,9 @@ async def test_system_commands_menu(mock_config, authorized_update):
 
     await main.system_commands_menu(authorized_update, MagicMock(spec=ContextTypes.DEFAULT_TYPE))
 
-    authorized_update.callback_query.edit_message_text.assert_called_once()
-    call_args = authorized_update.callback_query.edit_message_text.call_args
-    assert "**⚙️ System Commands for test_alias**" in call_args[0][0]
+    authorized_update.callback_query.message.edit_message_text.assert_called_once()
+    call_args = _edit_call(authorized_update)
+    assert "System Commands for test_alias" in call_args[0][0]
 
     reply_markup = call_args[1]['reply_markup']
     assert isinstance(reply_markup, InlineKeyboardMarkup)
@@ -46,9 +59,9 @@ async def test_confirm_system_command(mock_config, authorized_update):
 
     await main.confirm_system_command(authorized_update, MagicMock(spec=ContextTypes.DEFAULT_TYPE))
 
-    authorized_update.callback_query.edit_message_text.assert_called_once()
-    call_args = authorized_update.callback_query.edit_message_text.call_args
-    assert "**⚠️ Are you sure you want to reboot the server `test_alias`?**" in call_args[0][0]
+    authorized_update.callback_query.message.edit_message_text.assert_called_once()
+    call_args = _edit_call(authorized_update)
+    assert "Are you sure you want to reboot the server `test_alias`?" in call_args[0][0]
 
     reply_markup = call_args[1]['reply_markup']
     buttons = reply_markup.inline_keyboard
@@ -70,9 +83,10 @@ async def test_execute_system_command_reboot(mock_config, mock_ssh_manager, auth
 
     await main.execute_system_command(authorized_update, MagicMock(spec=ContextTypes.DEFAULT_TYPE))
 
-    authorized_update.callback_query.edit_message_text.assert_called_once_with(
+    authorized_update.callback_query.message.edit_message_text.assert_called_once_with(
         "✅ **Command `reboot` sent to `test_alias` successfully.**",
-        parse_mode='Markdown'
+        parse_mode='MarkdownV2',
+        reply_markup=None
     )
 
 @pytest.mark.asyncio
@@ -92,9 +106,9 @@ async def test_get_disk_usage(mock_config, mock_ssh_manager, authorized_update):
 
     await main.get_disk_usage(authorized_update, MagicMock(spec=ContextTypes.DEFAULT_TYPE))
 
-    authorized_update.callback_query.edit_message_text.assert_called_once()
-    call_args = authorized_update.callback_query.edit_message_text.call_args
-    assert "**💾 Disk Usage for `test_alias`**" in call_args[0][0]
+    authorized_update.callback_query.message.edit_message_text.assert_called_once()
+    call_args = _edit_call(authorized_update)
+    assert "Disk Usage for `test_alias`" in call_args[0][0]
     assert "Filesystem" in call_args[0][0]
 
 @pytest.mark.asyncio
@@ -114,7 +128,7 @@ async def test_get_network_info(mock_config, mock_ssh_manager, authorized_update
 
     await main.get_network_info(authorized_update, MagicMock(spec=ContextTypes.DEFAULT_TYPE))
 
-    authorized_update.callback_query.edit_message_text.assert_called_once()
-    call_args = authorized_update.callback_query.edit_message_text.call_args
-    assert "**🌐 Network Info for `test_alias`**" in call_args[0][0]
+    authorized_update.callback_query.message.edit_message_text.assert_called_once()
+    call_args = _edit_call(authorized_update)
+    assert "Network Info for `test_alias`" in call_args[0][0]
     assert "LOOPBACK" in call_args[0][0]

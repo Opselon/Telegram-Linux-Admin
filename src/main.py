@@ -2079,9 +2079,10 @@ async def backup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     query = update.callback_query
     user_id = update.effective_user.id
-    
+    parse_mode = _get_user_parse_mode(user_id)
+
     await query.answer()
-    
+
     # Show progress message
     progress_msg = await _send_message_safely(query.message.chat, "🔄 **Creating backup...**", user_id, preformatted=True)
     
