@@ -29,3 +29,9 @@ var/log/
 *.db
 *.db-shm
 *.db-wal
+
+# PyInstaller artifacts
+build/
+dist/
+*.spec
+packaging/__pycache__/
