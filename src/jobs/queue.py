@@ -237,9 +237,14 @@ class JobQueue:
         return sorted(jobs, key=lambda job: (job.spec.priority, self._seq.get(job.id, 0)))
 
     def active(self, user_id: int | None = None) -> list[Job]:
-        """Currently running jobs (at most one per user)."""
+        """Currently running jobs (at most one per user).
+
+        Ordered by submission sequence, not by wall-clock ``started_at``:
+        concurrently-started jobs can share a ``time.time()`` tick and the
+        random job id is not a stable ordering key.
+        """
         jobs = [job for job in self._running.values() if user_id is None or job.spec.user_id == user_id]
-        return sorted(jobs, key=lambda job: (job.started_at or 0.0, job.id))
+        return sorted(jobs, key=lambda job: self._seq.get(job.id, 0))
 
     def cancel(self, user_id: int, job_id: str) -> bool:
         """Cancels one of ``user_id``'s jobs; False when it is unknown or terminal.

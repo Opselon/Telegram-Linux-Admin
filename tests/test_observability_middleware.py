@@ -256,7 +256,6 @@ class TestExceptionBehaviour:
         assert payload["level"] == "ERROR"
         assert isinstance(payload["duration_ms"], float)
 
-    @pytest.mark.asyncio
     def test_handler_type_preserved(self):
         async def handler(update, context):
             return "ok"

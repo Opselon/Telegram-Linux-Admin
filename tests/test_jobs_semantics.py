@@ -717,7 +717,7 @@ async def test_null_runner_rejected_and_disconnected_spec_handled() -> None:
 # -- model sanity -----------------------------------------------------------
 
 
-def test_job_spec_defaults_and_immutability() -> None:
+async def test_job_spec_defaults_and_immutability() -> None:
     """JobSpec defaults match the contract and frozen specs cannot drift."""
     job_spec = JobSpec(user_id=1, alias="self", command="echo hi")
     assert job_spec.priority == 10
@@ -729,7 +729,7 @@ def test_job_spec_defaults_and_immutability() -> None:
         job_spec.priority = 1  # type: ignore[misc]
 
 
-def test_job_result_carries_duration_and_output_bytes() -> None:
+async def test_job_result_carries_duration_and_output_bytes() -> None:
     """JobResult is a frozen snapshot a handler can render with no queue access."""
     job = Job(
         id="job_abc",
