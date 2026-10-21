@@ -350,10 +350,16 @@ def _default_shell() -> str | None:
 
 def _safe_hostname() -> str:
     """Best-effort hostname for display; empty string instead of raising."""
-    try:
-        return os.uname().nodename  # type: ignore[attr-defined]
-    except AttributeError:
-        return os.environ.get("COMPUTERNAME", "") or ""
+    # ``os.uname`` is POSIX-only, so a ``type: ignore`` here is itself an error
+    # on Linux CI (where the attribute exists) under warn_unused_ignores.
+    # getattr() type-checks identically on every platform.
+    uname = getattr(os, "uname", None)
+    if uname is not None:
+        try:
+            return str(uname().nodename)
+        except Exception:  # pragma: no cover - defensive
+            pass
+    return os.environ.get("COMPUTERNAME", "") or ""
 
 
 def _safe_user() -> str:
