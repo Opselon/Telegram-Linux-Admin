@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import traceback
+from typing import Any
 
 from telegram import Update
 from telegram.error import BadRequest
@@ -26,14 +27,24 @@ from telegram.ext import ContextTypes
 # Optional transport-level timeout exceptions: httpx and httpcore are PTB's
 # default HTTP transport but are not guaranteed present, so resolve them
 # dynamically and fall back to an empty tuple.
+#: Each name is either the real exception class or None. Annotated as ``Any``
+#: deliberately: the ignore comments that a ``type: ignore`` would need are
+#: themselves an error when the transport IS installed (``warn_unused_ignores``),
+#: so the optional import must type-check the same with httpx present or absent.
+HTTPCoreReadTimeout: Any = None
+HTTPXReadTimeout: Any = None
 try:
-    from httpcore import ReadTimeout as HTTPCoreReadTimeout
+    from httpcore import ReadTimeout as _HTTPCoreReadTimeout
+
+    HTTPCoreReadTimeout = _HTTPCoreReadTimeout
 except ImportError:  # pragma: no cover - depends on installed transport
-    HTTPCoreReadTimeout = None  # type: ignore[assignment]
+    pass
 try:
-    from httpx import ReadTimeout as HTTPXReadTimeout
+    from httpx import ReadTimeout as _HTTPXReadTimeout
+
+    HTTPXReadTimeout = _HTTPXReadTimeout
 except ImportError:  # pragma: no cover - depends on installed transport
-    HTTPXReadTimeout = None  # type: ignore[assignment]
+    pass
 
 from .support import _extract_user_id, _send_message_safely
 
