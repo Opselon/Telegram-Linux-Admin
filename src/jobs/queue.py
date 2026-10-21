@@ -178,11 +178,11 @@ class JobQueue:
         if dedupe_key is not None:
             existing = self._dedupe.get(dedupe_key)
             if existing is not None:
-                future = self._futures.get(existing)
-                if future is not None:
+                pending_future = self._futures.get(existing)
+                if pending_future is not None:
                     self._deduped += 1
                     self._emit("jobs_deduped", priority=spec.priority)
-                    return await asyncio.shield(future)
+                    return await asyncio.shield(pending_future)
 
         outstanding = self._outstanding_by_user.get(spec.user_id, 0)
         if outstanding >= self._max_pending_per_user:

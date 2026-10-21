@@ -61,8 +61,10 @@ _CONTEXT_FIELDS: frozenset[str] = frozenset(
     {"correlation_id", "user_id", "event", "request_type", "alias", "outcome"}
 )
 
-_CONTEXT_VAR: contextvars.ContextVar[dict[str, str]] = contextvars.ContextVar(
-    "tla_log_context", default={}
+#: Default is ``None`` (never a shared mutable dict): a mutable default would be
+#: handed to every context and let one task's bindings leak into another's.
+_CONTEXT_VAR: contextvars.ContextVar[dict[str, str] | None] = contextvars.ContextVar(
+    "tla_log_context", default=None
 )
 
 _REDACTED = "[REDACTED]"
@@ -118,7 +120,7 @@ def current_context() -> dict[str, str]:
     A copy is returned so a caller cannot mutate the context of a sibling
     task through the dict it got back.
     """
-    return dict(_CONTEXT_VAR.get())
+    return dict(_CONTEXT_VAR.get() or {})
 
 
 class _ContextBinder(ContextManager[None]):
@@ -128,11 +130,11 @@ class _ContextBinder(ContextManager[None]):
 
     def __init__(self, fields: dict[str, str]) -> None:
         self._fields = fields
-        self._token: contextvars.Token[dict[str, str]] | None = None
+        self._token: contextvars.Token[dict[str, str] | None] | None = None
 
     def __enter__(self) -> None:
         if self._fields:
-            merged = {**_CONTEXT_VAR.get(), **self._fields}
+            merged = {**(_CONTEXT_VAR.get() or {}), **self._fields}
             self._token = _CONTEXT_VAR.set(merged)
         return None
 

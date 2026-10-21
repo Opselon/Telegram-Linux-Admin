@@ -153,7 +153,7 @@ class TargetResolver:
             return record
         # Some layers return sqlite3.Row-like objects; read them structurally.
         try:
-            return {str(key): record[key] for key in record.keys()}  # type: ignore[attr-defined]
+            return {str(key): record[key] for key in record.keys()}
         except Exception:  # pragma: no cover - defensive
             return None
 

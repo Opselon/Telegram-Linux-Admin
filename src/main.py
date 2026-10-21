@@ -137,7 +137,6 @@ import sys  # noqa: F401  (tests patch src.main.sys)
 import types
 import zipfile  # noqa: F401  (tests patch src.main.zipfile)
 
-from .bot.admin import audit_command, dashboard_command, update_bot_command
 from .bot.support import (
     DashboardStats,
     ServerInfo,

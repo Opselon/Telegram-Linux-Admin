@@ -301,10 +301,11 @@ class LocalTarget:
         """
         if os.name == "posix":
             killer = getattr(os, "killpg", None)
+            getpgid = getattr(os, "getpgid", None)
             sig = getattr(signal, "SIGKILL", None)
-            if killer is not None and sig is not None:
+            if killer is not None and getpgid is not None and sig is not None:
                 try:
-                    killer(os.getpgid(proc.pid), sig)
+                    killer(getpgid(proc.pid), sig)
                     return
                 except (ProcessLookupError, PermissionError, OSError):
                     logger.debug("killpg failed for pid %s; falling back to kill().", proc.pid)

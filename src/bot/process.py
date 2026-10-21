@@ -81,7 +81,7 @@ def main() -> None:
     audit.record("bot.started", outcome="success", access_mode=permissions.mode)
     METRICS.set("ready", 1)
 
-    application = build_application(post_init=post_init, post_shutdown=post_shutdown)
+    application = build_application(on_startup=post_init, on_shutdown=post_shutdown)
 
     logger.info("Bot is starting...")
 

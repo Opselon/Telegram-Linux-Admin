@@ -23,6 +23,7 @@ than mocks of the scheduler.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 
 import pytest
 
@@ -725,7 +726,7 @@ async def test_job_spec_defaults_and_immutability() -> None:
     assert job_spec.dedupe_key is None
     assert job_spec.label == ""
     assert dict(job_spec.metadata) == {}
-    with pytest.raises(Exception):
+    with pytest.raises(dataclasses.FrozenInstanceError):
         job_spec.priority = 1  # type: ignore[misc]
 
 

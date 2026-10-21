@@ -79,15 +79,21 @@ from .system import confirm_system_command, execute_system_command, system_comma
 logger = logging.getLogger(__name__)
 
 
-def build_application(*, post_init=None, post_shutdown=None) -> Application:
-    """Returns a fully wired Application; the caller starts polling."""
+def build_application(*, on_startup=None, on_shutdown=None) -> Application:
+    """Returns a fully wired Application; the caller starts polling.
+
+    ``on_startup``/``on_shutdown`` override the module-level lifecycle hooks
+    (``lifecycle.post_init`` / ``post_shutdown``) — they must not be named
+    ``post_init``/``post_shutdown`` or they would shadow those imports inside
+    this function.
+    """
     # Configure request timeout to prevent ReadTimeout errors
     # Default timeout is 5 seconds, increasing to 30 seconds for better reliability
     application = (
         Application.builder()
         .token(config.telegram_token)
-        .post_init(post_init)
-        .post_shutdown(post_shutdown)
+        .post_init(on_startup if on_startup is not None else post_init)
+        .post_shutdown(on_shutdown if on_shutdown is not None else post_shutdown)
         .connect_timeout(30.0)
         .read_timeout(30.0)
         .write_timeout(30.0)

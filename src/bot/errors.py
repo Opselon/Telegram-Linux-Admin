@@ -14,9 +14,8 @@ EXTEND: add a handler in this module, then register it in
 
 from __future__ import annotations
 
-from . import state
-
 import logging
+import traceback
 
 from telegram import Update
 from telegram.error import BadRequest
@@ -24,7 +23,17 @@ from telegram.error import NetworkError
 from telegram.error import TimedOut
 from telegram.ext import ContextTypes
 
-import traceback
+# Optional transport-level timeout exceptions: httpx and httpcore are PTB's
+# default HTTP transport but are not guaranteed present, so resolve them
+# dynamically and fall back to an empty tuple.
+try:
+    from httpcore import ReadTimeout as HTTPCoreReadTimeout
+except ImportError:  # pragma: no cover - depends on installed transport
+    HTTPCoreReadTimeout = None  # type: ignore[assignment]
+try:
+    from httpx import ReadTimeout as HTTPXReadTimeout
+except ImportError:  # pragma: no cover - depends on installed transport
+    HTTPXReadTimeout = None  # type: ignore[assignment]
 
 from .support import _extract_user_id, _send_message_safely
 
@@ -35,18 +44,18 @@ logger = logging.getLogger(__name__)
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Log the error and send a detailed message to the user."""
     error = context.error
-    
+
     # Handle specific error types gracefully
     if isinstance(error, BadRequest) and "Message is not modified" in str(error):
         # This is a harmless error - message content hasn't changed
         logger.debug("Message not modified error (ignored): %s", error)
         return
-    
+
     # Handle timeout errors (from various sources)
     timeout_errors = [TimedOut, NetworkError]
-    if HTTPCoreReadTimeout:
+    if HTTPCoreReadTimeout is not None:
         timeout_errors.append(HTTPCoreReadTimeout)
-    if HTTPXReadTimeout:
+    if HTTPXReadTimeout is not None:
         timeout_errors.append(HTTPXReadTimeout)
     
     # Check if it's a timeout error by type, cause, or message content

@@ -155,7 +155,7 @@ async def backup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         
         # Create compressed backup with maximum compression
         with zipfile.ZipFile(backup_filename, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as zipf:
-            for file_path, file_hash in validated_files:
+            for file_path, _file_hash in validated_files:
                 zipf.write(file_path, arcname=os.path.basename(file_path))
             
             # Add metadata as JSON
@@ -358,7 +358,7 @@ async def restore_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         try:
             await backup_file.download_to_drive(downloaded_file)
         except Exception as download_error:
-            raise ValueError(f"Failed to download backup file: {download_error}")
+            raise ValueError(f"Failed to download backup file: {download_error}") from download_error
         
         if not os.path.exists(downloaded_file) or os.path.getsize(downloaded_file) == 0:
             raise ValueError("Downloaded file is empty or corrupted")
@@ -395,7 +395,7 @@ async def restore_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
                     except Exception as e:
                         logger.warning(f"Could not read backup metadata: {e}")
         except zipfile.BadZipFile:
-            raise ValueError("Invalid ZIP file format")
+            raise ValueError("Invalid ZIP file format") from None
         
         # Step 3: Create safety backup of current state
         builder.clear()
@@ -446,7 +446,7 @@ async def restore_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             with open(extracted_config, 'r', encoding='utf-8') as f:
                 json.load(f)  # Validate JSON
         except json.JSONDecodeError as e:
-            raise ValueError(f"Invalid JSON in config.json: {e}")
+            raise ValueError(f"Invalid JSON in config.json: {e}") from e
         
         # Step 6: Backup current files and restore
         builder.clear()

@@ -124,16 +124,20 @@ indent-style = "space"
 [tool.mypy]
 # Configured to run on the tree as it exists, not aspirationally: the codebase
 # predates this config and a strict gate would demand a mass annotation sweep
-# of src/**, which the CI lane does not own. What stays on still catches real
-# bugs in unannotated code without false positives.
+# of the Telegram handler layer, which this lane does not own. What stays on
+# still catches real bugs in unannotated code without false positives.
 #
-# src/main.py is excluded: it holds 463 of the 469 findings (large untyped
-# Telegram handlers) and is orchestrator-owned, so it cannot be fixed here.
-# The remaining ~15 findings live in database.py / health.py / ssh_manager.py
-# / updater.py and are returned as a NON-BLOCKING baseline in the typecheck
-# job (see .github/workflows/ci.yml): a regression in them is visible, a
-# pre-existing one is not a gate failure. When src/main.py is annotated, drop
-# the exclude and tighten this section.
+# 3.2 moved the 3.8k-line src/main.py into src/bot/*, so the handler-layer
+# findings moved with it: 415 of them now live in the 16 src.bot modules
+# (~350 are `update.callback_query` union-attr on Optional PTB attributes) and
+# exactly 0 remain outside. src/main.py itself is still excluded because it is
+# a pure re-export facade whose names come from `from .bot import *`.
+#
+# The baseline below is per-module and per-error-code, pinned to what each
+# module measures today, and the new src/observability, src/jobs, src/runtime
+# and src/policy packages are deliberately NOT listed: they are fully typed and
+# green, so any finding there is a real regression and fails the gate. Delete a
+# src.bot entry as its module is annotated; after that mypy enforces it again.
 python_version = "3.12"
 mypy_path = "src"
 files = ["src"]
@@ -154,6 +158,70 @@ warn_unused_configs = true
 # These modules are orchestrator-owned: the fix is an annotation sweep, not
 # something this lane can do. Delete an entry as its module is cleaned up;
 # after that, mypy enforces that code for the module again.
+[[tool.mypy.overrides]]
+module = ["src.bot.admin"]
+disable_error_code = ["arg-type", "attr-defined", "index", "union-attr", "var-annotated"]  # 2 + 3 + 9 + 5 + 1
+
+[[tool.mypy.overrides]]
+module = ["src.bot.backup"]
+disable_error_code = ["index", "union-attr"]  # 2 + 26
+
+[[tool.mypy.overrides]]
+module = ["src.bot.commands"]
+disable_error_code = ["index", "union-attr"]  # 2 + 33
+
+[[tool.mypy.overrides]]
+module = ["src.bot.docker"]
+disable_error_code = ["arg-type", "index", "union-attr"]  # 1 + 4 + 27
+
+[[tool.mypy.overrides]]
+module = ["src.bot.errors"]
+disable_error_code = ["arg-type", "misc", "union-attr"]  # 2 + 2 + 3
+
+[[tool.mypy.overrides]]
+module = ["src.bot.files"]
+disable_error_code = ["arg-type", "index", "union-attr"]  # 3 + 7 + 36
+
+[[tool.mypy.overrides]]
+module = ["src.bot.firewall"]
+disable_error_code = ["arg-type", "index", "union-attr"]  # 1 + 4 + 22
+
+[[tool.mypy.overrides]]
+module = ["src.bot.monitoring"]
+disable_error_code = ["union-attr"]  # 42
+
+[[tool.mypy.overrides]]
+module = ["src.bot.navigation"]
+disable_error_code = ["union-attr"]  # 8
+
+[[tool.mypy.overrides]]
+module = ["src.bot.packages"]
+disable_error_code = ["arg-type", "index", "union-attr"]  # 1 + 2 + 22
+
+[[tool.mypy.overrides]]
+module = ["src.bot.processes"]
+disable_error_code = ["arg-type", "index", "union-attr"]  # 1 + 2 + 22
+
+[[tool.mypy.overrides]]
+module = ["src.bot.servers"]
+disable_error_code = ["arg-type", "index", "union-attr"]  # 3 + 5 + 55
+
+[[tool.mypy.overrides]]
+module = ["src.bot.services"]
+disable_error_code = ["index", "union-attr"]  # 4 + 16
+
+[[tool.mypy.overrides]]
+module = ["src.bot.shell"]
+disable_error_code = ["arg-type", "union-attr"]  # 1 + 16
+
+[[tool.mypy.overrides]]
+module = ["src.bot.support"]
+disable_error_code = ["arg-type", "attr-defined", "union-attr", "valid-type"]  # 1 + 1 + 1 + 1
+
+[[tool.mypy.overrides]]
+module = ["src.bot.system"]
+disable_error_code = ["union-attr"]  # 16
+
 [[tool.mypy.overrides]]
 module = ["src.config"]
 disable_error_code = ["arg-type"]  # 2
