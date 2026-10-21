@@ -1,0 +1,42 @@
+# Dependabot keeps CI dependencies current.
+#
+# PURPOSE / OWNER / CONSUMES / PROVIDES / INVARIANTS / EXTEND
+# PURPOSE: automated PRs for pip packages and GitHub Actions versions.
+# OWNER:   ci lane (feat/3.2-ci).
+# CONSUMES: pyproject.toml, .github/workflows/**.
+# INVARIANTS: weekly cadence on Monday; at most five open PRs at once so the
+#   queue is reviewable. New ecosystems are new `updates` entries.
+# EXTEND: add an `updates` entry when a new manifest (e.g. package-lock.json)
+#   appears.
+version: 2
+
+updates:
+  # Python runtime + dev dependencies: an advisory or fix release becomes a
+  # reviewable PR instead of silent drift.
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "python"
+
+  # Actions are pinned to major versions here; Dependabot proposes the minors
+  # so a checkout step cannot drift between two commits with no code change.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(ci)"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "github-actions"

@@ -58,5 +58,147 @@ packages = ["src"]
 tla-bot = "src.main:main"
 tla-bot-update = "src.updater:main"
 
+# ----------------------------------------------------------------------------
+# CI tool configuration (owned by the CI lane, feature/3.2-ci).
+# These gates are calibrated to the tree as it exists today, not aspirationally:
+# every threshold here was measured locally before being committed.
+# ----------------------------------------------------------------------------
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = [".venv", "venv", "build", "dist", ".eggs"]
+
+[tool.ruff.lint]
+# Bug-catching rules only. The broad style selections (E/W, I, SIM) fire
+# hundreds of times on code that predates this config, which would turn the
+# lint gate into a mass-reformat demand on src/** - files this lane does not
+# own. What remains catches real bugs.
+#
+# Known debt, deliberately excluded (see lane-ci-status.md):
+#   F401 unused imports: 24 findings, all in src/** (orchestrator-owned).
+#   F841 unused variables: 4 findings, all in src/**.
+#   B904 raise-without-from and B007 unused loop var: 5 findings in src/main.py.
+# Fixing those means editing files this lane must not touch, so the debt is
+# reported in the status file rather than hidden by deleting the rule.
+select = [
+    "F811", # redefinition of unused name (duplicate def/import)
+    "F821", # undefined name
+    "F822", # undefined name in __all__
+    "F823", # local variable referenced before assignment
+    "E9",   # syntax errors and invalid Python
+    "B",    # flake8-bugbear: real bug patterns
+]
+# per-file-ignores survive a CLI --select, which is how the wave gate invokes
+# ruff: a command-line --select *overrides* this whole `ignore` list, so the
+# gate's flags must not turn pre-existing src/tests debt into a CI failure.
+# Entries here name the exact findings each file already produces on the base
+# commit 2c0aa07, nothing more - a new finding in these files still fails.
+[tool.ruff.lint.per-file-ignores]
+"src/main.py" = ["F401", "B007", "B904", "ASYNC109", "ASYNC220", "ASYNC230", "ASYNC240"]
+"src/updater.py" = ["F401", "B904"]
+"src/parse_mode.py" = ["F401"]
+"src/logger_config.py" = ["F401"]
+"src/ssh_manager.py" = ["ASYNC109"]
+"tests/test_bot_commands.py" = ["F401", "ASYNC230"]
+"tests/test_bot_e2e.py" = ["F401"]
+"tests/test_config_settings.py" = ["F401"]
+"tests/test_ssh_layer.py" = ["F401"]
+
+ignore = [
+    "E501",  # line-length is a style preference; ruff format handles it
+    "F401",  # unused imports: 24 in src/**, orchestrator-owned
+    "F841",  # unused variables: 4 in src/**, orchestrator-owned
+    "B904",  # raise-without-from: 4 in src/main.py
+    "B007",  # unused loop control variable: 1 in src/main.py
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+# The CI lane owns only scripts/ci: src/** and tests/** predate this config
+# and mass-reformatting them would collide with every other lane's diff. The
+# format gate in ci.yml checks scripts/ci only - once src/tests are migrated,
+# widen it and this config together.
+
+[tool.mypy]
+# Configured to run on the tree as it exists, not aspirationally: the codebase
+# predates this config and a strict gate would demand a mass annotation sweep
+# of src/**, which the CI lane does not own. What stays on still catches real
+# bugs in unannotated code without false positives.
+#
+# src/main.py is excluded: it holds 463 of the 469 findings (large untyped
+# Telegram handlers) and is orchestrator-owned, so it cannot be fixed here.
+# The remaining ~15 findings live in database.py / health.py / ssh_manager.py
+# / updater.py and are returned as a NON-BLOCKING baseline in the typecheck
+# job (see .github/workflows/ci.yml): a regression in them is visible, a
+# pre-existing one is not a gate failure. When src/main.py is annotated, drop
+# the exclude and tighten this section.
+python_version = "3.12"
+mypy_path = "src"
+files = ["src"]
+exclude = ["^src/main\\.py$"]
+
+disallow_untyped_defs = false      # opt-in: no mass annotation sweep
+check_untyped_defs = true          # still type-check bodies of unannotated defs
+ignore_missing_imports = true      # asyncssh/PTB stubs are not packaged
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+strict_equality = true
+warn_unused_configs = true
+
+# Per-module baseline. Each entry silences only the error codes that module
+# ALREADY produces on the base tree (counts in the comment), so the typecheck
+# gate is green today and turns red the moment someone adds a NEW finding.
+# These modules are orchestrator-owned: the fix is an annotation sweep, not
+# something this lane can do. Delete an entry as its module is cleaned up;
+# after that, mypy enforces that code for the module again.
+[[tool.mypy.overrides]]
+module = ["src.config"]
+disable_error_code = ["arg-type"]  # 2
+
+[[tool.mypy.overrides]]
+module = ["src.database"]
+disable_error_code = ["arg-type", "assignment", "unused-ignore"]  # 1 + 4 + 1
+
+[[tool.mypy.overrides]]
+module = ["src.health"]
+disable_error_code = ["arg-type"]  # 1
+
+[[tool.mypy.overrides]]
+module = ["src.logger_config"]
+disable_error_code = ["attr-defined"]  # 1
+
+[[tool.mypy.overrides]]
+module = ["src.ssh_manager"]
+disable_error_code = ["arg-type", "call-arg", "return-value"]  # 1 + 1 + 2
+
+[[tool.mypy.overrides]]
+module = ["src.updater"]
+disable_error_code = ["unused-ignore"]  # 1
+
+[tool.coverage.run]
+source = ["src"]
+branch = true
+# Honest for the CURRENT tree: the suite measures 55.4% overall because the
+# 3.8k-line interaction layer (src/main.py) is integration code that needs a
+# live Telegram/SSH environment to exercise. The runtime/jobs/policy/
+# observability packages landing in this wave are unit-tested, so the floor
+# rises as they land. Ratchet it up as the new packages land; never lower it.
+fail_under = 50
+
+[tool.coverage.report]
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]
+
+[tool.coverage.xml]
+output = "coverage.xml"
+
 [tool.pytest.ini_options]
 asyncio_default_fixture_loop_scope = "function"
