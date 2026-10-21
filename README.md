@@ -260,13 +260,36 @@ docker build -t tla-bot:latest .
 
 ```bash
 mkdir -p /path/to/appdata
+chown -R 1000:1000 /path/to/appdata   # the image runs as uid 1000 (appuser)
+cp config.example.json /path/to/appdata/config.json
+# edit /path/to/appdata/config.json and set telegram_token + whitelisted_users
 
 docker run -d \
   --name telegram-admin-bot \
   -v /path/to/appdata:/app/data \
+  -e TLA_CONFIG_FILE=/app/data/config.json \
+  -e TLA_ACCESS_MODE=whitelist \
+  -e TLA_DESTINATION_POLICY=deny_public \
+  -e TLA_HEALTH_PORT=8081 \
+  -e TLA_AUDIT_DIR=/app/data/var/log \
+  -p 127.0.0.1:8081:8081 \
   --restart unless-stopped \
   tla-bot:latest
 ```
+
+The container installs the package under `/usr/local/lib/python3.12/site-packages`
+and runs as an unprivileged `appuser`; `/app/data` is the only writable volume
+(config, database, encryption key and audit log all live there).
+
+With `TLA_HEALTH_PORT` set the container reports `healthy` from
+`GET /healthz`; without it the probe is a no-op, so existing deployments are
+never marked unhealthy by a feature they do not use.
+
+The bind-mounted data directory must be owned by uid 1000: the container runs as
+the unprivileged `appuser` and cannot create `database.db`, the audit log or the
+encryption key in a root-owned mount. If it cannot, `/readyz` reports `503` with
+`audit_writable: false` and the log states exactly which path failed — the bot
+refuses to call itself ready while it is silently losing audit records.
 
 ---
 
@@ -277,6 +300,8 @@ docker run -d \
 * `/start` - Start the bot and show main menu
 * `/language` - Change language preference
 * `/dashboard` - Admin dashboard (admin only)
+* `/audit [count]` - Tail the audit log (admin only)
+* `/access` - Show or change the access mode at runtime (admin only)
 
 ## Server Management
 
@@ -389,16 +414,132 @@ All messages are properly escaped and formatted for each language.
 
 # 📝 Configuration
 
-Configuration is stored in `config.json`:
+`config.json` holds the bot token, the whitelist and the security policy:
 
 ```json
 {
   "telegram_token": "YOUR_BOT_TOKEN",
-  "whitelisted_users": [YOUR_TELEGRAM_USER_ID]
+  "whitelisted_users": [YOUR_TELEGRAM_USER_ID],
+  "access_mode": "whitelist",
+  "destination_policy": "deny_public",
+  "allowed_destinations": ["10.0.0.0/8", "192.168.0.0/16"]
 }
 ```
 
-Encryption keys are automatically generated and stored securely.
+Unknown keys are preserved verbatim on save, so hand-written settings are never
+clobbered. The file is tightened to mode `600` on load. Environment variables
+override the file:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `TLA_CONFIG_FILE` | `config.json` | Path to the JSON configuration |
+| `TLA_DB_FILE` | `database.db` | SQLite database path |
+| `TLA_ENCRYPTION_KEY` | *(unset)* | Fernet key, avoids a key file on disk |
+| `TLA_ENCRYPTION_KEY_FILE` | `var/encryption.key` | Key file when the env var is unset |
+| `TLA_ACCESS_MODE` | `open` | `open`, `whitelist` or `admin_only` |
+| `TLA_DESTINATION_POLICY` | `allow_all` | `allow_all`, `deny_public` or `allowlist` |
+| `TLA_ALLOWED_DESTINATIONS` | *(empty)* | Comma-separated CIDRs for `allowlist` |
+| `TLA_HEALTH_PORT` | *(unset)* | Enables `/healthz`, `/readyz`, `/metrics` |
+| `TLA_HEALTH_HOST` | `127.0.0.1` | Health bind address (use `0.0.0.0` in Docker) |
+| `TLA_AUDIT_DIR` | `var/log` | Audit log directory |
+| `TLA_AUDIT_MAX_BYTES` | `5242880` | Rotate the audit log at this size |
+| `TLA_AUDIT_KEEP_FILES` | `3` | Rotated audit files to keep |
+| `TLA_AUDIT_ENABLED` | `1` | Set to `0` to disable JSONL audit records | |
+
+Encryption keys are generated automatically on first run and stored with mode
+`600`.
+
+---
+
+# 🛡️ Hardening & Operations
+
+## Access control (fail-closed)
+
+Every handler passes through a single gate backed by `src/access_control.py`:
+
+- `open` — legacy behaviour, any Telegram user may talk to the bot. A loud
+  warning is logged at startup; use it only for a first smoke test.
+- `whitelist` — only IDs in `whitelisted_users` are served.
+- `admin_only` — only the first whitelisted ID (the administrator) is served.
+
+Unknown users get a translated denial, the denial is audited, and the handler
+never runs. The mode can be changed at runtime with `/access` (admin only).
+
+## Destination policy
+
+Before a TCP connection is attempted, `src/destination_policy.py` classifies the
+target host:
+
+- `allow_all` — historical behaviour.
+- `deny_public` — private ranges, loopback and link-local only; public IPs are
+  refused. Cloud metadata endpoints (`169.254.169.254`, `fd00:ec2::254`) are
+  always refused in every mode.
+- `allowlist` — only the CIDRs in `allowed_destinations` (plus an exact
+  hostname match) are reachable.
+
+This makes an accidental production-IP or router-IP entry a clear error instead
+of a live connection. DNS resolution happens before the decision, so a hostname
+cannot be used to smuggle a public address past the policy.
+
+## SSH host-key pinning (TOFU)
+
+The first connection to a server records the SHA-256 host-key fingerprint in the
+database (`servers.host_key`). Every later connection is compared against it and
+a mismatch aborts **before** a single byte of input is sent — a swapped or
+man-in-the-middled host cannot receive the bot's commands or credentials.
+Removing and re-adding the server re-pins the key.
+
+## Command risk policy
+
+Commands are classified by `src/command_policy.py` into three bands:
+
+- **SAFE** — executed immediately (`ls`, `df -h`, `systemctl status …`).
+- **CONFIRM** — destructive but recoverable (`rm -rf`, `apt upgrade`,
+  `systemctl restart`, `userdel`, `docker … prune`). The bot shows an inline
+  one-shot confirmation button valid for 3 minutes.
+- **BLOCKED** — irreversible or out-of-scope (`rm -rf /`, `mkfs`, `dd of=/dev/…`,
+  `shutdown`, fork bombs, `iptables -F`, writing to raw disks). There is no
+  confirmation path: these can never be executed from chat.
+
+`sh -c`, `bash -c`, `sudo` and command substitution payloads are inspected
+recursively, so wrapping a blocked command does not bypass the classifier.
+Commands longer than 4096 UTF-8 bytes are rejected with a clear message.
+
+## Audit trail
+
+Every privileged action (connection, command, config change, denial, host-key
+mismatch, admin command) is appended to a JSONL file under `TLA_AUDIT_DIR`.
+Records contain the event name, user ID, server alias, outcome and a timestamp —
+never tokens, passwords or key material. The file rotates at
+`TLA_AUDIT_MAX_BYTES` and keeps three generations. Admins can read the tail from
+chat with `/audit [count]` (default 15, max 50).
+
+## Health, readiness and metrics
+
+Set `TLA_HEALTH_PORT` to expose a dependency-free HTTP endpoint:
+
+```bash
+curl -s localhost:8081/healthz   # {"status": "ok"}             — liveness
+curl -s localhost:8081/readyz    # {"status": "ready"}          — DB + config ok
+curl -s localhost:8081/metrics   # Prometheus text exposition
+```
+
+It defaults to loopback; bind `0.0.0.0` only inside a container or behind a
+private network. `/readyz` returns `503` with the failing component when the
+database or configuration is unusable, so a load balancer can drain the pod.
+
+## Connection pooling and retries
+
+SSH connections are pooled per `(user, host)` and reused across actions, which
+removes the 150–400 ms handshake from every menu click. Idle links are reaped in
+the background. Transient transport failures are retried; authentication
+failures, host-key mismatches and cancellations never are.
+
+## Rate limiting
+
+Connection attempts are limited to 6 per 30 seconds per user, remote commands
+to 12 per minute and admin commands to 10 per minute; exceeding a budget produces a translated `rate_limited`
+message instead of a Telegram flood-ban.
 
 ---
 

@@ -11,6 +11,14 @@ from typing import Iterable, List
 
 DEFAULT_CONFIG_FILE = os.environ.get("TLA_CONFIG_FILE", "config.json")
 
+#: Valid values for the ``access_mode`` setting.  ``open`` keeps the
+#: historical "any Telegram user may talk to the bot" behaviour, the other two
+#: are fail-closed modes for private deployments.
+VALID_ACCESS_MODES = ("open", "whitelist", "admin_only")
+DEFAULT_ACCESS_MODE = os.environ.get("TLA_ACCESS_MODE", "open").strip().lower()
+if DEFAULT_ACCESS_MODE not in VALID_ACCESS_MODES:
+    DEFAULT_ACCESS_MODE = "open"
+
 
 class ConfigError(RuntimeError):
     """Raised when the configuration file cannot be processed safely."""
@@ -59,6 +67,16 @@ class Config:
         self.path = path
         self.telegram_token: str = ""
         self.whitelisted_users: List[int] = []
+        self.access_mode: str = DEFAULT_ACCESS_MODE
+        self.destination_policy: str = os.environ.get("TLA_DESTINATION_POLICY", "allow_all")
+        self.allowed_destinations: List[str] = [
+            item.strip()
+            for item in os.environ.get("TLA_ALLOWED_DESTINATIONS", "").split(",")
+            if item.strip()
+        ]
+        # Keys the application does not persist natively are preserved verbatim
+        # so a save never clobbers user-managed settings.
+        self.extra: dict[str, object] = {}
         self._lock = threading.RLock()
         self.last_error: Exception | None = None
         self.warnings: List[str] = []
@@ -72,6 +90,8 @@ class Config:
         with self._lock:
             self.telegram_token = ""
             self.whitelisted_users = []
+            self.access_mode = DEFAULT_ACCESS_MODE
+            self.allowed_destinations = []
             self.last_error = None
             self.warnings = []
 
@@ -114,13 +134,53 @@ class Config:
                 data.get("whitelisted_users", [])
             )
 
+            raw_mode = data.get("access_mode", DEFAULT_ACCESS_MODE)
+            if isinstance(raw_mode, str):
+                raw_mode = raw_mode.strip().lower()
+            if raw_mode in VALID_ACCESS_MODES:
+                self.access_mode = raw_mode
+            elif raw_mode not in ("", None):
+                self.warnings.append(
+                    f"Invalid access_mode {raw_mode!r} in {self.path!r};"
+                    f" keeping '{self.access_mode}'"
+                    f" (valid values: {', '.join(VALID_ACCESS_MODES)})."
+                )
+
+            raw_policy = data.get("destination_policy")
+            if isinstance(raw_policy, str) and raw_policy.strip():
+                self.destination_policy = raw_policy.strip().lower()
+
+            raw_allow = data.get("allowed_destinations", [])
+            if isinstance(raw_allow, str):
+                raw_allow = raw_allow.split(",")
+            if isinstance(raw_allow, (list, tuple)):
+                self.allowed_destinations = [
+                    str(item).strip() for item in raw_allow if str(item).strip()
+                ]
+
+            self.extra = {
+                key: value
+                for key, value in data.items()
+                if key not in (
+                    "telegram_token",
+                    "whitelisted_users",
+                    "access_mode",
+                    "destination_policy",
+                    "allowed_destinations",
+                )
+            }
+
     def save_config(self) -> None:
         """Persists the current configuration atomically with strict permissions."""
         with self._lock:
-            payload = {
+            payload: dict[str, object] = {
                 "telegram_token": self.telegram_token,
                 "whitelisted_users": self._sanitize_users(self.whitelisted_users),
+                "access_mode": self.access_mode,
+                "destination_policy": self.destination_policy,
+                "allowed_destinations": list(self.allowed_destinations),
             }
+            payload.update(self.extra)
 
             _ensure_directory(self.path)
             fd, temp_path = tempfile.mkstemp(
@@ -186,6 +246,19 @@ class Config:
         with self._lock:
             self.whitelisted_users = sanitized
             self.save_config()
+
+    def set_access_mode(self, mode: str) -> str:
+        """Validates and persists the access mode; returns the stored value."""
+        normalized = str(mode).strip().lower()
+        if normalized not in VALID_ACCESS_MODES:
+            raise ValueError(
+                "Invalid access mode."
+                f" Valid values: {', '.join(VALID_ACCESS_MODES)}."
+            )
+        with self._lock:
+            self.access_mode = normalized
+            self.save_config()
+        return normalized
 
     # ------------------------------------------------------------------
     # Validation helpers

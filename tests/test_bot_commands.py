@@ -2,8 +2,10 @@ import os
 import zipfile
 from unittest.mock import AsyncMock, patch
 import pytest
+from src import main
 from src.main import backup
 from src.database import initialize_database, close_db_connection
+from src.access_control import permissions
 
 @pytest.fixture(autouse=True)
 def setup_teardown():
@@ -25,8 +27,10 @@ def setup_teardown():
 @patch('src.main.config')
 async def test_backup_command(mock_config):
     """Test the backup command."""
-    # Setup mock config for authorization
+    # Setup mock config for authorization (admin identity is mirrored by the
+    # permission manager, which authorizes admin-only handlers).
     mock_config.whitelisted_users = [12345]
+    permissions.update(whitelisted=[12345], admins=[12345])
 
     update = AsyncMock()
     update.effective_user.id = 12345

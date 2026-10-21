@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "telegram-linux-admin"
-version = "3.0.0"
+version = "3.1.0"
 authors = [
     { name = "Your Name", email = "you@example.com" },
 ]
@@ -47,6 +47,16 @@ dev = [
     "black>=24.0",
 ]
 
+[tool.setuptools]
+# The project uses a flat ``src/`` layout with no ``src/__init__.py`` history,
+# so setuptools' auto-discovery found no importable package and the built wheel
+# contained only console scripts (the container then failed with
+# ``ModuleNotFoundError: No module named 'src'``). Declare it explicitly.
+packages = ["src"]
+
 [project.scripts]
 tla-bot = "src.main:main"
 tla-bot-update = "src.updater:main"
+
+[tool.pytest.ini_options]
+asyncio_default_fixture_loop_scope = "function"

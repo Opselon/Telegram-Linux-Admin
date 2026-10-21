@@ -11,6 +11,7 @@ import re
 
 # Telegram parse modes
 PARSE_MODE_MARKDOWN_V2 = "MarkdownV2"
+PARSE_MODE_MARKDOWN = "Markdown"
 PARSE_MODE_HTML = "HTML"
 
 # Default parse mode
@@ -43,53 +44,21 @@ def escape_markdown_v2(text: str) -> str:
     return re.sub(f'(?<!\\\\)([{re.escape(MARKDOWN_V2_SPECIAL_CHARS)}])', r'\\\1', text)
 
 @cache
-def escape_html(text: str, quote: bool = True) -> str:
-    """Idempotent and Unicode-safe HTML escaper."""
+def escape_markdown_v2_code(text: str) -> str:
+    """Escapes text for use inside a MarkdownV2 inline code span.
+
+    Only backslashes and backticks are special inside code spans; escaping the
+    full MarkdownV2 character set would corrupt the visible command.
+    """
     if not text:
-        return ''
-    text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    if quote:
-        text = text.replace('"', "&quot;")
-    return text
+        return ""
+    return text.replace("\\", "\\\\").replace("`", "\\`")
 
-def escape_text(text: str, parse_mode: str | None) -> str:
-    """Universal escaper that delegates to the correct function."""
-    if parse_mode == PARSE_MODE_MARKDOWN_V2:
-        return escape_markdown_v2(text)
-    if parse_mode == PARSE_MODE_HTML:
-        return escape_html(text)
-    return text
 
-# --- Smart Formatting Functions ---
-
-def format_bold(text: str, parse_mode: str | None) -> str:
-    """Formats text as bold, automatically escaping content."""
-    if parse_mode == PARSE_MODE_MARKDOWN_V2:
-        return f"*{escape_markdown_v2(text)}*"
-    if parse_mode == PARSE_MODE_HTML:
-        return f"<b>{escape_html(text)}</b>"
-    return text
-
-def format_code(text: str, parse_mode: str | None) -> str:
-    """Formats text as inline code, automatically escaping content."""
-    if parse_mode == PARSE_MODE_MARKDOWN_V2:
-        # For inline code, only backticks and backslashes need escaping
-        escaped_text = text.replace('\\', '\\\\').replace('`', '\\`')
-        return f"`{escaped_text}`"
-    if parse_mode == PARSE_MODE_HTML:
-        return f"<code>{escape_html(text)}</code>"
-    return text
-
-def format_code_block(text: str, language: str = "", parse_mode: str | None = None) -> str:
+def escape_code_block(text: str) -> str:
     """
     Escapes text for use inside code blocks in MarkdownV2.
     Code blocks need less escaping, but backticks still need escaping.
-    
-    Args:
-        text: Text to escape for code block
-        
-    Returns:
-        Escaped text safe for code blocks
     """
     if not text:
         return text
@@ -124,25 +93,28 @@ def escape_markdown(text: str) -> str:
 
 
 # --- HTML Escaping ---
-def escape_html(text: str) -> str:
+def escape_html(text: str, quote: bool = False) -> str:
     """
     Escapes special characters for HTML parse mode.
-    
+
     Args:
         text: Text to escape
-        
+        quote: Also escape double quotes (needed inside HTML attributes)
+
     Returns:
         Escaped text safe for HTML
     """
     if not text:
         return text
-    
-    # HTML entities
-    return (
+
+    escaped = (
         text.replace("&", "&amp;")
             .replace("<", "&lt;")
             .replace(">", "&gt;")
     )
+    if quote:
+        escaped = escaped.replace('"', "&quot;")
+    return escaped
 
 
 # --- Universal Escaping Function ---
@@ -294,7 +266,7 @@ def format_link(text: str, url: str, parse_mode: Optional[str] = None) -> str:
     elif parse_mode == PARSE_MODE_MARKDOWN:
         return f"[{escape_markdown(text)}]({url})"
     elif parse_mode == PARSE_MODE_HTML:
-        return f'<a href="{escape_html(url)}">{escape_html(text)}</a>'
+        return f'<a href="{escape_html(url, quote=True)}">{escape_html(text)}</a>'
     else:
         return f"[{text}]({url})"
 

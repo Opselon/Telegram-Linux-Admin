@@ -91,8 +91,7 @@ async def test_run_command_always_closes_connection(mocker):
     manager = SSHManager()
     mock_conn = AsyncSSHLikeConn()
 
-    # Mock internal methods to isolate run_command's logic
-    mocker.patch.object(manager, '_create_connection', return_value=mock_conn)
+    # The pooled manager closes connections when they are evicted/disconnected.
     mocker.patch.object(manager, '_close_conn', new_callable=AsyncMock)
 
     # Mock the asyncssh process and its streams to behave like real streams
@@ -121,15 +120,18 @@ async def test_run_command_always_closes_connection(mocker):
 
     conn_mock = AsyncMock()
     conn_mock.create_process.return_value = process_mock
+    conn_mock.is_closed = MagicMock(return_value=False)
 
-    # Replace the _create_connection to return our fully mocked connection
-    mocker.patch.object(manager, '_create_connection', return_value=conn_mock)
+    async def fake_open(owner_id, alias):
+        return conn_mock
 
-
-    # Consume the generator
+    # Open the pooled connection, then run against it
+    mocker.patch.object(manager, '_open_connection', side_effect=fake_open)
     async for _, __ in manager.run_command(1, "alias", "cmd"):
         pass
 
+    # The connection stays pooled for reuse; closing it evicts it.
+    await manager.disconnect(1, "alias")
     manager._close_conn.assert_awaited_once_with(conn_mock)
 
     # 2. Test exception case
@@ -147,4 +149,8 @@ async def test_run_command_always_closes_connection(mocker):
         async for _, __ in manager.run_command(1, "alias", "cmd"):
             pass
 
+    # A failed command does not tear down a healthy connection: it stays
+    # pooled for the next command and is only closed on disconnect/eviction.
+    manager._close_conn.assert_not_awaited()
+    await manager.disconnect(1, "alias")
     manager._close_conn.assert_awaited_once_with(conn_mock)

@@ -30,8 +30,26 @@ try:
 except ImportError:
     HTTPXReadTimeout = None
 import asyncssh
-from .ssh_manager import SSHManager
+from .access_control import OPEN as OPEN_ACCESS_MODE, permissions, rate_limiter
+from .audit import audit
+from .command_policy import (
+    CONFIRMATIONS,
+    Risk,
+    classify,
+    validate_command_text,
+)
+from .destination_policy import ALLOW_ALL as ALLOW_ALL_POLICY, DESTINATIONS, DestinationDenied
+from .validators import (
+    validate_alias,
+    validate_hostname,
+    validate_key_path,
+    validate_username,
+)
+from .health import start_health_server, stop_health_server
+from .metrics import METRICS
+from .ssh_manager import HostKeyMismatch, SSHManager
 from .database import (
+    get_server as get_server_record,
     get_all_servers,
     initialize_database,
     close_db_connection,
@@ -71,6 +89,7 @@ from .localization import (
 from .parse_mode import (
     get_parse_mode,
     escape_text,
+    format_code_block,
     MessageBuilder,
 )
 
@@ -136,6 +155,7 @@ def log_structured(level: int, message: str, **kwargs: Any) -> None:
     logger.log(level, message, extra=extra)
 
 ssh_manager: SSHManager | None = None
+health_server: asyncio.AbstractServer | None = None
 user_connections: dict[int, str] = {}
 user_sessions: dict[int, UserSession] = {}
 user_language_cache: dict[int, str] = {}
@@ -167,43 +187,105 @@ def _extract_user_id(update: Update) -> int | None:
     return None
 
 def authorized(func):
-    """Decorator to welcome any user."""
+    """Enforces the configured access mode before any handler runs.
+
+    The check is fail-closed: an unidentifiable user, an unknown mode or an
+    empty whitelist in ``whitelist``/``admin_only`` mode all deny access.
+    Every denial is audited and counted so incidents are visible.
+    """
     @wraps(func)
     async def wrapped(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
         user_id = _extract_user_id(update)
-        if user_id is None:
-            logger.error("Unable to extract user id from update; denying access for safety.")
+        decision = permissions.check(user_id)
+        if not decision.allowed:
+            METRICS.inc("access_denied_total")
+            audit.record(
+                "access_denied",
+                user_id=user_id,
+                outcome="denied",
+                reason=decision.reason,
+                handler=getattr(func, "__name__", "unknown"),
+            )
+            logger.warning("Access denied for user %s: %s", user_id, decision.reason)
+            language = _get_user_language(user_id)
+            message = translate("access_denied", language, reason=decision.reason)
             if update and update.callback_query:
-                await update.callback_query.answer("🚫 Unable to identify user.", show_alert=True)
+                await update.callback_query.answer(message, show_alert=True)
             elif update and update.effective_chat:
-                await _safe_send_message(update.effective_chat, "🚫 **Access Denied**\nWe could not verify your identity.", user_id)
+                await _send_message_safely(update.effective_chat, message, user_id, preformatted=True)
             return
 
-        # No whitelist check, all users are welcome.
+        METRICS.inc("access_allowed_total")
         await send_debug_message(update, f"Processing request for user_id: {user_id}...")
         return await func(update, context, *args, **kwargs)
     return wrapped
 
+
+def rate_limit(scope: str, *, max_calls: int, period: float):
+    """Sliding-window per-user rate limiting for PTB handlers.
+
+    Denied calls never reach the handler, are answered with a localized
+    wait time and are both audited and exposed via ``tla_rate_limited_total``.
+    """
+    def decorator(func):
+        @wraps(func)
+        async def wrapped(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+            user_id = _extract_user_id(update)
+            allowed, retry_after = rate_limiter.check(
+                user_id, scope, max_calls=max_calls, period=period
+            )
+            if not allowed:
+                METRICS.inc("rate_limited_total", scope=scope)
+                audit.record(
+                    "rate_limited",
+                    user_id=user_id,
+                    outcome="denied",
+                    scope=scope,
+                    retry_after_seconds=round(retry_after, 2),
+                )
+                language = _get_user_language(user_id)
+                message = translate(
+                    "rate_limited", language, seconds=max(1, int(retry_after) + 1)
+                )
+                if update and update.callback_query:
+                    await update.callback_query.answer(message, show_alert=True)
+                elif update and update.effective_message:
+                    await _send_message_safely(
+                        update.effective_message.chat, message, user_id, preformatted=True
+                    )
+                return
+            return await func(update, context, *args, **kwargs)
+        return wrapped
+    return decorator
+
 def admin_authorized(func):
-    """Decorator to check if the user is the admin (first whitelisted user)."""
+    """Restricts a handler to the bot's administrator.
+
+    The admin identity comes from the permission manager (the first entry of
+    ``whitelisted_users``), so runtime changes to the whitelist take effect
+    without a restart. Every denial is audited.
+    """
     @wraps(func)
     async def wrapped(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
         user_id = _extract_user_id(update)
-        if user_id is None:
-            logger.error("Unable to extract user id from update; denying access for safety.")
-            if update and update.callback_query:
-                await update.callback_query.answer("🚫 Unable to identify user.", show_alert=True)
-            elif update and update.effective_chat:
-                await _safe_send_message(update.effective_chat, "🚫 **Access Denied**\nWe could not verify your identity.", user_id)
-            return
-
-        # Ensure there is a whitelist and the user is the first one in it
-        if not config.whitelisted_users or user_id != config.whitelisted_users[0]:
-            logger.warning(f"Admin access denied for user_id: {user_id}")
-            if update.callback_query:
-                await update.callback_query.answer("🚫 You are not authorized for this admin-only action.", show_alert=True)
-            elif update.effective_message:
-                await _safe_send_message(update.effective_chat, "🚫 **Access Denied**\nThis is an admin-only feature.", user_id)
+        if user_id is None or not permissions.is_admin(user_id):
+            METRICS.inc("admin_access_denied_total")
+            audit.record(
+                "admin_access_denied",
+                user_id=user_id,
+                outcome="denied",
+                handler=getattr(func, "__name__", "unknown"),
+            )
+            logger.warning("Admin access denied for user_id: %s", user_id)
+            message = translate(
+                "admin_only", _get_user_language(user_id)
+            )
+            if update is not None and update.callback_query:
+                await update.callback_query.answer(message, show_alert=True)
+            elif update is not None and update.effective_chat:
+                await _send_message_safely(
+                    update.effective_chat, message, user_id, preformatted=True
+                )
             return
 
         await send_debug_message(update, "Admin authorization successful.")
@@ -371,6 +453,17 @@ def _build_language_keyboard(active_language: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(buttons)
 
 
+def _host_key_mismatch_message(alias: str, exc: HostKeyMismatch, language: str) -> str:
+    """Explains a pinned-host-key mismatch without leaking anything else."""
+    return translate(
+        "host_key_mismatch",
+        language,
+        alias=alias,
+        expected=exc.expected,
+        actual=exc.actual,
+    )
+
+
 async def _send_connection_error(
     query: object,
     user_id: int | None,
@@ -485,19 +578,53 @@ async def save_server(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     """
     user_id = _extract_user_id(update)
     language = _get_user_language(user_id)
+    owner_id = update.effective_user.id
     try:
-        owner_id = update.effective_user.id
+        alias = validate_alias(context.user_data.get('alias', ''))
+        hostname = validate_hostname(context.user_data.get('hostname', ''))
+        username = validate_username(context.user_data.get('user', ''))
+        key_path = context.user_data.get('key_path')
+        if key_path:
+            key_path = validate_key_path(key_path)
+
+        decision = DESTINATIONS.evaluate(hostname)
+        if not decision.allowed:
+            METRICS.inc("destination_denied_total", reason=decision.reason)
+            audit.record(
+                "server.add_denied",
+                user_id=owner_id,
+                alias=alias,
+                outcome="denied",
+                hostname=hostname,
+                reason=decision.reason,
+            )
+            await _send_message_safely(
+                update.message.chat,
+                translate(
+                    "destination_denied",
+                    language,
+                    hostname=hostname,
+                    reason=decision.reason,
+                ),
+                user_id,
+                preformatted=True,
+            )
+            return
+
         add_server(
             owner_id,
-            alias=context.user_data['alias'],
-            hostname=context.user_data['hostname'],
-            user=context.user_data['user'],
+            alias=alias,
+            hostname=hostname,
+            user=username,
             password=context.user_data.get('password'),
-            key_path=context.user_data.get('key_path')
+            key_path=key_path
         )
-        confirmation = translate('server_added', language, alias=context.user_data['alias'])
+        METRICS.inc("servers_added_total")
+        audit.record("server.added", user_id=owner_id, alias=alias, hostname=hostname)
+        confirmation = translate('server_added', language, alias=alias)
         await _send_message_safely(update.message.chat, confirmation, user_id)
     except Exception as e:
+        audit.record("server.add_failed", user_id=owner_id, outcome="error", error=str(e)[:200])
         await _send_message_safely(
             update.message.chat,
             translate('server_add_error', language, error=str(e)),
@@ -555,6 +682,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info(f"User {user_id} initiated /start command.")
     await main_menu(update, context)
 
+@authorized
 async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Displays the main menu with options, dynamically showing admin buttons."""
     user_id = _extract_user_id(update)
@@ -690,23 +818,13 @@ async def connect_server_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
         reply_markup=reply_markup
     )
 
-_user_cooldowns = {}
-
 @authorized
+@rate_limit("connect", max_calls=6, period=30.0)
 async def handle_server_connection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles the connection with Maximum Security (Validation + Rate Limit + Timeout)."""
+    """Connects to a stored server after alias, policy and host key checks."""
     query = update.callback_query
     
-    # 1. SECURITY: Rate Limiting (جلوگیری از اسپم کردن دکمه اتصال)
     user_id = update.effective_user.id
-    current_time = time.time()
-    last_request = _user_cooldowns.get(user_id, 0)
-    
-    # اگر فاصله بین درخواست‌ها کمتر از ۳ ثانیه بود، درخواست رو رد کن
-    if current_time - last_request < 3.0:
-        await query.answer("⚠️ Please wait a moment before connecting again.", show_alert=True)
-        return
-    _user_cooldowns[user_id] = current_time
 
     # استخراج اطلاعات
     try:
@@ -715,16 +833,44 @@ async def handle_server_connection(update: Update, context: ContextTypes.DEFAULT
         await query.answer("❌ Invalid request data.", show_alert=True)
         return
 
-    # 2. SECURITY: Strict Input Validation (جلوگیری از تزریق کد یا کاراکتر مخرب)
-    # فقط حروف انگلیسی، اعداد، آندرلاین و خط تیره مجازه.
-    if not re.match(r'^[a-zA-Z0-9_-]+$', raw_alias):
-        logger.warning(f"SECURITY ALERT: User {user_id} tried malicious alias: '{raw_alias}'")
+    # Strict input validation: aliases are validated at add time, so any other
+    # callback payload is an attempt to poke the bot.
+    alias = raw_alias.strip()
+    if not re.match(r'^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}$', alias):
+        logger.warning("SECURITY ALERT: User %s tried malicious alias: %r", user_id, raw_alias)
+        audit.record("connect.invalid_alias", user_id=user_id, outcome="denied", alias=raw_alias[:64])
         await query.answer("🚫 Security Violation: Invalid alias format.", show_alert=True)
         return
 
-    alias = raw_alias # حالا که تمیزه، استفاده‌ش می‌کنیم
     language = _get_user_language(user_id)
-    await query.answer() # پاسخ به کال‌بک تلگرام تا لودینگ بالای صفحه بره
+    server = await asyncio.to_thread(get_server_record, user_id, alias)
+    if not server:
+        await query.answer(translate('server_not_found', language, alias=alias), show_alert=True)
+        return
+
+    decision = DESTINATIONS.evaluate(server.get("hostname", ""))
+    if not decision.allowed:
+        METRICS.inc("destination_denied_total", reason=decision.reason)
+        audit.record(
+            "connect.destination_denied",
+            user_id=user_id,
+            alias=alias,
+            outcome="denied",
+            hostname=server.get("hostname"),
+            reason=decision.reason,
+        )
+        await query.answer(
+            translate(
+                "destination_denied",
+                language,
+                hostname=server.get("hostname", alias),
+                reason=decision.reason,
+            ),
+            show_alert=True,
+        )
+        return
+
+    await query.answer()
 
     try:
         await _edit_message_safely(query.message, translate('connecting_to_server', language, alias=alias), user_id)
@@ -768,6 +914,35 @@ async def handle_server_connection(update: Update, context: ContextTypes.DEFAULT
 
     # --- Secure Error Handling ---
     # ارورها رو کامل لاگ می‌کنیم ولی به کاربر جزئیات فنی نمیدیم
+    except HostKeyMismatch as exc:
+        METRICS.inc("ssh_host_key_mismatch_total")
+        audit.record(
+            "connect.host_key_mismatch",
+            user_id=user_id,
+            alias=alias,
+            outcome="denied",
+            expected=exc.expected,
+            presented=exc.actual,
+        )
+        await _edit_message_safely(
+            query.message,
+            _host_key_mismatch_message(alias, exc, language),
+            user_id,
+            preformatted=True,
+        )
+    except DestinationDenied as exc:
+        METRICS.inc("destination_denied_total", reason=exc.reason)
+        audit.record(
+            "connect.destination_denied",
+            user_id=user_id,
+            alias=alias,
+            outcome="denied",
+            reason=exc.reason,
+        )
+        await query.answer(
+            translate("destination_denied", language, hostname=exc.hostname, reason=exc.reason),
+            show_alert=True,
+        )
     except asyncssh.PermissionDenied:
         logger.warning(f"AUTH FAIL: {alias} | User: {user_id}")
         await _send_connection_error(query, user_id, 'error_auth_failed', alias=alias)
@@ -818,18 +993,130 @@ async def run_command_start(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await _edit_message_safely(query.message, builder.build(), user_id, preformatted=True)
     return AWAIT_COMMAND
 
-@authorized
-async def execute_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Executes a command on the connected remote server with live streaming and safe handling."""
-    user_id = update.effective_user.id
-    alias = user_connections.get(user_id)
-    command = update.message.text.strip()
+async def _stream_command_result(
+    chat,
+    user_id: int,
+    alias: str,
+    command: str,
+    result_message,
+) -> None:
+    """Streams remote output into ``result_message`` with rate-limited edits.
 
-    if not alias:
-        await _send_message_safely(update.message.chat, "⚠️ No active connection. Please connect to a server first.", user_id, preformatted=True)
-        return ConversationHandler.END
+    Shared by the direct run path and the confirmed (dangerous command) path so
+    both behave identically.
+    """
+    parse_mode = _get_user_parse_mode(user_id)
+    output_buffer: list[str] = []
+    last_sent_text = ""
+    edit_interval = 1.5  # seconds between UI refreshes
+    last_edit_time = time.monotonic()
+    started_at = time.monotonic()
 
-    # Initial message - Pro version with language-aware formatting
+    try:
+        async for item, stream in ssh_manager.run_command(user_id, alias, command):
+            if stream == "pid":
+                continue
+            if stream in ("stdout", "stderr"):
+                output_buffer.append(item)
+
+                now = time.monotonic()
+                if now - last_edit_time >= edit_interval:
+                    partial_output = "".join(output_buffer)[-3800:]
+                    if partial_output != last_sent_text:
+                        try:
+                            code_block = format_code_block(partial_output, "", parse_mode)
+                            await _edit_message_safely(result_message, code_block, user_id, preformatted=True)
+                            last_sent_text = partial_output
+                        except BadRequest as exc:
+                            if "Message is not modified" not in str(exc):
+                                logger.warning("Telegram update error: %s", exc)
+                        last_edit_time = now
+
+        final_output = "".join(output_buffer).strip()
+        if not final_output:
+            final_output = "[No output returned]"
+
+        audit.record(
+            "command.completed",
+            user_id=user_id,
+            alias=alias,
+            command=command,
+            duration_ms=round((time.monotonic() - started_at) * 1000),
+            output_bytes=len(final_output.encode("utf-8", "ignore")),
+        )
+
+        builder = MessageBuilder(parse_mode)
+        builder.add_text("✅ ")
+        builder.add_bold("Command completed on ")
+        builder.add_code(alias)
+        builder.add_line()
+        builder.add_code_block(final_output)
+        final_text = builder.build()
+
+        if len(final_text) > 4096:
+            with tempfile.NamedTemporaryFile(mode="w+", delete=False, suffix=".txt") as handle:
+                handle.write(final_output)
+                handle.flush()
+                document_path = handle.name
+            await result_message.delete()
+            caption_builder = MessageBuilder(parse_mode)
+            caption_builder.add_text("Output for ")
+            caption_builder.add_code(command)
+            with open(document_path, "rb") as document:
+                await _send_message_safely(
+                    chat,
+                    caption_builder.build(),
+                    user_id,
+                    preformatted=True,
+                    document=document,
+                )
+            os.remove(document_path)
+        else:
+            await _edit_message_safely(result_message, final_text, user_id, preformatted=True)
+
+    except asyncio.TimeoutError:
+        audit.record("command.timeout", user_id=user_id, alias=alias, command=command, outcome="timeout")
+        await _edit_message_safely(
+            result_message,
+            f"⏰ **Timeout:** Command `{command}` took too long and was terminated.",
+            user_id,
+            preformatted=True,
+        )
+    except HostKeyMismatch as exc:
+        METRICS.inc("ssh_host_key_mismatch_total")
+        await _edit_message_safely(
+            result_message,
+            _host_key_mismatch_message(alias, exc, _get_user_language(user_id)),
+            user_id,
+            preformatted=True,
+        )
+    except Exception as exc:
+        audit.record(
+            "command.failed",
+            user_id=user_id,
+            alias=alias,
+            command=command,
+            outcome="error",
+            error=str(exc)[:200],
+        )
+        logger.error("Error executing '%s' on '%s': %s", command, alias, exc, exc_info=True)
+        await _edit_message_safely(
+            result_message,
+            f"❌ **Error while executing command:**\n`{exc}`",
+            user_id,
+            preformatted=True,
+        )
+
+
+async def _run_command_for_user(
+    chat,
+    user_id: int,
+    alias: str,
+    command: str,
+    *,
+    target_message=None,
+) -> None:
+    """Announces a command, then streams its result into the chat."""
     parse_mode = _get_user_parse_mode(user_id)
     builder = MessageBuilder(parse_mode)
     builder.add_text("🛰️ Running ")
@@ -837,89 +1124,170 @@ async def execute_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     builder.add_text(" on ")
     builder.add_code(alias)
     builder.add_text("...")
-    result_message = await _send_message_safely(update.message.chat, builder.build(), user_id, preformatted=True)
 
-    output_buffer: list[str] = []
-    last_sent_text = ""
-    edit_interval = 1.5  # seconds between UI refreshes
-    last_edit_time = time.monotonic()
+    if target_message is not None:
+        await _edit_message_safely(target_message, builder.build(), user_id, preformatted=True)
+        result_message = target_message
+    else:
+        result_message = await _send_message_safely(
+            chat, builder.build(), user_id, preformatted=True
+        )
+
+    await _stream_command_result(chat, user_id, alias, command, result_message)
+
+
+@authorized
+@rate_limit("command", max_calls=12, period=60.0)
+async def execute_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Executes a command after validation, destination and risk checks."""
+    user_id = update.effective_user.id
+    alias = user_connections.get(user_id)
+    command = (update.message.text or "").strip()
+    language = _get_user_language(user_id)
+
+    if not alias:
+        await _send_message_safely(
+            update.message.chat,
+            translate("no_active_connection", language),
+            user_id,
+            preformatted=True,
+        )
+        return ConversationHandler.END
 
     try:
-        async for item, stream in ssh_manager.run_command(user_id, alias, command):
-            # Skip PID events (AsyncSSH doesn’t expose it natively)
-            if stream == 'pid':
-                continue
-
-            if stream in ('stdout', 'stderr'):
-                output_buffer.append(item)
-
-                # Periodically update Telegram message without flooding API
-                # Use monotonic time for better performance
-                now = time.monotonic()
-                if now - last_edit_time >= edit_interval:
-                    partial_output = ''.join(output_buffer)[-3800:]  # keep last chunk for preview
-                    if partial_output != last_sent_text:
-                        try:
-                            # Use language-aware parse mode for code blocks
-                            code_block = format_code_block(partial_output, "", parse_mode)
-                            await _edit_message_safely(result_message, code_block, user_id, preformatted=True)
-                            last_sent_text = partial_output
-                        except BadRequest as e:
-                            if "Message is not modified" not in str(e):
-                                logger.warning(f"Telegram update error: {e}")
-                        last_edit_time = now
-
-        # Combine all output once command completes
-        final_output = ''.join(output_buffer).strip()
-        if not final_output:
-            final_output = "[No output returned]"
-
-        # Pro version: Build final message with proper formatting
-        parse_mode = _get_user_parse_mode(user_id)
-        builder = MessageBuilder(parse_mode)
-        builder.add_text("✅ ")
-        builder.add_bold("Command completed on ")
-        builder.add_code(alias)
-        builder.add_line()
-        builder.add_code_block(final_output)
-        
-        final_text = builder.build()
-        if len(final_text) > 4096:
-            with tempfile.NamedTemporaryFile(mode="w+", delete=False, suffix=".txt") as f:
-                f.write(final_output)
-                f.flush()
-            await result_message.delete()
-            caption_builder = MessageBuilder(parse_mode)
-            caption_builder.add_text("Output for ")
-            caption_builder.add_code(command)
-            await _send_message_safely(
-                update.message.chat,
-                caption_builder.build(),
-                user_id,
-                preformatted=True,
-                document=open(f.name, "rb")
-            )
-            os.remove(f.name)
-        else:
-            await _edit_message_safely(result_message, final_text, user_id, preformatted=True)
-
-    except asyncio.TimeoutError:
-        await _edit_message_safely(
-            result_message,
-            f"⏰ **Timeout:** Command `{command}` took too long and was terminated.",
+        validate_command_text(command)
+    except ValueError as exc:
+        audit.record("command.rejected", user_id=user_id, alias=alias, outcome="invalid", error=str(exc))
+        await _send_message_safely(
+            update.message.chat,
+            translate("command_too_long", language, error=str(exc)),
             user_id,
-            preformatted=True
+            preformatted=True,
         )
-    except Exception as e:
-        logger.error(f"Error executing '{command}' on '{alias}': {e}", exc_info=True)
-        await _edit_message_safely(
-            result_message,
-            f"❌ **Error while executing command:**\n`{e}`",
-            user_id,
-            preformatted=True
-        )
+        return ConversationHandler.END
 
+    assessment = classify(command)
+    if assessment.risk is Risk.BLOCKED:
+        METRICS.inc("commands_blocked_total", rule=assessment.rule)
+        audit.record(
+            "command.blocked",
+            user_id=user_id,
+            alias=alias,
+            outcome="denied",
+            command=command,
+            rule=assessment.rule,
+            reason=assessment.reason,
+        )
+        await _send_message_safely(
+            update.message.chat,
+            translate(
+                "command_blocked",
+                language,
+                command=command,
+                reason=assessment.reason,
+            ),
+            user_id,
+            preformatted=True,
+        )
+        return ConversationHandler.END
+
+    if assessment.risk is Risk.CONFIRM:
+        pending = CONFIRMATIONS.create(user_id, alias, command, assessment)
+        METRICS.inc("commands_needing_confirmation_total", rule=assessment.rule)
+        audit.record(
+            "command.confirmation_requested",
+            user_id=user_id,
+            alias=alias,
+            command=command,
+            rule=assessment.rule,
+            reason=assessment.reason,
+        )
+        keyboard = [
+            [
+                InlineKeyboardButton(
+                    "✅ Confirm", callback_data=f"confirm_cmd_{pending.token}"
+                ),
+                InlineKeyboardButton(
+                    "❌ Cancel", callback_data=f"cancel_cmd_{pending.token}"
+                ),
+            ]
+        ]
+        await _send_message_safely(
+            update.message.chat,
+            translate(
+                "command_confirm_required",
+                language,
+                command=command,
+                reason=assessment.reason,
+            ),
+            user_id,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            preformatted=True,
+        )
+        return ConversationHandler.END
+
+    METRICS.inc("commands_executed_total")
+    audit.record("command.executed", user_id=user_id, alias=alias, command=command)
+    await _run_command_for_user(update.message.chat, user_id, alias, command)
     return ConversationHandler.END
+
+
+@authorized
+async def confirm_command_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Runs a CONFIRM-band command after an explicit, single-use confirmation."""
+    query = update.callback_query
+    user_id = update.effective_user.id
+    language = _get_user_language(user_id)
+    try:
+        _, _, token = query.data.split("_", 2)
+    except ValueError:
+        await query.answer("Invalid confirmation request.", show_alert=True)
+        return
+
+    pending = CONFIRMATIONS.pop(user_id, token)
+    if pending is None:
+        message = translate("command_confirmation_expired", language)
+        await query.answer(message, show_alert=True)
+        await _edit_message_safely(query.message, message, user_id, preformatted=True)
+        return
+
+    await query.answer(translate("command_confirmed", language))
+    METRICS.inc("commands_confirmed_total", rule=pending.assessment.rule)
+    audit.record(
+        "command.confirmed",
+        user_id=user_id,
+        alias=pending.alias,
+        command=pending.command,
+        rule=pending.assessment.rule,
+    )
+    await _run_command_for_user(
+        query.message.chat,
+        user_id,
+        pending.alias,
+        pending.command,
+        target_message=query.message,
+    )
+
+
+@authorized
+async def cancel_command_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Drops a pending confirmation without executing anything."""
+    query = update.callback_query
+    user_id = update.effective_user.id
+    language = _get_user_language(user_id)
+    cancelled = CONFIRMATIONS.cancel(user_id)
+    await query.answer()
+    audit.record(
+        "command.confirmation_cancelled",
+        user_id=user_id,
+        outcome="cancelled",
+    )
+    await _edit_message_safely(
+        query.message,
+        translate("command_cancelled" if cancelled else "command_confirmation_expired", language),
+        user_id,
+        preformatted=True,
+    )
 
 
 @authorized
@@ -979,19 +1347,78 @@ async def start_shell_session(update: Update, context: ContextTypes.DEFAULT_TYPE
         await _edit_message_safely(query.message, f"❌ **Error:** Could not start shell.\n`{e}`", user_id, preformatted=True)
 
 async def handle_shell_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles commands sent by a user in shell mode."""
+    """Handles commands sent by a user in shell mode (policy-checked)."""
     user_id = update.effective_user.id
     if user_id not in SHELL_MODE_USERS:
         # This message is not a shell command, process as normal (or ignore)
         return
 
+    decision = permissions.check(user_id)
+    if not decision.allowed:
+        METRICS.inc("access_denied_total")
+        audit.record("access_denied", user_id=user_id, outcome="denied", reason=decision.reason,
+                     handler="handle_shell_command")
+        return
+
+    allowed, retry_after = rate_limiter.check(user_id, "shell", max_calls=20, period=60.0)
+    if not allowed:
+        METRICS.inc("rate_limited_total", scope="shell")
+        audit.record("rate_limited", user_id=user_id, outcome="denied", scope="shell")
+        await _send_message_safely(
+            update.message.chat,
+            translate("rate_limited", _get_user_language(user_id), seconds=max(1, int(retry_after) + 1)),
+            user_id,
+            preformatted=True,
+        )
+        return
+
     alias = user_connections.get(user_id)
-    command = update.message.text
+    command = update.message.text or ""
+    language = _get_user_language(user_id)
 
     if command.strip() == 'exit':
         await exit_shell(update, context)
         return
 
+    try:
+        validate_command_text(command)
+    except ValueError as exc:
+        await _send_message_safely(
+            update.message.chat,
+            translate("command_too_long", language, error=str(exc)),
+            user_id,
+            preformatted=True,
+        )
+        return
+
+    assessment = classify(command)
+    if assessment.risk is not Risk.SAFE:
+        # Shell mode has no confirmation UI: refuse anything above SAFE and
+        # point the user at the confirmed Run Command flow.
+        METRICS.inc("shell_commands_blocked_total", risk=assessment.risk.value)
+        audit.record(
+            "shell.command_blocked",
+            user_id=user_id,
+            alias=alias,
+            outcome="denied",
+            command=command,
+            rule=assessment.rule,
+            risk=assessment.risk.value,
+        )
+        await _send_message_safely(
+            update.message.chat,
+            translate(
+                "command_blocked_shell",
+                language,
+                command=command,
+                reason=assessment.reason or "requires confirmation",
+            ),
+            user_id,
+            preformatted=True,
+        )
+        return
+
+    audit.record("shell.command", user_id=user_id, alias=alias, command=command)
     try:
         output = await ssh_manager.run_command_in_shell(user_id, alias, command)
         if not output:
@@ -2607,6 +3034,7 @@ async def cancel_restore(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await _send_message_safely(update.message.chat, builder.build(), user_id, preformatted=True)
     return ConversationHandler.END
 
+@authorized
 async def remove_server_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Removes a server after confirmation."""
     query = update.callback_query
@@ -2615,6 +3043,15 @@ async def remove_server_confirm(update: Update, context: ContextTypes.DEFAULT_TY
     alias = query.data.split('_', 1)[1]
     user_id = update.effective_user.id
     success = remove_server(user_id, alias)
+    audit.record(
+        "server.removed" if success else "server.remove_failed",
+        user_id=user_id,
+        alias=alias,
+        outcome="success" if success else "not_found",
+    )
+    for owner, active_alias in list(user_connections.items()):
+        if owner == user_id and active_alias == alias:
+            user_connections.pop(owner, None)
     language = _get_user_language(user_id)
     if not success:
         await _edit_message_safely(
@@ -2630,6 +3067,54 @@ async def remove_server_confirm(update: Update, context: ContextTypes.DEFAULT_TY
         user_id
     )
 
+# --- Security Audit ---
+@admin_authorized
+@rate_limit("admin", max_calls=10, period=60.0)
+async def audit_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Shows recent security events. Usage: ``/audit [count]``."""
+    user_id = update.effective_user.id
+    language = _get_user_language(user_id)
+    args = context.args or []
+    limit = 15
+    if args and args[0].isdigit():
+        limit = max(1, min(int(args[0]), 50))
+
+    records = audit.tail(limit)
+    METRICS.inc("audit_views_total")
+    audit.record("audit.viewed", user_id=user_id, limit=limit)
+
+    if not records:
+        await _send_message_safely(
+            update.effective_chat,
+            translate("audit_empty", language),
+            user_id,
+            preformatted=True,
+        )
+        return
+
+    lines: list[str] = [translate("audit_title", language, count=len(records))]
+    for record in records:
+        target = record.get("alias") or record.get("context", {}).get("hostname") or "-"
+        lines.append(
+            "`{ts}`  **{event}**  {outcome}  user=`{uid}`  target=`{target}`".format(
+                ts=str(record.get("timestamp", ""))[11:19],
+                event=record.get("event", "unknown"),
+                outcome=record.get("outcome", "-"),
+                uid=record.get("user_id", "-"),
+                target=target,
+            )
+        )
+    body = "\n".join(lines)
+    if len(body) > 4000:
+        body = body[:3990] + "…"
+    await _send_message_safely(
+        update.effective_chat,
+        body,
+        user_id,
+        preformatted=True,
+    )
+
+
 # --- Admin Dashboard ---
 @admin_authorized
 async def dashboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2644,7 +3129,8 @@ async def dashboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     - Server statistics
     """
     user_id = update.effective_user.id
-    
+    parse_mode = _get_user_parse_mode(user_id)
+
     # Show loading message
     loading_msg = await _send_message_safely(update.message.chat, "📊 **Loading dashboard...**", user_id, preformatted=True)
     
@@ -2840,6 +3326,7 @@ async def update_bot_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     Handles the bot update process by launching the updater script in a detached process.
     This ensures the update can proceed even after the main bot service is stopped.
     """
+    user_id = _extract_user_id(update)
     if update.callback_query:
         await update.callback_query.answer()
         base_message = update.callback_query.message
@@ -2900,9 +3387,11 @@ async def post_shutdown(application: Application) -> None:
     """Gracefully shuts down the SSH manager and database connections."""
     logger.info("Bot is shutting down...")
     remove_lock_file()
+    await stop_health_server(health_server)
     if ssh_manager:
         await ssh_manager.close_all_connections()
     close_db_connection()
+    audit.record("bot.shutdown")
 
 
 async def load_languages_into_cache():
@@ -2916,9 +3405,66 @@ async def load_languages_into_cache():
         logger.error(f"Failed to load language preferences: {e}", exc_info=True)
 
 
+async def _readiness_probe() -> tuple[bool, dict[str, object]]:
+    """Readiness check used by the HTTP endpoint (DB, token, SSH pool)."""
+    detail: dict[str, object] = {}
+
+    def _probe_db() -> bool:
+        from .database import get_db_connection
+
+        get_db_connection().execute("SELECT 1").fetchone()
+        return True
+
+    try:
+        detail["database"] = await asyncio.to_thread(_probe_db)
+    except Exception as exc:
+        detail["database"] = False
+        detail["database_error"] = str(exc)[:200]
+
+    detail["token_configured"] = bool(config.telegram_token)
+    detail["ssh_manager"] = ssh_manager is not None
+    detail["access_mode"] = permissions.mode
+    detail["audit_writable"] = await asyncio.to_thread(audit.is_writable)
+
+    if ssh_manager is not None:
+        try:
+            detail["pool"] = await ssh_manager.pool_stats()
+        except Exception:
+            pass
+
+    ready = (
+        bool(detail.get("database"))
+        and bool(detail.get("token_configured"))
+        and bool(detail.get("audit_writable"))
+    )
+    return ready, detail
+
+
+async def _start_health_endpoint() -> None:
+    """Starts the optional HTTP health/metrics server."""
+    global health_server
+    raw_port = os.environ.get("TLA_HEALTH_PORT", "").strip()
+    if not raw_port:
+        return
+    host = os.environ.get("TLA_HEALTH_HOST", "127.0.0.1").strip() or "127.0.0.1"
+    try:
+        port = int(raw_port)
+    except ValueError:
+        logger.error("Invalid TLA_HEALTH_PORT=%r; health endpoint disabled", raw_port)
+        return
+    try:
+        health_server = await start_health_server(
+            port, host, readiness=_readiness_probe
+        )
+        METRICS.set("ready", 1)
+    except OSError as exc:
+        logger.error("Could not bind health endpoint on %s:%s: %s", host, port, exc)
+
+
 async def post_init(application: Application):
     """Actions to run after the bot has been initialized."""
     await load_languages_into_cache()
+    await _start_health_endpoint()
     await application.bot.set_my_commands([
         BotCommand("start", "Display the main menu"),
         BotCommand("add_server", "Start the guided process to add a new server"),
@@ -2926,8 +3472,67 @@ async def post_init(application: Application):
         BotCommand("update_bot", "Update the bot to the latest version"),
         BotCommand("debug", "Toggle verbose debug messages"),
         BotCommand("exit_shell", "Terminate an active interactive shell session"),
-        BotCommand("cancel", "Cancel the current multi-step operation (like adding a server)")
+        BotCommand("cancel", "Cancel the current multi-step operation (like adding a server)"),
+        BotCommand("dashboard", "Admin dashboard (admin only)"),
+        BotCommand("audit", "Show recent security events (admin only)")
     ])
+
+def _configure_security(cfg) -> None:
+    """Applies the configuration to the security singletons.
+
+    Without this call ``permissions`` would stay in its module default and
+    ``DESTINATIONS`` would only see environment variables, so a file that
+    asked for ``whitelist`` / ``deny_public`` would be silently ignored.
+    """
+    try:
+        mode = permissions.set_mode(cfg.access_mode)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.error("Invalid access_mode %r: %s", cfg.access_mode, exc)
+        mode = permissions.mode
+
+    permissions.update(
+        whitelisted=cfg.whitelisted_users,
+        admins=list(cfg.whitelisted_users[:1]),
+    )
+    if not cfg.whitelisted_users:
+        logger.warning(
+            "No whitelisted users configured: nobody will be able to use the bot "
+            "while access_mode is %r.", mode,
+        )
+
+    try:
+        DESTINATIONS.reconfigure(cfg.destination_policy, tuple(cfg.allowed_destinations))
+    except ValueError as exc:
+        logger.error(
+            "Invalid destination policy %r (%s); keeping %r",
+            cfg.destination_policy, exc, DESTINATIONS.mode,
+        )
+
+    if mode == OPEN_ACCESS_MODE:
+        logger.warning(
+            "SECURITY: access_mode='open' - every Telegram user who finds the bot "
+            "can reach the configured servers. Set access_mode to 'whitelist' or "
+            "'admin_only' in config.json."
+        )
+    if DESTINATIONS.mode == ALLOW_ALL_POLICY:
+        logger.warning(
+            "SECURITY: destination_policy='allow_all' - any host, including public "
+            "ones, can be added. Consider 'deny_public' or 'allowlist'."
+        )
+
+    for warning in getattr(cfg, "warnings", []) or []:
+        logger.warning("Configuration: %s", warning)
+
+    audit.record(
+        "security.configured",
+        outcome="success",
+        access_mode=mode,
+        destination_policy=DESTINATIONS.mode,
+        whitelisted=len(cfg.whitelisted_users),
+        allowlist=len(cfg.allowed_destinations),
+    )
+    METRICS.set("access_mode_open", 1 if mode == OPEN_ACCESS_MODE else 0)
+
 
 def main() -> None:
     """
@@ -2955,6 +3560,8 @@ def main() -> None:
         logger.error("FATAL: Telegram token is not configured. Please run the setup wizard.")
         sys.exit(1)
 
+    _configure_security(config)
+
     # --- Core Component Initialization ---
     try:
         initialize_database()
@@ -2962,6 +3569,9 @@ def main() -> None:
     except Exception as e:
         logger.critical(f"FATAL: Error during database or SSH manager initialization: {e}", exc_info=True)
         sys.exit(1)
+
+    audit.record("bot.started", outcome="success", access_mode=permissions.mode)
+    METRICS.set("ready", 1)
 
     # --- Application Setup ---
     # Configure request timeout to prevent ReadTimeout errors
@@ -3143,9 +3753,18 @@ def main() -> None:
     # Special mode for CI/CD smoke test
     if os.environ.get("SMOKE_TEST"):
         logger.info("Smoke test mode enabled. Bot will not connect to Telegram.")
-        # Modern async pattern - use asyncio.run for standalone execution
+        # The health server normally starts in post_init; run it here so a
+        # smoke test can assert /healthz and /readyz for real.
         import asyncio
-        asyncio.run(asyncio.sleep(15))
+
+        async def _smoke_run() -> None:
+            server = await start_health_server(readiness=_readiness_probe)
+            try:
+                await asyncio.sleep(float(os.environ.get("SMOKE_TEST_SECONDS", "15")))
+            finally:
+                await stop_health_server(server)
+
+        asyncio.run(_smoke_run())
     else:
         try:
             application.run_polling()

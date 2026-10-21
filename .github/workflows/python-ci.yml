@@ -36,6 +36,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
+      - name: Static checks (undefined names, duplicates, syntax)
+        run: |
+          ruff check src tests --select F821,F811,F822,F823,E9
+
       - name: Run tests
         env:
           PYTHONPATH: .
@@ -46,15 +50,24 @@ jobs:
         env:
           PYTHONPATH: .
           SMOKE_TEST: 1
+          SMOKE_TEST_SECONDS: "30"
+          TLA_HEALTH_PORT: "8081"
+          TLA_ACCESS_MODE: whitelist
         run: |
-          echo '{"telegram_token": "123456:ABC-DEF1234567890", "whitelisted_users": [12345]}' > config.json
+          echo '{"telegram_token": "123456:ABC-DEF1234567890", "whitelisted_users": [12345], "access_mode": "whitelist"}' > config.json
           tla-bot &
           BOT_PID=$!
-          sleep 10
-          if ! kill -0 $BOT_PID; then
+          for i in $(seq 1 20); do
+            if curl -fsS http://127.0.0.1:8081/healthz >/dev/null; then break; fi
+            sleep 1
+          done
+          if ! kill -0 $BOT_PID 2>/dev/null; then
             echo "Smoke test failed: Bot process is not running."
             exit 1
           fi
+          echo "healthz: $(curl -fsS http://127.0.0.1:8081/healthz)"
+          echo "readyz:  $(curl -fsS http://127.0.0.1:8081/readyz)"
+          curl -fsS http://127.0.0.1:8081/metrics | head -5
           kill $BOT_PID
           echo "Smoke test passed."
 
@@ -68,3 +81,27 @@ jobs:
 
       - name: Build Docker image
         run: docker build -t tla-bot:latest .
+
+      - name: Run image and probe the health endpoint
+        run: |
+          mkdir -p "$PWD/smoke-data"
+          echo '{"telegram_token": "123456:ABC-DEF1234567890", "whitelisted_users": [12345]}' > "$PWD/smoke-data/config.json"
+          docker run -d --name tla-smoke \
+            -p 127.0.0.1:18081:8081 \
+            -e SMOKE_TEST=1 -e SMOKE_TEST_SECONDS=40 \
+            -e TLA_HEALTH_PORT=8081 -e TLA_CONFIG_FILE=/app/data/config.json \
+            -v "$PWD/smoke-data:/app/data" \
+            tla-bot:latest
+
+          ok=0
+          for i in $(seq 1 20); do
+            if curl -fsS http://127.0.0.1:18081/readyz; then ok=1; break; fi
+            sleep 1
+          done
+          docker logs tla-smoke
+          if [ "$ok" != "1" ]; then
+            echo "Container never became ready."
+            exit 1
+          fi
+          curl -fsS http://127.0.0.1:18081/metrics | head -5
+          docker rm -f tla-smoke

@@ -77,9 +77,13 @@ async def test_handle_server_connection_e2e(mocker, conn_type):
     # Patch the config to authorize the user
     mocker.patch.object(main.config, 'whitelisted_users', [user_id])
 
-    # handle_server_connection rate-limits per user_id (3s). The parametrized cases
-    # share a user id, so clear the cooldown to avoid an early return.
-    main._user_cooldowns.clear()
+    # The handler resolves the destination from the stored server record before
+    # connecting; register one so the policy check has something to evaluate.
+    mocker.patch('src.main.get_server_record',
+                 return_value={'alias': 'some_alias', 'hostname': '10.0.0.5'})
+
+    # Rate limiting is per user id; the parametrized cases share it, so reset it.
+    main.rate_limiter.reset()
 
 
     # 2. Execute the handler
