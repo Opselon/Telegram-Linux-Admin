@@ -166,7 +166,7 @@ def apply_update(is_auto: bool = False) -> str:
     Pro version: Robust update system that won't crash.
     Handles all edge cases and provides proper rollback.
     """
-    update_log: List[str] = []
+    update_log: list[str] = []
     backup_dir = None
     update_successful = False
     

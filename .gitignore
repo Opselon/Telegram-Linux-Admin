@@ -22,3 +22,10 @@ database.db-wal
 var/
 *.lock
 *.log
+
+# Editor / OS artifacts
+.vs/
+var/log/
+*.db
+*.db-shm
+*.db-wal

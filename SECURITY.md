@@ -4,7 +4,33 @@ This document outlines the security posture, threat model, and operational respo
 
 ## Threat Model
 
-The security of this bot is designed to protect the confidentiality and integrity of the server credentials it manages. The primary threat it is designed to mitigate is **an attacker gaining read-only access to the bot's database file on disk**.
+The security of this bot is designed to protect the confidentiality and integrity of the server credentials it manages, and to keep a compromised or careless chat session from damaging the managed hosts.
+
+Three threats are addressed:
+
+1. **An attacker gaining read-only access to the bot's database file on disk** — mitigated by authenticated encryption of every secret.
+2. **An unauthorised Telegram user reaching the bot** — mitigated by fail-closed access control (`open` / `whitelist` / `admin_only`).
+3. **A legitimate user (or a typo) issuing a destructive command** — mitigated by destination policy, SSH host-key pinning and a three-band command policy with one-shot confirmations.
+
+### Authorisation
+
+`src/access_control.py` is the single gate for every handler. `open` restores the historical "any user" behaviour and logs a startup warning; `whitelist` and `admin_only` deny everyone else before the handler runs. Denials are audited with the user ID and handler name.
+
+### Reachability
+
+`src/destination_policy.py` decides whether a target may be contacted at all (`allow_all`, `deny_public`, `allowlist`). Cloud metadata endpoints (`169.254.169.254`, `fd00:ec2::254`), loopback and link-local addresses are refused in every mode. Resolution happens before the decision, so DNS cannot be used to bypass it.
+
+### Host authenticity
+
+The first connection pins the server's SHA-256 host-key fingerprint in `servers.host_key` (trust on first use). Later connections abort on mismatch before any input is written, so a MITM cannot capture commands or credentials.
+
+### Command safety
+
+`src/command_policy.py` classifies every command as SAFE (run), CONFIRM (one-shot inline approval, 3-minute TTL) or BLOCKED (no execution path at all — formatting filesystems, wiping disks, power state changes, fork bombs, firewall flushes, writes to raw block devices). Nested `sh -c` / `bash -c` / `sudo` payloads and command substitutions are inspected recursively.
+
+### Audit
+
+All privileged actions append a JSONL record (event, user, alias, outcome, timestamp) to a size-rotated file under `TLA_AUDIT_DIR`. No tokens, passwords or key material are ever written. `/audit` exposes the tail to the administrator.
 
 ### What Is Protected
 
