@@ -61,6 +61,24 @@ LOCK_FILE: Path = Path("bot.lock")
 #: membership set for language validation (SUPPORTED_LANGUAGES is a mapping).
 SUPPORTED_LANGUAGE_SET = set(SUPPORTED_LANGUAGES)
 
+# --- 3.2 subsystems --------------------------------------------------------
+# Created by ``src/bot/process.py`` during startup and read by handlers through
+# this module, exactly like ``ssh_manager``, so a test can patch them here.
+# They stay ``None`` until then: importing this module must not start a queue
+# or read policy files.
+#:
+#: ``src.jobs.JobQueue`` — serialized, bounded background command execution.
+job_queue: Any = None
+#: ``src.runtime.TargetResolver`` — maps a server alias to an execution target
+#: (``self`` ⇒ the bot host itself, anything else ⇒ pooled SSH).
+target_resolver: Any = None
+#: ``src.policy.PolicyEngine`` — bounds what an operator profile may run.
+policy_engine: Any = None
+#: alias -> ``src.policy.Profile`` map loaded at startup (empty when unset).
+policy_profiles: dict[str, Any] = {}
+#: profile -> engine cache, so deny patterns compile once per profile.
+policy_engines: dict[Any, Any] = {}
+
 
 # --- Leaf helpers ----------------------------------------------------------
 def _get_user_language(user_id: int | None) -> str:

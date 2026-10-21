@@ -33,6 +33,7 @@ from ..metrics import METRICS
 from ..parse_mode import MessageBuilder
 from ..parse_mode import format_code_block
 from ..ssh_manager import HostKeyMismatch
+from . import integration
 import asyncio
 import os
 import tempfile
@@ -85,7 +86,11 @@ async def _stream_command_result(
     started_at = time.monotonic()
 
     try:
-        async for item, stream in state.ssh_manager.run_command(user_id, alias, command):
+        # Route through the runtime resolver so the reserved "self" alias runs on
+        # the bot host itself; a remote alias still goes over pooled SSH. When
+        # the runtime package is absent this is exactly 3.1's ssh_manager call.
+        run = integration.run_target(user_id, alias)
+        async for item, stream in run(command):
             if stream == "pid":
                 continue
             if stream in ("stdout", "stderr"):
@@ -229,6 +234,27 @@ async def execute_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await _send_message_safely(
             update.message.chat,
             translate("command_too_long", language, error=str(exc)),
+            user_id,
+            preformatted=True,
+        )
+        return ConversationHandler.END
+
+    # Operator-profile gate: bounds what this alias may run on top of the
+    # shared risk classifier. A no-op when no profiles are configured.
+    try:
+        integration.check_policy(user_id, alias, command)
+    except integration.PolicyDenied as denial:
+        audit.record(
+            "command.policy_denied",
+            user_id=user_id,
+            alias=alias,
+            command=command,
+            outcome="denied",
+            reason=str(denial),
+        )
+        await _send_message_safely(
+            update.message.chat,
+            translate("command_blocked", language, command=command, reason=str(denial)),
             user_id,
             preformatted=True,
         )

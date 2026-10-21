@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "telegram-linux-admin"
-version = "3.1.0"
+version = "3.2.0"
 authors = [
     { name = "Your Name", email = "you@example.com" },
 ]
@@ -48,11 +48,13 @@ dev = [
 ]
 
 [tool.setuptools]
-# The project uses a flat ``src/`` layout with no ``src/__init__.py`` history,
-# so setuptools' auto-discovery found no importable package and the built wheel
-# contained only console scripts (the container then failed with
-# ``ModuleNotFoundError: No module named 'src'``). Declare it explicitly.
-packages = ["src"]
+# 3.2 split the monolith into subpackages; every src.* package ships.
+# The flat ``src/`` layout has no ``src/__init__.py``, so setuptools'
+# auto-discovery finds nothing on its own (the pre-3.2 wheel shipped only
+# console scripts and the container died with "No module named 'src'").
+# Declared explicitly, and 3.2's src.bot / src.runtime / src.observability /
+# src.jobs / src.policy subpackages are included with them.
+packages = ["src", "src.bot", "src.runtime", "src.observability", "src.jobs", "src.policy"]
 
 [project.scripts]
 tla-bot = "src.main:main"

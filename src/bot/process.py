@@ -28,6 +28,7 @@ from ..database import close_db_connection, initialize_database
 from ..health import start_health_server, stop_health_server
 from ..metrics import METRICS
 from ..ssh_manager import SSHManager
+from . import integration
 from . import state
 from .application import build_application
 from .lifecycle import (
@@ -78,7 +79,20 @@ def main() -> None:
 
     from ..access_control import permissions
 
+    # --- 3.2 subsystems: runtime targets, job queue, operator policy --------
+    # Local execution ("self VPS") is on by default; set TLA_LOCAL_EXECUTION=0
+    # to keep the bot from ever touching its own host.
+    local_enabled = os.environ.get("TLA_LOCAL_EXECUTION", "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+    )
+    integration.install_subsystems(manager=state.ssh_manager, local_enabled=local_enabled)
+
     audit.record("bot.started", outcome="success", access_mode=permissions.mode)
+    integration.observe(
+        "bot.started", access_mode=permissions.mode, local_execution=local_enabled
+    )
     METRICS.set("ready", 1)
 
     application = build_application(on_startup=post_init, on_shutdown=post_shutdown)
@@ -102,8 +116,10 @@ def main() -> None:
 
 async def _smoke_run() -> None:
     """Runs only the health endpoint so a smoke test can probe it."""
+    await integration.start_subsystems()
     server = await start_health_server(readiness=_readiness_probe)
     try:
         await asyncio.sleep(float(os.environ.get("SMOKE_TEST_SECONDS", "15")))
     finally:
         await stop_health_server(server)
+        await integration.shutdown_subsystems()

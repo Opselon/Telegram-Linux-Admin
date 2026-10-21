@@ -94,7 +94,10 @@ async def _readiness_probe() -> tuple[bool, dict[str, object]]:
         detail["database_error"] = str(exc)[:200]
 
     detail["token_configured"] = bool(config.telegram_token)
-    detail["state.ssh_manager"] = state.ssh_manager is not None
+    # Public key name: the readiness payload is scraped by monitoring, so it
+    # must not leak an internal module path. "transport" says the same thing
+    # without naming where the connection manager lives.
+    detail["transport"] = state.ssh_manager is not None
     detail["access_mode"] = permissions.mode
     detail["audit_writable"] = await asyncio.to_thread(audit.is_writable)
 

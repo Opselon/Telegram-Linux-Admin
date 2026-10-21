@@ -1,0 +1,3 @@
+[console_scripts]
+tla-bot = src.main:main
+tla-bot-update = src.updater:main
