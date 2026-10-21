@@ -4,6 +4,72 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 semantic versioning.
 
+## [4.0.0] — 2026-10-21
+
+**Self-managed host, layered architecture and a fully styled, fully localized
+UI.** The administrator who installs the bot can now manage the machine the bot
+runs on, side by side with remote SSH servers.
+
+### Added
+
+- **Self-host target** — the installer (first whitelisted user = administrator)
+  gets a virtual `self-host` target: run commands, open a terminal, manage
+  services, Docker, packages, files, firewall, processes and disks on the bot's
+  own machine without configuring SSH to itself.
+  - Fail-closed access: admin-only, plus `local_target_enabled` /
+    `TLA_LOCAL_TARGET_ENABLED=0` to remove the target entirely.
+  - The reserved alias can never be stored as a remote server, and is never
+    shown to the user (the UI renders it as “⚡ This server”).
+  - Local execution is session-isolated, timeout-bound, output-capped and
+    killed by process group; audit events `connect.local` /
+    `connect.local_failed` record every use.
+- **Persistent local shell** for the terminal feature: per-user `bash` session
+  with cwd/env continuity, per-command random end markers (output can never
+  forge a boundary) and session teardown on timeout.
+- **Layered architecture** (`domain` / `application` / `infrastructure` /
+  `presentation`) with ports for persistence and command transports, a
+  composition root and a strangler adapter for the legacy handlers. See
+  `ARCHITECTURE.md`.
+- **Redesigned UI**: one declarative screen layer (`View` + renderer), a single
+  keyboard kit, grouped dashboards (command / system / workloads / storage /
+  network), new Servers, Tools, Settings, Help and Administration screens,
+  consistent back/home navigation and ✅-marked language picker.
+- **Full localization of the interface** — 75 new keys shipped in all 15
+  languages, with catalog parity (identical keys *and* placeholders) enforced by
+  tests. Hardcoded English removed from the connect flow, main menu, language
+  picker and disconnect flow.
+- `/menu`, `/help` commands; `/audit` is now actually registered and restricted
+  to administrators (it was implemented but unreachable, and unguarded).
+- `scripts/verify_wheel.py` + CI step: fails the build if the wheel is missing
+  subpackages or language catalogs.
+
+### Changed
+
+- Language catalogs moved from a Python dict to `src/presentation/i18n/catalog/
+  <lang>.json`; `src/localization.py` is now a compatibility facade.
+- `ssh_manager` is a `RoutingCommandManager`: every existing feature works on
+  both SSH and local targets with no per-menu branching.
+- Menus render through `parse_mode`-aware escaping, so MarkdownV2 and HTML
+  languages can no longer break each other's screens.
+- `pyproject.toml` packaging switched to explicit package discovery + package
+  data (previously a wheel omitted subpackages).
+- Version 4.0.0.
+
+### Fixed
+
+- `main_menu`, the language picker and the connect flow leaked English text
+  into RTL and CJK sessions.
+- Connection errors surfaced raw English strings and internal exception text.
+- Adding a server could claim the internal self-host alias.
+- The restore test relied on `os.rename` and failed across filesystems.
+
+### Security
+
+- Administrator actions on the self-host target are audited; a non-admin
+  request for the reserved alias is denied before any lookup and flagged with
+  `connect.denied`.
+- `/audit` now requires the administrator role.
+
 ## [3.1.0] — 2026-10-21
 
 Hardening release: the bot now fails closed, pins host keys, refuses dangerous

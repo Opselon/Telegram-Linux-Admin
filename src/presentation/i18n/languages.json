@@ -1,0 +1,26 @@
+{
+  "default": "en",
+  "rtl": [
+    "ar",
+    "fa",
+    "he",
+    "ur"
+  ],
+  "languages": {
+    "ar": "🇸🇦 العربية",
+    "de": "🇩🇪 Deutsch",
+    "en": "🇺🇸 English",
+    "es": "🇪🇸 Español",
+    "fa": "🇮🇷 فارسی",
+    "fr": "🇫🇷 Français",
+    "hi": "🇮🇳 हिन्दी",
+    "it": "🇮🇹 Italiano",
+    "ja": "🇯🇵 日本語",
+    "ko": "🇰🇷 한국어",
+    "pt": "🇵🇹 Português",
+    "ru": "🇷🇺 Русский",
+    "tr": "🇹🇷 Türkçe",
+    "ur": "🇵🇰 اردو",
+    "zh": "🇨🇳 简体中文"
+  }
+}

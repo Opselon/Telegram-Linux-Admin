@@ -16,6 +16,18 @@ Three threats are addressed:
 
 `src/access_control.py` is the single gate for every handler. `open` restores the historical "any user" behaviour and logs a startup warning; `whitelist` and `admin_only` deny everyone else before the handler runs. Denials are audited with the user ID and handler name.
 
+### The self-host target
+
+The administrator (the first whitelisted user — the installer) can manage the host running the bot. This is the most privileged surface in the product, so it is guarded in three independent places:
+
+1. `TargetAccessPolicy.ensure_can_use` — admin-only, and disabled entirely when `local_target_enabled` is false.
+2. `TargetCatalog.find` — the reserved alias `self-host` is resolved from the principal, never from persistence; an SSH server may not claim it.
+3. `RoutingCommandManager` — re-checks the policy before executing, so no legacy handler can bypass the catalog.
+
+Local commands run in a new session per command, with a timeout, an output cap and process-group termination. The interactive local shell uses a per-command random marker and is torn down after a timeout, so output from an abandoned command cannot be attributed to the next one. Everything is audited (`connect.local`, `connect.local_failed`, `connect.denied`).
+
+Deployments that must never expose the bot's own host should set `"local_target_enabled": false` in `config.json` (or `TLA_LOCAL_TARGET_ENABLED=0`). Note that the bot process' own privileges become the ceiling of what the administrator can do through this target — run the bot as an unprivileged service user if that matters to you.
+
 ### Reachability
 
 `src/destination_policy.py` decides whether a target may be contacted at all (`allow_all`, `deny_public`, `allowlist`). Cloud metadata endpoints (`169.254.169.254`, `fd00:ec2::254`), loopback and link-local addresses are refused in every mode. Resolution happens before the decision, so DNS cannot be used to bypass it.

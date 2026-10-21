@@ -20,6 +20,14 @@ if DEFAULT_ACCESS_MODE not in VALID_ACCESS_MODES:
     DEFAULT_ACCESS_MODE = "open"
 
 
+def _env_flag(name: str, default: bool) -> bool:
+    """Parses a boolean environment flag, tolerating common spellings."""
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 class ConfigError(RuntimeError):
     """Raised when the configuration file cannot be processed safely."""
 
@@ -69,6 +77,9 @@ class Config:
         self.whitelisted_users: List[int] = []
         self.access_mode: str = DEFAULT_ACCESS_MODE
         self.destination_policy: str = os.environ.get("TLA_DESTINATION_POLICY", "allow_all")
+        #: Offer the bot's own host as a target.  Administrators only; the
+        #: domain policy enforces that, this flag just turns the feature off.
+        self.local_target_enabled: bool = _env_flag("TLA_LOCAL_TARGET_ENABLED", True)
         self.allowed_destinations: List[str] = [
             item.strip()
             for item in os.environ.get("TLA_ALLOWED_DESTINATIONS", "").split(",")
@@ -91,6 +102,7 @@ class Config:
             self.telegram_token = ""
             self.whitelisted_users = []
             self.access_mode = DEFAULT_ACCESS_MODE
+            self.local_target_enabled = _env_flag("TLA_LOCAL_TARGET_ENABLED", True)
             self.allowed_destinations = []
             self.last_error = None
             self.warnings = []
@@ -146,6 +158,9 @@ class Config:
                     f" (valid values: {', '.join(VALID_ACCESS_MODES)})."
                 )
 
+            if "local_target_enabled" in data:
+                self.local_target_enabled = bool(data.get("local_target_enabled"))
+
             raw_policy = data.get("destination_policy")
             if isinstance(raw_policy, str) and raw_policy.strip():
                 self.destination_policy = raw_policy.strip().lower()
@@ -167,6 +182,7 @@ class Config:
                     "access_mode",
                     "destination_policy",
                     "allowed_destinations",
+                    "local_target_enabled",
                 )
             }
 
@@ -179,6 +195,7 @@ class Config:
                 "access_mode": self.access_mode,
                 "destination_policy": self.destination_policy,
                 "allowed_destinations": list(self.allowed_destinations),
+                "local_target_enabled": self.local_target_enabled,
             }
             payload.update(self.extra)
 

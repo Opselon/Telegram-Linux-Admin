@@ -25,6 +25,7 @@ class _Config:
         self.whitelisted_users = kwargs.get("whitelisted_users", [42, 43])
         self.destination_policy = kwargs.get("destination_policy", "deny_public")
         self.allowed_destinations = kwargs.get("allowed_destinations", [])
+        self.local_target_enabled = kwargs.get("local_target_enabled", True)
         self.warnings = kwargs.get("warnings", [])
 
 
