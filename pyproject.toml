@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "telegram-linux-admin"
-version = "3.2.0"
+version = "3.3.0"
 authors = [
     { name = "Your Name", email = "you@example.com" },
 ]
@@ -53,8 +53,8 @@ dev = [
 # auto-discovery finds nothing on its own (the pre-3.2 wheel shipped only
 # console scripts and the container died with "No module named 'src'").
 # Declared explicitly, and 3.2's src.bot / src.runtime / src.observability /
-# src.jobs / src.policy subpackages are included with them.
-packages = ["src", "src.bot", "src.runtime", "src.observability", "src.jobs", "src.policy"]
+# src.jobs / src.policy and 3.3's src.ops subpackages are included with them.
+packages = ["src", "src.bot", "src.runtime", "src.observability", "src.jobs", "src.policy", "src.ops"]
 
 [project.scripts]
 tla-bot = "src.main:main"

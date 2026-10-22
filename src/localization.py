@@ -77,6 +77,22 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "audit_empty": "🔐 No audit events recorded yet.",
         "server_add_cancelled": "❌ Adding a server was cancelled.",
         "admin_only": "🚫 **Access Denied**\nThis is an admin-only feature.",
+        "jobs_panel_title": "🧵 **Your jobs**",
+        "jobs_panel_running": "⏳ Running ({count}):",
+        "jobs_panel_pending": "🕒 Waiting ({count}):",
+        "jobs_panel_empty": "🧵 **Your jobs**\nNo running or waiting jobs.",
+        "jobs_cancel_prefix": "Cancel",
+        "jobs_refresh": "Refresh",
+        "jobs_refreshed_toast": "Panel refreshed.",
+        "jobs_cancelled_toast": "✅ Job `{job_id}` cancelled.",
+        "jobs_cancel_not_found": "⚠️ Job `{job_id}` is no longer pending.",
+        "jobs_degraded": "⚠️ **Job queue is unavailable**\nThe background queue did not start on this server, so commands run inline and there is nothing to list or cancel.",
+        "ui_back": "🔙 Back",
+        "ui_kv_empty": "(nothing to show)",
+        "ui_nav_prev": "◀️",
+        "ui_nav_next": "▶️",
+        "ui_nav_disabled": "•",
+        "ui_page_indicator": "Page {page} / {pages}",
     },
     "ar": {
         "main_menu_welcome": "🐧 **مرحبًا بك في روبوت إدارة لينكس!**\n\nماذا تريد أن تفعل؟",
@@ -825,7 +841,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
 SUPPORTED_LANGUAGES = tuple(TRANSLATIONS.keys())
 
 
-def translate(key: str, language: str | None = None, **kwargs: str) -> str:
+def translate(key: str, language: str | None = None, **kwargs: object) -> str:
     """Returns a translated string for the given key."""
     lang = language if language in TRANSLATIONS else DEFAULT_LANGUAGE
     template = TRANSLATIONS.get(lang, TRANSLATIONS[DEFAULT_LANGUAGE]).get(key)

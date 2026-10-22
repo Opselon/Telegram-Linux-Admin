@@ -189,7 +189,11 @@ class RateLimiter:
                 timestamps.popleft()
 
             if len(timestamps) >= max_calls:
-                retry_after = max(0.0, timestamps[0] + period - now)
+                # timestamps[0] > now - period is guaranteed by the pruning
+                # above, so this is <= period mathematically; the clamp keeps
+                # float accumulation (timestamps[0] + period - now) from
+                # leaking a few ULPs past ``period`` to callers.
+                retry_after = min(period, max(0.0, timestamps[0] + period - now))
                 return False, retry_after
 
             timestamps.append(now)

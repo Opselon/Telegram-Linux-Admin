@@ -69,6 +69,9 @@ SUPPORTED_LANGUAGE_SET = set(SUPPORTED_LANGUAGES)
 #:
 #: ``src.jobs.JobQueue`` — serialized, bounded background command execution.
 job_queue: Any = None
+#: ``src.ops.scheduler.Scheduler`` — recurring maintenance tasks (3.3);
+#: started in ``lifecycle.post_init``, stopped in ``post_shutdown``.
+ops_scheduler: Any = None
 #: ``src.runtime.TargetResolver`` — maps a server alias to an execution target
 #: (``self`` ⇒ the bot host itself, anything else ⇒ pooled SSH).
 target_resolver: Any = None

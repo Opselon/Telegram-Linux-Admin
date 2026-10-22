@@ -139,7 +139,27 @@ async def dashboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         builder.add_bold("Admin Dashboard")
         builder.add_line()
         builder.add_line()
-        
+
+        # 3.3: the scalar metrics render as an aligned kv_panel block.
+        # Sections with mixed inline structure (plan/lang distributions,
+        # recent servers, top users, health) keep their MessageBuilder
+        # rendering below — kv_panel is used where the data is flat pairs.
+        from .ui_kit import kv_panel
+        _, kv_markup = kv_panel("Admin Dashboard — metrics", [
+            ("Total users", str(total_users)),
+            ("Active users", str(active_users)),
+            ("New today", str(users_today)),
+            ("Total servers", str(total_servers)),
+            ("Added today", str(servers_today)),
+            ("Servers (7d)", str(servers_week)),
+            ("Avg per user", str(server_stats["avg"])),
+            ("Max per user", str(server_stats["max"])),
+            ("Min per user", str(server_stats["min"])),
+            ("DB size (MB)", str(db_size["size_mb"])),
+        ])
+        builder.add_code(kv_markup.text)
+        builder.add_line()
+
         # Users Section
         builder.add_text("👥 ")
         builder.add_bold("Users")

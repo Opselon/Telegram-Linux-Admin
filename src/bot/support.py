@@ -24,6 +24,8 @@ from telegram import Update
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
+from . import ui_kit
+
 from ..access_control import permissions
 from ..access_control import rate_limiter
 from ..audit import audit
@@ -298,24 +300,23 @@ async def _edit_message_safely(
             raise e
 
 def _build_language_keyboard(active_language: str) -> InlineKeyboardMarkup:
-    """Builds the inline keyboard for language selection."""
-    buttons = []
+    """Builds the inline keyboard for language selection via the 3.3 ui_kit.
+
+    Migrated from hand-rolled buttons: ``ui_kit.menu`` keeps the one-per-row
+    layout and the ✅ active marker, adds deterministic ordering, clamps
+    pathological lists, and renders the translated Back row from
+    ``ui_back`` instead of hard-coding it.
+    """
+    items: list[tuple[str, str]] = []
     for code in SUPPORTED_LANGUAGES:
         prefix = "✅ " if code == active_language else ""
-        buttons.append([
-            InlineKeyboardButton(
-                f"{prefix}{get_language_label(code)}",
-                callback_data=f"set_language_{code}"
-            )
-        ])
-
-    buttons.append([
-        InlineKeyboardButton(
-            translate('button_back_main_menu', active_language),
-            callback_data='main_menu'
-        )
-    ])
-    return InlineKeyboardMarkup(buttons)
+        items.append((f"{prefix}{get_language_label(code)}", f"set_language_{code}"))
+    _, markup = ui_kit.menu(
+        "",
+        items,
+        back=translate('button_back_main_menu', active_language),
+    )
+    return markup
 
 def _host_key_mismatch_message(alias: str, exc: HostKeyMismatch, language: str) -> str:
     """Explains a pinned-host-key mismatch without leaking anything else."""

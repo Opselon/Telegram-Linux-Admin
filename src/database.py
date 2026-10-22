@@ -14,6 +14,10 @@ from .security import decrypt_secret, encrypt_secret
 
 DEFAULT_DB_FILE = "database.db"
 
+
+class DatabaseUnavailable(RuntimeError):
+    """The database location cannot be created or opened on this host."""
+
 DEFAULT_PLAN = "free"
 PLAN_LIMITS = {
     "free": 3,
@@ -34,8 +38,20 @@ def _resolve_db_path() -> Path:
 
 
 def _ensure_directory(path: Path) -> None:
-    """Ensure directory exists using modern pathlib (2026 standards)."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+    """Ensure directory exists using modern pathlib (2026 standards).
+
+    On POSIX the ``\\\\.\\`` reserved-device prefix is just an odd directory
+    name and mkdir happily creates it, so the connect below still fails on
+    a truly un-openable path; on Windows ``mkdir`` raises ``OSError`` for
+    reserved device paths (``nul``, ``con`` ...), which is the failure this
+    guard exists to surface as an environment problem, not to swallow.
+    """
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise DatabaseUnavailable(
+            f"database directory {path.parent} is not creatable: {exc}"
+        ) from exc
 
 
 def _connect(path: Path | str) -> sqlite3.Connection:
