@@ -85,7 +85,7 @@ jobs:
           architecture: ${{ matrix.python_arch }}
 
       - name: Cache pip
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ${{ runner.os == 'Windows' && '~\\AppData\\Local\\pip\\Cache' || runner.os == 'Linux' && '~/.cache/pip' || '~/Library/Caches/pip' }}
