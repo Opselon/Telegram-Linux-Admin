@@ -4,6 +4,50 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 semantic versioning.
 
+## [3.4.0] — 2026-10-22
+
+Proactive operations: the bot now watches your servers and backs them up on a
+schedule, without anyone typing a command.
+
+### Added
+
+- **Usage alerts** (`src/alerts/`) — per-server threshold rules on memory,
+  disk and CPU. Pure `evaluate()` plus an error-tolerant `check_rules()`
+  sweep: an unreachable target or a raising probe is a counted skip, never
+  a stalled scheduler. Rules are owner-scoped CRUD in `alert_rules`, with
+  ownership enforced on every mutation *and* on the client-supplied
+  callback data (a crafted `alertsadd_<foreign-alias>` saves nothing).
+- **`/alerts` panel** — pick a server, pick a metric, pick a threshold
+  (50/60/70/80/90 row), confirm; toggle and delete per rule; recent events
+  summary. The **local host is always alertable** (`self`), so an operator
+  can watch the machine the bot runs on without adding it as an SSH host.
+  Fired alerts are delivered to the owner's chat and recorded to the audit
+  trail (`alerts.event.fired`).
+- **Scheduled backups** (`src/sched/`) — `BackupPlan` (alias, daily hour,
+  keep count) with DST-safe `next_run()` / `should_run()` pure helpers and
+  a runner that calls the same archive builder `/backup` uses, rotates
+  `keep` newest archives under `data/backups/scheduled/<alias>/`, and
+  reports `ok` / `retrieval_failed` / `overwrite_failed` instead of raising.
+- **`/backups` panel** — plan list with per-plan toggle, delete and
+  *Run now*; add flow picks alias → hour → keep → confirm.
+- **Scheduler cadences** — the 3.4 ops tasks run inside the 3.3 scheduler:
+  alert sweep every 5 minutes, backup plan tick every 15 (gated to once per
+  calendar day by `should_run`).
+- **Schema hook** — `database.register_extra_schema()` lets feature packages
+  ship their own tables (`alert_rules`, `scheduled_backups`) without
+  touching base migration logic; registration is idempotent.
+- **`create_backup_archive()`** — the backup body extracted from the PTB
+  handler into a schedulable public entry. `/backup` now delegates to it,
+  so manual and scheduled backups compress, validate and verify integrity
+  through exactly one code path.
+
+### Tests
+
+715 → 812 tests. New suites: alerts unit/UI/pipeline, sched
+models-schedule/runner/storage/UI, and `test_34_integration_wiring.py`
+(schema registration, handler registration incl. prefix-shadowing, cadence
+wiring, run-cmd port, alert probe path).
+
 ## [3.3.0] — 2026-10-22
 
 The maintenance wave: the bot now runs its own housekeeping, shows live job
