@@ -4,6 +4,52 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 semantic versioning.
 
+## [3.3.0] — 2026-10-22
+
+The maintenance wave: the bot now runs its own housekeeping, shows live job
+state, and renders menus through one hardened UI toolkit.
+
+### Added
+
+- **Ops scheduler** (`src/ops/scheduler.py`) — zero-dependency asyncio
+  recurring-task engine: per-task status (`last_run`, `next_run`,
+  `last_error`, `run_count`), errors captured with tracebacks without
+  stopping the loop, deterministic manual-tick mode for tests, clean
+  `stop()` with no leaked tasks.
+- **Maintenance jobs** (`src/ops/maintenance.py`) — audit-log rotation
+  (gzip old files, keep a bounded set, config-driven, **off by default**),
+  hourly SSH pool reaper, minute-scale metrics ticker pushing
+  `ops_scheduler_tasks` / `ops_queue_*` gauges into `METRICS`. Every job
+  degrades via a `MaintenanceResult` (+ `ops_maintenance_degraded_total`)
+  instead of raising.
+- **Deep health check** (`src/ops/healthcheck.py`) — `deep_readiness()`
+  adds DB connectivity, audit-dir writability, and token-shape checks (the
+  secret is never echoed into a diagnostic) to the process health
+  surface; folded into the bot's readiness probe.
+- **`/jobs` panel** (`src/bot/jobs_ui.py`) — per-user view of running and
+  waiting jobs with inline cancel buttons, refresh row, and a degraded
+  answer when the queue did not start. `jobscancel_<id>` /
+  `jobsrefresh` callback prefixes, answer-before-edit throughout.
+- **Job queue hardening** — timeout overruns resolve to a clean
+  `JobResult(exit_ok=False, error="timeout")` (including the Python 3.12
+  `BaseExceptionGroup` edge); new `stats_per_user()` breakdown embedded
+  in `stats()`; METRICS bridge proven with labeled counters.
+- **UI toolkit** (`src/bot/ui_kit.py` + `src/bot/pagination.py`) —
+  `menu()` / `kv_panel()` / `paged()` builders: deterministic ordering,
+  truncation and clamping, fence-triple defanging so user data cannot
+  close a code block early, stateless pagination helpers with absolute
+  callback data. The language keyboard and the dashboard metric block now
+  render through it.
+- **Bot wiring** — the scheduler starts in `post_init` (failure is logged,
+  never fatal) and stops in `post_shutdown`; `/jobs` and its callbacks are
+  registered exactly once each.
+
+### Tests
+
+573 → 715 tests (new suites: jobs UI, ui_kit, pagination, ops scheduler,
+maintenance, healthcheck) — plus the wiring covered by the existing
+surface tests.
+
 ## [3.2.0] — 2026-10-22
 
 The remaster: one file became a package, and the bot learned to run commands
