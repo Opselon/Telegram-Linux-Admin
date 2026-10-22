@@ -197,7 +197,15 @@ class TestPortSelection:
         listeners = []
         try:
             for candidate in range(base, base + setup_module["EASY_PORT_ATTEMPTS"]):
-                listeners.append(listening_socket(candidate))
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                try:
+                    sock.bind(("127.0.0.1", candidate))
+                    sock.listen(1)
+                except OSError:
+                    sock.close()  # occupied externally: counts as busy too
+                    continue
+                listeners.append(sock)
             assert setup_module["choose_health_port"](base) is None
         finally:
             for listener in listeners:
@@ -385,24 +393,20 @@ class TestEasySetup:
             make_args(token=TOKEN, admin_ids=["abc"], no_service=True, no_cron=True)
         ) == 2
 
-    def test_no_free_port_is_fatal(self, setup_module, make_args):
-        base = free_port()
-        listeners = []
-        try:
-            for candidate in range(base, base + setup_module["EASY_PORT_ATTEMPTS"]):
-                listeners.append(listening_socket(candidate))
-            exit_code = setup_module["easy_setup"](
-                make_args(
-                    token=TOKEN,
-                    admin_ids=["12345"],
-                    health_port=base,
-                    no_service=True,
-                    no_cron=True,
-                )
+    def test_no_free_port_is_fatal(self, setup_module, make_args, monkeypatch):
+        # Every port in the scan window is reported busy. Simulating that with
+        # real listeners is racy (anything else on the host can take one of the
+        # 20 consecutive ports), so the probe itself is stubbed.
+        monkeypatch.setitem(setup_module, "port_in_use", lambda port: True)
+        exit_code = setup_module["easy_setup"](
+            make_args(
+                token=TOKEN,
+                admin_ids=["12345"],
+                health_port=free_port(),
+                no_service=True,
+                no_cron=True,
             )
-        finally:
-            for listener in listeners:
-                listener.close()
+        )
         assert exit_code == 1
 
 
