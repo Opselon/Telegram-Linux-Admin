@@ -207,11 +207,21 @@ async def test_alerts_command_lists_only_owned_servers() -> None:
 async def test_alerts_command_without_servers_degrades_to_hint() -> None:
     update = _FakeUpdate(None, user_id=USER_B)
     await alerts_command(update, None)  # type: ignore[arg-type]
-    # USER_B owns "other-1", so build the empty case with a stranger instead.
+    # A stranger owns no servers, so the menu degrades to the empty hint plus
+    # the built-in local host row ("self" is always alertable: 3.4 wiring).
+    # A stranger has no servers: the menu is the command path (sends, not
+    # edits), showing the built-in local host row ("self" is always
+    # alertable) but none of USER_B's servers.
     update = _FakeUpdate(None, user_id=999)
     await alerts_command(update, None)  # type: ignore[arg-type]
     assert "other-1" not in _sent_text(update)
-    assert METRICS.get("alerts_panel_degraded_total", reason="no_servers") >= 1
+    markup = update.effective_chat.send_message.calls[-1][1]["reply_markup"]
+    sent_buttons = [
+        b.callback_data for row in markup.inline_keyboard for b in row
+    ] if markup else []
+    assert f"{MENU_PREFIX}other-1" not in sent_buttons
+    assert f"{MENU_PREFIX}self" in sent_buttons
+    assert METRICS.get("alerts_panel_views_total") >= 1
 
 
 async def test_alerts_command_shows_recent_events() -> None:

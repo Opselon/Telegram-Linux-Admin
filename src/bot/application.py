@@ -36,25 +36,6 @@ from .jobs_ui import (
     jobs_refresh_callback,
     jobs_status_menu,
 )
-from ..alerts.ui import (
-    alerts_add_callback,
-    alerts_command,
-    alerts_confirm_callback,
-    alerts_delete_callback,
-    alerts_menu_callback,
-    alerts_toggle_callback,
-)
-from ..sched.ui import (
-    backups_menu,
-    sched_add_alias,
-    sched_add_confirm,
-    sched_add_hour,
-    sched_add_keep,
-    sched_add_start,
-    sched_delete,
-    sched_run,
-    sched_toggle,
-)
 from .backup import (
     backup, cancel_restore, restore_confirmation, restore_file,
     restore_start,
@@ -111,6 +92,29 @@ def build_application(*, on_startup=None, on_shutdown=None) -> Application:
     ``post_init``/``post_shutdown`` or they would shadow those imports inside
     this function.
     """
+    # 3.4 feature handlers imported here, not at module level: src.alerts.ui
+    # and src.sched.ui read src.bot.state/ui_kit, so a top-level import from
+    # this module would close an import cycle (alerts.ui -> src.bot -> here).
+    from ..alerts.ui import (
+        alerts_add_callback,
+        alerts_command,
+        alerts_confirm_callback,
+        alerts_delete_callback,
+        alerts_menu_callback,
+        alerts_toggle_callback,
+    )
+    from ..sched.ui import (
+        backups_menu,
+        sched_add_alias,
+        sched_add_confirm,
+        sched_add_hour,
+        sched_add_keep,
+        sched_add_start,
+        sched_delete,
+        sched_run,
+        sched_toggle,
+    )
+
     # Configure request timeout to prevent ReadTimeout errors
     # Default timeout is 5 seconds, increasing to 30 seconds for better reliability
     application = (

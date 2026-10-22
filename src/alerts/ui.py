@@ -231,16 +231,26 @@ def _events_text(user_id: int | None, language: str) -> str:
 
 
 def _owned_aliases(user_id: int | None) -> tuple[str, ...]:
-    """The aliases of this user's own servers (empty on any error)."""
+    """The aliases this user may alert on: own servers plus the local host.
+
+    The local host ("self") is always alertable -- the probe reads it
+    directly -- while SSH servers come from the owner's server list.
+    """
     if user_id is None:
         return ()
+    # imported here: src.runtime pulls the bot package, which imports this
+    # module's handlers -> module-level import would be circular
+    from ..runtime.resolver import LOCAL_ALIAS
+
+    aliases: list[str] = [LOCAL_ALIAS]
     try:
         servers = get_all_servers(user_id)
     except Exception as exc:  # noqa: BLE001 - the panel must render regardless
         _degraded("servers")
         logger.warning("alerts: server list unavailable: %s", exc)
-        return ()
-    return tuple(str(server.get("alias") or "") for server in servers)
+        return tuple(aliases)
+    aliases.extend(str(server.get("alias") or "") for server in servers)
+    return tuple(dict.fromkeys(aliases))  # de-dup, keep order
 
 
 def _server_rows(user_id: int | None) -> list[tuple[str, str]]:
