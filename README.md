@@ -225,26 +225,66 @@ This section is optimized for Google ranking on target keywords:
 
 # 🚀 Installation
 
-### 1. Clone repo
+## Easy setup — one command
 
 ```bash
-git clone https://github.com/Opselon/Telegram-Linux-Admin.git \
- && cd Telegram-Linux-Admin \
- && chmod +x install.sh \
- && sudo ./install.sh
+curl -fsSL https://raw.githubusercontent.com/Opselon/Telegram-Linux-Admin/main/install.sh \
+  -o install.sh && sudo bash install.sh \
+  --token "123456:ABC-DEF...-..." --admin-id 123456789
 ```
 
-### 2. Run setup
+Already cloned the repo?
 
 ```bash
-bash install.sh
+sudo ./install.sh --token "123456:ABC-DEF...-..." --admin-id 123456789
 ```
 
-The setup wizard will guide you through:
-- Telegram bot token configuration
+That one command clones (or updates) the checkout, builds the venv, writes a
+fail-closed config in one shot — `access_mode=whitelist`,
+`destination_policy=deny_public`, no open destinations, file mode `0600` —,
+creates the SQLite database, installs and starts the `telegram_bot.service`
+systemd unit plus the auto-update cron job, and prints a summary with the file
+list, the applied config, the service state, the last journal lines and the
+health reports. The health endpoint binds to `127.0.0.1:8081` and steps up to a
+free port if taken (`--port` pins it). `--admin-id` may repeat to whitelist
+more users. By default the service runs as the invoking user (`SUDO_USER`),
+not root.
+
+Fine-tuning flags (also accepted by `scripts/setup.py --easy`):
+`--config`, `--db-file`, `--audit-dir`, `--access-mode`, `--destination-policy`,
+`--verify-timeout`, `--port`, `--no-service`, `--no-cron`, `--no-start`,
+`--json`, `--verbose`.
+
+## Pro setup — interactive wizard
+
+```bash
+./install.sh
+```
+
+Run it with no flags (and no `TLA_BOT_TOKEN` exported) to get the guided
+wizard that walks through:
+
+- Telegram bot token configuration (validated against Telegram on the spot)
 - Admin user setup
 - Systemd service installation (optional)
 - Automatic updates configuration (optional)
+- Locked-door policies and manual key editing
+
+## End-to-end test of both paths
+
+```bash
+TLA_BOT_TOKEN="123456:ABC-DEF...-..." TLA_ADMIN_ID=123456789 scripts/e2e_setup.sh all
+```
+
+`scripts/e2e_setup.sh` exercises both paths with the real Telegram API: each
+run works inside a throwaway copy (config never touches the host), drives the
+easy one-liner non-interactively and the wizard from stdin, boots the resulting
+bot process and verifies `/healthz`, `/readyz`, `/metrics` and `getMe`.
+Modes: `easy`, `pro`, or `all` (default). Set `KEEP=1` to keep the scratch
+directories for inspection, or `TLA_E2E_SERVICE=1` to also install the real
+systemd unit (root required). The unit test side is `tests/test_easy_setup.py`
+— run `pytest tests/test_easy_setup.py` with the venv active; the live-token
+pytest case runs only when `TLA_E2E_TOKEN` is set.
 
 ---
 
