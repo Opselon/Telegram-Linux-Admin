@@ -218,6 +218,23 @@ def initialize_database() -> None:
             )
             """
         )
+        # 3.4: feature packages register extra schema here via
+        # EXTRA_SCHEMA hook (see register_extra_schema). Keeps feature
+        # schema (alerts, scheduled backups) out of base migration logic.
+        for _stmt in _extra_schema_stmts:
+            conn.execute(_stmt)
+
+_extra_schema_stmts: list[str] = []
+
+def register_extra_schema(statements: list[str]) -> None:
+    """Registers feature-package schema SQL executed in initialize_database.
+
+    Called at import time by src.alerts / src.sched so their tables exist
+    before any handler runs. Idempotent: duplicate registration is a no-op.
+    """
+    for stmt in statements:
+        if stmt not in _extra_schema_stmts:
+            _extra_schema_stmts.append(stmt)
 
 
 def add_server(
