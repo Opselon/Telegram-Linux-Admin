@@ -72,6 +72,9 @@ job_queue: Any = None
 #: ``src.ops.scheduler.Scheduler`` — recurring maintenance tasks (3.3);
 #: started in ``lifecycle.post_init``, stopped in ``post_shutdown``.
 ops_scheduler: Any = None
+#: ``telegram.ext.Application`` — set in ``lifecycle.post_init`` so background
+#: sweeps (alerts) can send messages without a handler context.
+application: Any = None
 #: ``src.runtime.TargetResolver`` — maps a server alias to an execution target
 #: (``self`` ⇒ the bot host itself, anything else ⇒ pooled SSH).
 target_resolver: Any = None

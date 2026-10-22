@@ -36,6 +36,25 @@ from .jobs_ui import (
     jobs_refresh_callback,
     jobs_status_menu,
 )
+from ..alerts.ui import (
+    alerts_add_callback,
+    alerts_command,
+    alerts_confirm_callback,
+    alerts_delete_callback,
+    alerts_menu_callback,
+    alerts_toggle_callback,
+)
+from ..sched.ui import (
+    backups_menu,
+    sched_add_alias,
+    sched_add_confirm,
+    sched_add_hour,
+    sched_add_keep,
+    sched_add_start,
+    sched_delete,
+    sched_run,
+    sched_toggle,
+)
 from .backup import (
     backup, cancel_restore, restore_confirmation, restore_file,
     restore_start,
@@ -271,5 +290,26 @@ def build_application(*, on_startup=None, on_shutdown=None) -> Application:
     # before the bare jobsrefresh so a cancel payload is never re-dispatched.
     application.add_handler(CallbackQueryHandler(cancel_job_callback, pattern=r'^jobscancel_'))
     application.add_handler(CallbackQueryHandler(jobs_refresh_callback, pattern=r'^jobsrefresh$'))
+
+    # --- Alerts (3.4) -- prefixed patterns before the bare menu entry ---
+    application.add_handler(CommandHandler('alerts', alerts_command))
+    application.add_handler(CallbackQueryHandler(alerts_menu_callback, pattern=r'^alertsmenu_'))
+    application.add_handler(CallbackQueryHandler(alerts_add_callback, pattern=r'^alertsadd_'))
+    application.add_handler(CallbackQueryHandler(alerts_confirm_callback, pattern=r'^alertsconfirm_'))
+    application.add_handler(CallbackQueryHandler(alerts_toggle_callback, pattern=r'^alertstoggle_'))
+    application.add_handler(CallbackQueryHandler(alerts_delete_callback, pattern=r'^alertsdel_'))
+    application.add_handler(CallbackQueryHandler(alerts_menu_callback, pattern=r'^alerts_menu$'))
+
+    # --- Scheduled backups (3.4) -- longest prefix first ---
+    application.add_handler(CommandHandler('backups', backups_menu))
+    application.add_handler(CallbackQueryHandler(sched_add_alias, pattern=r'^schedadd_alias_'))
+    application.add_handler(CallbackQueryHandler(sched_add_hour, pattern=r'^schedadd_hour_'))
+    application.add_handler(CallbackQueryHandler(sched_add_keep, pattern=r'^schedadd_keep_'))
+    application.add_handler(CallbackQueryHandler(sched_add_confirm, pattern=r'^schedadd_[^_]+_[0-9]+_[0-9]+$'))
+    application.add_handler(CallbackQueryHandler(sched_add_start, pattern=r'^schedadd$'))
+    application.add_handler(CallbackQueryHandler(sched_toggle, pattern=r'^schedtoggle_'))
+    application.add_handler(CallbackQueryHandler(sched_delete, pattern=r'^scheddel_'))
+    application.add_handler(CallbackQueryHandler(sched_run, pattern=r'^schedrun_'))
+    application.add_handler(CallbackQueryHandler(backups_menu, pattern=r'^backups_menu$'))
 
     return application

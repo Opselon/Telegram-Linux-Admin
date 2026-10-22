@@ -32,8 +32,21 @@ from ..health import stop_health_server
 from ..metrics import METRICS
 from ..ops.maintenance import register_defaults
 from ..ops.scheduler import Scheduler
+from ..database import register_extra_schema
+
+
+def _register_feature_schema() -> None:
+    """Registers 3.4 feature-table schema once, idempotently."""
+    from ..alerts.storage import SCHEMA_INDEX_SQL as _alert_idx
+    from ..alerts.storage import SCHEMA_SQL as _alert_schema
+    from ..sched.storage import SCHEMA_SQL as _sched_schema
+    register_extra_schema([_alert_schema, _sched_schema, _alert_idx])
+
+
+_register_feature_schema()
 import asyncio
 import os
+from pathlib import Path
 
 from . import state
 from .state import (
@@ -156,6 +169,7 @@ async def _start_health_endpoint() -> None:
 
 async def post_init(application: Application):
     """Actions to run after the bot has been initialized."""
+    state.application = application
     await load_languages_into_cache()
     await _start_health_endpoint()
     await application.bot.set_my_commands([
@@ -168,8 +182,125 @@ async def post_init(application: Application):
         BotCommand("cancel", "Cancel the current multi-step operation (like adding a server)"),
         BotCommand("dashboard", "Admin dashboard (admin only)"),
         BotCommand("jobs", "Show your running and waiting jobs (admin only)"),
+        BotCommand("alerts", "Manage usage alert rules per server (admin only)"),
+        BotCommand("backups", "Schedule and run automatic backups (admin only)"),
         BotCommand("audit", "Show recent security events (admin only)")
     ])
+
+async def _alerts_probe(rule):
+    """Reads the configured metric for one rule; None = target unreachable.
+
+    Local-host rules read through :func:`src.database.get_system_health`;
+    remote rules are skipped (None) until an SSH probe is wired, so a sweep
+    never hangs the scheduler on an unreachable box.
+    """
+    from ..database import get_system_health
+
+    alias_self = getattr(state, "SELF_ALIAS", "self")
+    if rule.alias not in (alias_self, "self", "localhost"):
+        METRICS.inc("alerts_probe_skips_total", kind=rule.kind, reason="remote")
+        return None
+    try:
+        health = await asyncio.to_thread(get_system_health)
+    except Exception:
+        logger.exception("alerts probe failed for kind %s", rule.kind)
+        return None
+    field = {
+        "mem_high": "memory_percent",
+        "disk_high": "disk_percent",
+        "cpu_high": "cpu_percent",
+    }.get(rule.kind)
+    if field is None:
+        return None
+    value = health.get(field)
+    return float(value) if isinstance(value, (int, float)) else None
+
+
+async def _alerts_sweep() -> None:
+    """One alerts pass over every owner's enabled rules."""
+    from ..alerts.checker import check_rules
+    from ..alerts.notifier import notify
+    from ..alerts.storage import list_rules
+    from ..database import get_whitelisted_users
+
+    owners: list[int] = []
+    try:
+        owners = [
+            int(uid) for uid in await asyncio.to_thread(get_whitelisted_users)
+        ]
+    except Exception:
+        logger.exception("alerts sweep could not enumerate owners")
+        return
+
+    for owner in owners:
+        try:
+            rules = list_rules(owner, None, True)
+        except Exception:
+            logger.exception("alerts sweep could not read rules for %s", owner)
+            continue
+        if not rules:
+            continue
+        events = await check_rules(rules, _alerts_probe)
+        for event in events:
+            await notify(event, sender=_telegram_alert_sender)
+
+
+async def _telegram_alert_sender(event) -> bool:
+    """Best-effort Telegram delivery for one alert event."""
+    from ..alerts.notifier import render_event_text
+
+    app = getattr(state, "application", None)
+    if app is None:
+        return False
+    try:
+        await app.bot.send_message(
+            chat_id=event.owner_id,
+            text=render_event_text(event),
+            parse_mode="Markdown",
+        )
+        return True
+    except Exception:
+        logger.exception("alert delivery failed for owner %s", event.owner_id)
+        return False
+
+
+async def _sched_backup_tick() -> None:
+    """Runs due backup plans once (daily cadence driven by the scheduler)."""
+    from ..sched.runner import run_backup
+    from ..sched.schedule import should_run
+    from ..sched.storage import list_enabled_plans
+    from ..sched.ui import get_run_cmd
+    from datetime import datetime as _dt
+
+    run_cmd = get_run_cmd()
+    if run_cmd is None:
+        return
+    try:
+        plans = await asyncio.to_thread(list_enabled_plans)
+    except Exception:
+        logger.exception("scheduled backups could not list plans")
+        return
+    now = _dt.now()
+    for plan in plans:
+        if not plan.enabled or not should_run(plan, now, None):
+            continue
+        await run_backup(plan, run_cmd)
+
+
+def _wire_backup_run_cmd() -> None:
+    """Points the sched UI/runner at the schedulable backup entry."""
+    from ..bot.backup import create_backup_archive
+    from ..sched.ui import set_backup_base, set_run_cmd
+
+    async def _run(alias: str):
+        base = set_backup_base
+        out_dir = Path("data") / "backups" / "scheduled" / alias
+        out_dir.mkdir(parents=True, exist_ok=True)
+        path = await create_backup_archive(destination_dir=out_dir)
+        return Path(path)
+
+    set_run_cmd(_run)
+
 
 async def _start_ops_scheduler(application: Application) -> None:
     """Registers and starts the 3.3 ops maintenance scheduler.
@@ -192,6 +323,11 @@ async def _start_ops_scheduler(application: Application) -> None:
             config=config,
             queue=queue,
         )
+        # 3.4 feature cadences: alert sweep every 5 min; backup plan tick
+        # every 15 min (should_run gates each plan to once per calendar day).
+        scheduler.add("alerts", 300.0, _alerts_sweep)
+        scheduler.add("backups", 900.0, _sched_backup_tick)
+        _wire_backup_run_cmd()
         scheduler.start()
     except Exception:
         logger.exception(

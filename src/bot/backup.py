@@ -43,6 +43,100 @@ from .support import _edit_message_safely, _send_message_safely
 logger = logging.getLogger(__name__)
 
 
+async def create_backup_archive(
+    *, destination_dir: str | os.PathLike[str] | None = None
+) -> str:
+    """Creates the standard bot backup archive and returns its path.
+
+    This is the schedulable entry point: identical validation, compression
+    and integrity verification as the ``/backup`` handler, with no Telegram
+    I/O. ``destination_dir`` None uses a fresh temp dir (caller owns cleanup);
+    when given, the archive lands there and persists.
+
+    Raises ValueError for the pre-flight failures the handler reports
+    (missing critical file, oversize, empty archive, failed integrity).
+    """
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    if destination_dir is None:
+        backup_dir = tempfile.mkdtemp(prefix="tla_backup_")
+    else:
+        backup_dir = str(destination_dir)
+        os.makedirs(backup_dir, exist_ok=True)
+    backup_filename = os.path.join(backup_dir, f"tla_backup_{timestamp}.zip")
+
+    files_to_backup = [
+        "config.json",
+        "database.db",
+        "var/encryption.key",
+        "var/pq_encryption.key",
+    ]
+    critical_files = ["config.json", "database.db"]
+    optional_files = ["var/encryption.key", "var/pq_encryption.key"]
+    max_backup_size = 100 * 1024 * 1024
+
+    for file_path in critical_files:
+        if not os.path.exists(file_path):
+            raise ValueError(f"Critical file missing: {file_path}")
+
+    validated_files: list[tuple[str, str]] = []
+    total_size = 0
+    for file_path in files_to_backup:
+        if not os.path.exists(file_path):
+            if file_path in optional_files:
+                logger.warning("Optional file %s not found - skipping", file_path)
+                continue
+            raise ValueError(f"Required file missing: {file_path}")
+        file_size = os.path.getsize(file_path)
+        if file_size == 0:
+            logger.warning("File %s is empty - skipping", file_path)
+            continue
+        if file_size > max_backup_size:
+            raise ValueError(f"File {file_path} is too large ({file_size} bytes)")
+        total_size += file_size
+        if total_size > max_backup_size:
+            raise ValueError(f"Total backup size exceeds limit ({total_size} bytes)")
+        file_hash = hashlib.sha256()
+        with open(file_path, "rb") as fh:
+            while chunk := fh.read(8192):
+                file_hash.update(chunk)
+        validated_files.append((file_path, file_hash.hexdigest()))
+
+    if not validated_files:
+        raise ValueError("No valid files found to backup")
+
+    with zipfile.ZipFile(backup_filename, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zipf:
+        for file_path, _file_hash in validated_files:
+            zipf.write(file_path, arcname=os.path.basename(file_path))
+        zipf.writestr(
+            "backup_metadata.json",
+            json.dumps(
+                {
+                    "timestamp": timestamp,
+                    "version": "3.0",
+                    "files": [p for p, _ in validated_files],
+                    "checksums": {p: h for p, h in validated_files},
+                    "summary": {
+                        "total_files": len(validated_files),
+                        "total_size_bytes": total_size,
+                        "total_size_mb": round(total_size / (1024 * 1024), 2),
+                    },
+                    "system_info": {
+                        "platform": sys.platform,
+                        "python_version": sys.version.split()[0],
+                    },
+                },
+                indent=2,
+            ),
+        )
+
+    if os.path.getsize(backup_filename) == 0:
+        raise ValueError("Backup file is empty")
+    with zipfile.ZipFile(backup_filename, "r") as zipf:
+        if zipf.testzip() is not None:
+            raise ValueError("Backup file integrity check failed")
+    return backup_filename
+
+
 async def backup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Pro version: Creates a comprehensive backup with validation, metadata, and progress indication.
@@ -59,147 +153,37 @@ async def backup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     backup_dir = tempfile.mkdtemp(prefix="tla_backup_")
-    backup_filename = os.path.join(backup_dir, f"tla_backup_{timestamp}.zip")
-    
-    files_to_backup = [
-        "config.json",
-        "database.db",
-        "var/encryption.key",
-        "var/pq_encryption.key"
-    ]
-    backup_metadata = {
-        "timestamp": timestamp,
-        "version": "3.0",
-        "bot_version": "Professional",
-        "files": {},
-        "checksums": {},
-        "system_info": {
-            "platform": sys.platform,
-            "python_version": sys.version.split()[0]
-        }
-    }
-    
+    backup_filename = ""
+
     try:
-        # Update progress
         builder = MessageBuilder(parse_mode)
         builder.add_text("📦 **Backup in Progress**")
         builder.add_line()
         builder.add_text("Validating files...")
         await progress_msg.edit_text(builder.build(), parse_mode=parse_mode)
-        
-        # Validate and collect files with metadata
-        validated_files = []
-        total_size = 0
-        max_backup_size = 100 * 1024 * 1024  # 100MB limit
-        critical_files = ["config.json", "database.db"]
-        optional_files = ["var/encryption.key", "var/pq_encryption.key"]
-        
-        # Check critical files first
-        for file_path in critical_files:
-            if not os.path.exists(file_path):
-                raise ValueError(f"Critical file missing: {file_path}")
-        
-        # Process all files
-        for file_path in files_to_backup:
-            if not os.path.exists(file_path):
-                if file_path in optional_files:
-                    logger.warning(f"Optional file {file_path} not found - skipping")
-                    continue
-                else:
-                    raise ValueError(f"Required file missing: {file_path}")
-            
-            file_size = os.path.getsize(file_path)
-            if file_size == 0:
-                logger.warning(f"File {file_path} is empty - skipping")
-                continue
-            
-            if file_size > max_backup_size:
-                raise ValueError(f"File {file_path} is too large ({file_size} bytes). Maximum: {max_backup_size} bytes")
-            
-            total_size += file_size
-            if total_size > max_backup_size:
-                raise ValueError(f"Total backup size exceeds limit ({total_size} bytes). Maximum: {max_backup_size} bytes")
-            
-            # Calculate checksum for integrity verification (chunked for large files)
-            file_hash = hashlib.sha256()
-            with open(file_path, 'rb') as f:
-                while chunk := f.read(8192):
-                    file_hash.update(chunk)
-            file_hash_hex = file_hash.hexdigest()
-            
-            backup_metadata["files"][file_path] = {
-                "size": file_size,
-                "modified": os.path.getmtime(file_path),
-                "is_critical": file_path in critical_files
-            }
-            backup_metadata["checksums"][file_path] = file_hash_hex
-            validated_files.append((file_path, file_hash_hex))
-        
-        if not validated_files:
-            raise ValueError("No valid files found to backup")
-        
-        # Add summary to metadata
-        backup_metadata["summary"] = {
-            "total_files": len(validated_files),
-            "total_size_bytes": total_size,
-            "total_size_mb": round(total_size / (1024 * 1024), 2),
-            "critical_files_count": sum(1 for f in validated_files if f[0] in critical_files)
-        }
-        
-        # Update progress
-        builder.clear()
-        builder.add_text("📦 **Backup in Progress**")
-        builder.add_line()
-        builder.add_text(f"Compressing {len(validated_files)} file(s)...")
-        await progress_msg.edit_text(builder.build(), parse_mode=parse_mode)
-        
-        # Create compressed backup with maximum compression
-        with zipfile.ZipFile(backup_filename, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as zipf:
-            for file_path, _file_hash in validated_files:
-                zipf.write(file_path, arcname=os.path.basename(file_path))
-            
-            # Add metadata as JSON
-            metadata_json = json.dumps(backup_metadata, indent=2)
-            zipf.writestr("backup_metadata.json", metadata_json)
-        
-        # Verify backup integrity
+
+        backup_filename = await create_backup_archive(destination_dir=backup_dir)
         backup_size = os.path.getsize(backup_filename)
-        if backup_size == 0:
-            raise ValueError("Backup file is empty")
-        
-        # Update progress
-        builder.clear()
-        builder.add_text("📦 **Backup in Progress**")
-        builder.add_line()
-        builder.add_text("Verifying backup integrity...")
-        await progress_msg.edit_text(builder.build(), parse_mode=parse_mode)
-        
-        # Verify ZIP file integrity
-        with zipfile.ZipFile(backup_filename, 'r') as zipf:
-            if zipf.testzip() is not None:
-                raise ValueError("Backup file integrity check failed")
-        
-        # Update progress
+
         builder.clear()
         builder.add_text("📦 **Backup in Progress**")
         builder.add_line()
         builder.add_text("Uploading backup...")
         await progress_msg.edit_text(builder.build(), parse_mode=parse_mode)
-        
-        # Send backup file
+
         with open(backup_filename, 'rb') as backup_file:
             await context.bot.send_document(
                 chat_id=update.effective_chat.id,
                 document=backup_file,
                 filename=f"tla_backup_{timestamp}.zip",
-                caption=f"✅ Backup created successfully\n📅 {timestamp}\n📦 {len(validated_files)} file(s)\n💾 {backup_size / 1024:.2f} KB",
+                caption=(f"✅ Backup created successfully\n📅 {timestamp}\n"
+                         f"💾 {backup_size / 1024:.2f} KB"),
                 parse_mode=parse_mode
             )
-        
-        # Success message
+
         keyboard = [[InlineKeyboardButton("🔙 Back to Main Menu", callback_data='main_menu')]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        
+
         builder.clear()
         builder.add_text("✅ ")
         builder.add_bold("Backup Complete!")
@@ -207,14 +191,12 @@ async def backup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         builder.add_line()
         builder.add_text(f"📅 Created: {timestamp}")
         builder.add_line()
-        builder.add_text(f"📦 Files: {len(validated_files)}")
-        builder.add_line()
         builder.add_text(f"💾 Size: {backup_size / 1024:.2f} KB")
         builder.add_line()
         builder.add_text("🔒 Integrity: Verified")
-        
+
         await progress_msg.edit_text(builder.build(), reply_markup=reply_markup, parse_mode=parse_mode)
-        logger.info(f"Backup created successfully: {backup_filename} ({backup_size} bytes)")
+        logger.info("Backup created successfully: %s (%s bytes)", backup_filename, backup_size)
 
     except Exception as e:
         logger.error(f"Error creating backup: {e}", exc_info=True)

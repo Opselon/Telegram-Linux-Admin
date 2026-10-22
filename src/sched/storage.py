@@ -171,6 +171,24 @@ def list_plans(
     return [plan for plan in plans if plan is not None]
 
 
+def list_enabled_plans() -> list[BackupPlan]:
+    """Every enabled plan across all owners (scheduler sweep), oldest first.
+
+    Degrades like the other reads: empty list + counted metric when the
+    table is absent or the DB cannot be opened.
+    """
+    try:
+        conn = _connect()
+        rows = conn.execute(
+            f"SELECT {_COLUMNS} FROM {TABLE} WHERE enabled = 1 ORDER BY id"
+        ).fetchall()
+    except (sqlite3.Error, OSError) as exc:
+        _degrade("list_enabled", exc)
+        return []
+    plans = (_row_to_plan(row) for row in rows)
+    return [plan for plan in plans if plan is not None]
+
+
 def delete_plan(plan_id: int, owner_id: int) -> bool:
     """Deletes one plan owned by ``owner_id``. False when nothing matched."""
     try:
