@@ -283,7 +283,7 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Download dist
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist
