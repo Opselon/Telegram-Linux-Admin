@@ -3348,6 +3348,12 @@ async def _readiness_probe() -> tuple[bool, dict[str, object]]:
     detail["ssh_manager"] = ssh_manager is not None
     detail["access_mode"] = permissions.mode
     detail["audit_writable"] = await asyncio.to_thread(audit.is_writable)
+    # The catalogs are package data: prove they are readable in this
+    # deployment (wheel install, frozen binary, source checkout) rather than
+    # discovering a missing catalog only through a user's screen.
+    from .presentation.i18n import translate
+
+    detail["i18n"] = translate("servers_self_host_note", "en") != "servers_self_host_note"
 
     if ssh_manager is not None:
         try:

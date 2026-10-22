@@ -5,21 +5,46 @@ identical key set (enforced by tests).  Catalogs load lazily and are cached
 for the lifetime of the process; a language line wraps transparently to the
 default catalog when a key is somehow missing, and finally to the key itself
 so a typo never renders a blank screen in production.
+
+Files are read through :mod:`importlib.resources` (with a filesystem
+fallback) so the catalogs also resolve inside a PyInstaller ``--onefile``
+bundle and from a wheel installed into ``site-packages``.
 """
 
 from __future__ import annotations
 
 import json
 import threading
+from importlib import resources
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Any, Dict, Tuple
 
-CATALOG_DIR = Path(__file__).resolve().parent / "catalog"
-META_FILE = Path(__file__).resolve().parent / "languages.json"
+_RESOURCE_ERRORS = (FileNotFoundError, NotADirectoryError, ModuleNotFoundError, OSError, TypeError)
+
+try:
+    _pkg: Any = resources.files(__package__)
+except _RESOURCE_ERRORS:  # pragma: no cover - exotic importers fall back to disk
+    _pkg = Path(__file__).resolve().parent
+
+CATALOG_DIR: Path = Path(__file__).resolve().parent / "catalog"
 
 _lock = threading.Lock()
 _catalogs: Dict[str, Dict[str, str]] = {}
-_config = json.loads(META_FILE.read_text(encoding="utf-8"))
+
+
+def _read_text(name: str) -> str:
+    """Reads a bundled JSON file through resources, falling back to disk."""
+    try:
+        return (_pkg / name).read_text(encoding="utf-8")
+    except _RESOURCE_ERRORS:  # pragma: no cover - frozen/zip fallback
+        return (Path(__file__).resolve().parent / name).read_text(encoding="utf-8")
+
+
+def _cast_json(raw: str) -> Any:
+    return json.loads(raw)
+
+
+_config: dict[str, Any] = _cast_json(_read_text("languages.json"))
 
 DEFAULT_LANGUAGE: str = _config.get("default", "en")
 RTL_LANGUAGES: frozenset[str] = frozenset(_config.get("rtl", ()))
@@ -30,15 +55,14 @@ def _load(language: str) -> Dict[str, str]:
     with _lock:
         cached = _catalogs.get(language)
         if cached is None:
-            path = CATALOG_DIR / f"{language}.json"
-            cached = json.loads(path.read_text(encoding="utf-8"))
+            cached = dict(_cast_json(_read_text(f"catalog/{language}.json")))
             _catalogs[language] = cached
         return cached
 
 
 def supported_languages() -> Tuple[str, ...]:
     """All language codes that ship a catalog file."""
-    return tuple(path.stem for path in sorted(CATALOG_DIR.glob("*.json")))
+    return tuple(sorted(LANGUAGE_LABELS))
 
 
 SUPPORTED_LANGUAGES: Tuple[str, ...] = supported_languages()
