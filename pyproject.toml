@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "telegram-linux-admin"
-version = "3.1.0"
+version = "4.0.0"
 authors = [
     { name = "Your Name", email = "you@example.com" },
 ]
@@ -38,6 +38,7 @@ monitoring = [
 ]
 
 dev = [
+    "build>=1.2",
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "pytest-mock>=3.14",
@@ -52,7 +53,16 @@ dev = [
 # so setuptools' auto-discovery found no importable package and the built wheel
 # contained only console scripts (the container then failed with
 # ``ModuleNotFoundError: No module named 'src'``). Declare it explicitly.
-packages = ["src"]
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+# The 4.0 refactor introduced domain/application/infrastructure packages under
+# src/, so auto-discovery (which "src" alone missed) is now explicit.
+
+[tool.setuptools.package-data]
+# Without this the wheel ships code but no catalogs, and every string degrades
+# to its raw key inside the Docker image.
+"src.presentation.i18n" = ["catalog/*.json", "languages.json"]
 
 [project.scripts]
 tla-bot = "src.main:main"

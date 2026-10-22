@@ -38,13 +38,18 @@ jobs:
 
       - name: Static checks (undefined names, duplicates, syntax)
         run: |
-          ruff check src tests --select F821,F811,F822,F823,E9
+          ruff check src tests scripts --select F821,F811,F822,F823,E9
 
       - name: Run tests
         env:
           PYTHONPATH: .
         run: |
           pytest -v --maxfail=1 --disable-warnings
+
+      - name: Build wheel and verify packaged assets
+        run: |
+          python -m build --wheel
+          python scripts/verify_wheel.py
 
       - name: Smoke Test Application
         env:

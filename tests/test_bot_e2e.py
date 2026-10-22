@@ -79,8 +79,12 @@ async def test_handle_server_connection_e2e(mocker, conn_type):
 
     # The handler resolves the destination from the stored server record before
     # connecting; register one so the policy check has something to evaluate.
-    mocker.patch('src.main.get_server_record',
-                 return_value={'alias': 'some_alias', 'hostname': '10.0.0.5'})
+    # Targets are now resolved through the repository adapter, so patch the
+    # persistence port rather than the legacy handler-level lookup.
+    mocker.patch('src.infrastructure.persistence.get_server',
+                 return_value={'alias': 'some_alias', 'owner_id': user_id,
+                               'hostname': '10.0.0.5', 'user': 'root',
+                               'password': None, 'key_path': '/root/.ssh/id_ed25519'})
 
     # Rate limiting is per user id; the parametrized cases share it, so reset it.
     main.rate_limiter.reset()
@@ -111,4 +115,4 @@ async def test_handle_server_connection_e2e(mocker, conn_type):
     update.callback_query.message.edit_message_text.assert_called()
     # The text is in the second call to edit_message_text
     final_call_args = update.callback_query.message.edit_message_text.call_args_list[1]
-    assert "Connected to" in final_call_args.args[0]
+    assert "Connected" in final_call_args.args[0]

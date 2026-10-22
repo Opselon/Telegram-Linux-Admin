@@ -86,6 +86,16 @@ from .localization import (
     DEFAULT_LANGUAGE,
     get_language_label,
 )
+from .composition import Container, build_service
+from .domain.errors import DomainError
+from .domain.targets import LOCAL_ALIAS
+from .application.dto import Principal
+from .infrastructure.local_transport import LocalTransport
+from .infrastructure.ssh_transport import SshTransport
+from .domain.policies import TargetAccessPolicy, is_reserved_alias
+from .infrastructure.routing_manager import RoutingCommandManager
+from .presentation import handlers as ui
+from .presentation.handlers import UiContext
 from .parse_mode import (
     get_parse_mode,
     escape_text,
@@ -154,7 +164,9 @@ def log_structured(level: int, message: str, **kwargs: Any) -> None:
     extra = {f"ctx_{k}": v for k, v in kwargs.items()}
     logger.log(level, message, extra=extra)
 
-ssh_manager: SSHManager | None = None
+ssh_manager: RoutingCommandManager | None = None
+#: Composition root output: application services wired to adapters.
+container: Container | None = None
 health_server: asyncio.AbstractServer | None = None
 user_connections: dict[int, str] = {}
 user_sessions: dict[int, UserSession] = {}
@@ -432,25 +444,6 @@ async def _edit_message_safely(
             raise e
 
 
-def _build_language_keyboard(active_language: str) -> InlineKeyboardMarkup:
-    """Builds the inline keyboard for language selection."""
-    buttons = []
-    for code in SUPPORTED_LANGUAGES:
-        prefix = "✅ " if code == active_language else ""
-        buttons.append([
-            InlineKeyboardButton(
-                f"{prefix}{get_language_label(code)}",
-                callback_data=f"set_language_{code}"
-            )
-        ])
-
-    buttons.append([
-        InlineKeyboardButton(
-            translate('button_back_main_menu', active_language),
-            callback_data='main_menu'
-        )
-    ])
-    return InlineKeyboardMarkup(buttons)
 
 
 def _host_key_mismatch_message(alias: str, exc: HostKeyMismatch, language: str) -> str:
@@ -581,6 +574,15 @@ async def save_server(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     owner_id = update.effective_user.id
     try:
         alias = validate_alias(context.user_data.get('alias', ''))
+        if is_reserved_alias(alias):
+            audit.record("server.add_denied", user_id=owner_id, alias=alias,
+                         outcome="denied", reason="reserved_alias")
+            await _send_message_safely(
+                update.message.chat,
+                translate('alias_reserved', language, alias=alias),
+                user_id,
+            )
+            return
         hostname = validate_hostname(context.user_data.get('hostname', ''))
         username = validate_username(context.user_data.get('user', ''))
         key_path = context.user_data.get('key_path')
@@ -639,42 +641,20 @@ async def cancel_add_server(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     context.user_data.clear()
     return ConversationHandler.END
 
-@authorized
-async def remove_server_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Displays a menu of servers to remove."""
-    user_id = _extract_user_id(update)
-    language = _get_user_language(user_id)
-    servers = get_all_servers(user_id)
-    if not servers:
-        message = translate('no_servers_to_remove', language)
-        if update.callback_query:
-            await update.callback_query.answer()
-            await _edit_message_safely(update.callback_query.message, message, user_id)
-        else:
-            await _send_message_safely(update.effective_chat, message, user_id)
-        return
-
-    remove_label = translate('button_remove_server', language)
-    keyboard = [
-        [InlineKeyboardButton(f"{remove_label} {server['alias']}", callback_data=f"remove_{server['alias']}")]
-        for server in servers
-    ]
-    keyboard.append([
-        InlineKeyboardButton(
-            translate('button_back_main_menu', language),
-            callback_data="main_menu"
-        )
-    ])
-
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    text = '🗑️ **Select a server to remove:**'
-    if update.callback_query:
-        await update.callback_query.answer()
-        await _edit_message_safely(update.callback_query.message, text, user_id, reply_markup=reply_markup, preformatted=True)
-    else:
-        await _send_message_safely(update.effective_chat, text, user_id, reply_markup=reply_markup, preformatted=True)
 
 # --- Navigation ---
+@authorized
+async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Renders the root screen through the presentation layer."""
+    logger.info("Displaying main menu for user_id: %s", _extract_user_id(update))
+    await ui.main_menu(update, context)
+
+
+@authorized
+async def language_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Renders the language picker through the presentation layer."""
+    await ui.language_menu(update, context)
+
 @authorized
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Sends the main menu."""
@@ -682,173 +662,98 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info(f"User {user_id} initiated /start command.")
     await main_menu(update, context)
 
-@authorized
-async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Displays the main menu with options, dynamically showing admin buttons."""
-    user_id = _extract_user_id(update)
-    logger.info(f"Displaying main menu for user_id: {user_id}.")
-    language = _get_user_language(user_id)
-
-    # Base keyboard for all users
-    keyboard = [
-        [InlineKeyboardButton(
-            translate('button_connect_server', language),
-            callback_data='connect_server_menu'
-        )],
-        [
-            InlineKeyboardButton(
-                translate('button_add_server', language),
-                callback_data='add_server_start'
-            ),
-            InlineKeyboardButton(
-                translate('button_remove_server', language),
-                callback_data='remove_server_menu'
-            )
-        ],
-        [InlineKeyboardButton(
-            translate('button_language_settings', language),
-            callback_data='language_menu'
-        )],
-    ]
-
-    # Admin-only buttons
-    if config.whitelisted_users and user_id == config.whitelisted_users[0]:
-        admin_buttons = [
-            [
-                InlineKeyboardButton("💾 Backup", callback_data='backup'),
-                InlineKeyboardButton("🔄 Restore", callback_data='restore')
-            ],
-            [InlineKeyboardButton("🔄 Update Bot", callback_data='update_bot')],
-        ]
-        keyboard.extend(admin_buttons)
-
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    # Pro version: Use MessageBuilder for safe, rich text formatting
-    parse_mode = _get_user_parse_mode(user_id)
-    builder = MessageBuilder(parse_mode)
-    builder.add_bold("🐧 Welcome to your Linux Admin Bot!")
-    builder.add_line()
-    builder.add_line()
-    builder.add_text("What would you like to do?")
-
-    menu_text = builder.build()
-
-    if update.callback_query:
-        await update.callback_query.answer()
-        await _edit_message_safely(update.callback_query.message, menu_text, user_id, reply_markup=reply_markup, preformatted=True)
-    else:
-        await _send_message_safely(update.message.chat, menu_text, user_id, reply_markup=reply_markup, preformatted=True)
 
 
-@authorized
-async def language_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Displays or handles the language selection menu."""
-    user_id = _extract_user_id(update)
-    language = _get_user_language(user_id)
-    title = translate('language_menu_title', language)
-    description = translate(
-        'language_menu_description',
-        language,
-        language_name=get_language_label(language)
-    )
-    text = f"{title}\n\n{description}"
-    reply_markup = _build_language_keyboard(language)
-
-    message = _resolve_message(update)
-    if update.callback_query:
-        await update.callback_query.answer()
-        await _edit_message_safely(update.callback_query.message, text, user_id, reply_markup=reply_markup)
-    elif message:
-        await _send_message_safely(message.chat, text, user_id, reply_markup=reply_markup)
 
 
-@authorized
-async def set_language(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Saves the selected language preference for the current user."""
-    query = update.callback_query
-    user_id = update.effective_user.id
-    lang_code = query.data.split('_', 2)[2]
-
-    if lang_code not in SUPPORTED_LANGUAGE_SET:
-        await query.answer(_translate_for_user(user_id, 'language_unsupported'), show_alert=True)
-        return
-
-    set_user_language_preference(user_id, lang_code)
-    user_language_cache[user_id] = lang_code
-    await query.answer(translate('language_saved_toast', lang_code), show_alert=False)
-
-    title = translate('language_updated', lang_code, language_name=get_language_label(lang_code))
-    description = translate(
-        'language_menu_description',
-        lang_code,
-        language_name=get_language_label(lang_code)
-    )
-    text = f"{title}\n\n{description}"
-    reply_markup = _build_language_keyboard(lang_code)
-    await _edit_message_safely(query.message, text, user_id, reply_markup=reply_markup)
 
 
 # --- Server Connection ---
-@authorized
-async def connect_server_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Displays a menu of servers to connect to."""
-    logger.info("Displaying connect server menu.")
-    user_id = _extract_user_id(update)
+
+def _referer_alias(query) -> str:
+    """Extracts the target alias from a ``connect_<alias>`` callback."""
+    return (query.data or "").split("_", 1)[-1]
+
+
+async def _open_dashboard(update: Update, user_id: int, alias: str) -> None:
+    """Renders the connected-target panel through the presentation layer."""
+    query = update.callback_query
     language = _get_user_language(user_id)
-    servers = get_all_servers(user_id)
-    if not servers:
-        await update.callback_query.answer(translate('no_servers_configured', language), show_alert=True)
-        return
+    parse_mode = _get_user_parse_mode(user_id)
+    text = ui.dashboard_text(language, alias, is_admin=permissions.is_admin(user_id), parse_mode=parse_mode)
+    markup = ui.dashboard_markup(language, alias, is_admin=permissions.is_admin(user_id))
+    if query is not None and query.message is not None:
+        await _edit_message_safely(query.message, text, user_id, reply_markup=markup, preformatted=True)
+    elif update.effective_message is not None:
+        await _send_message_safely(
+            update.effective_message.chat, text, user_id, reply_markup=markup, preformatted=True
+        )
 
-    keyboard = []
-    for server in servers:
-        keyboard.append([InlineKeyboardButton(f"🖥️ {server['alias']}", callback_data=f"connect_{server['alias']}")])
-    keyboard.append([InlineKeyboardButton(
-        translate('button_back_main_menu', language),
-        callback_data='main_menu'
-    )])
-
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.callback_query.answer()
-    await _edit_message_safely(
-        update.callback_query.message,
-        translate('connect_menu_prompt', language),
-        user_id,
-        reply_markup=reply_markup
-    )
 
 @authorized
 @rate_limit("connect", max_calls=6, period=30.0)
 async def handle_server_connection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Connects to a stored server after alias, policy and host key checks."""
+    """Connects to a target: a stored SSH server, or the bot's own host.
+
+    The self-host target skips the SSH handshake (there is no SSH hop) but
+    still proves the local transport answers before the UI claims success, and
+    is only reachable for administrators — the catalog policy is fail-closed.
+    """
     query = update.callback_query
-    
     user_id = update.effective_user.id
-
-    # استخراج اطلاعات
-    try:
-        raw_alias = query.data.split('_', 1)[1]
-    except IndexError:
-        await query.answer("❌ Invalid request data.", show_alert=True)
-        return
-
-    # Strict input validation: aliases are validated at add time, so any other
-    # callback payload is an attempt to poke the bot.
-    alias = raw_alias.strip()
-    if not re.match(r'^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}$', alias):
-        logger.warning("SECURITY ALERT: User %s tried malicious alias: %r", user_id, raw_alias)
-        audit.record("connect.invalid_alias", user_id=user_id, outcome="denied", alias=raw_alias[:64])
-        await query.answer("🚫 Security Violation: Invalid alias format.", show_alert=True)
-        return
-
     language = _get_user_language(user_id)
-    server = await asyncio.to_thread(get_server_record, user_id, alias)
-    if not server:
-        await query.answer(translate('server_not_found', language, alias=alias), show_alert=True)
+
+    alias = _referer_alias(query).strip()
+    try:
+        validate_alias(alias)
+    except ValueError:
+        logger.warning("SECURITY ALERT: User %s tried malicious alias: %r", user_id, query.data)
+        audit.record("connect.invalid_alias", user_id=user_id, outcome="denied", alias=(query.data or "")[:64])
+        await query.answer(translate("invalid_request", language), show_alert=True)
         return
 
-    decision = DESTINATIONS.evaluate(server.get("hostname", ""))
+    principal = Principal(user_id=user_id, is_admin=permissions.is_admin(user_id))
+    try:
+        target = services().catalog.find(principal, alias)
+    except DomainError as exc:
+        audit.record(
+            "connect.denied", user_id=user_id, alias=alias, outcome="denied", reason=type(exc).__name__
+        )
+        await query.answer(
+            translate(exc.i18n_key, language, **exc.context), show_alert=True
+        )
+        return
+
+    await query.answer()
+
+    if target.is_local:
+        await _edit_message_safely(
+            query.message, translate("connecting_to_server", language, alias=translate("button_self_host", language)), user_id
+        )
+        probe_ok = False
+        try:
+            async with asyncio.timeout(10.0):
+                async for _, __ in ssh_manager.run_command(user_id, alias, "printf ready"):
+                    pass
+            probe_ok = True
+        except (TimeoutError, Exception) as exc:  # noqa: BLE001 - surfaced to the admin only
+            logger.error("Local self-host probe failed: %s", exc, exc_info=True)
+        if not probe_ok:
+            audit.record("connect.local_failed", user_id=user_id, alias=alias, outcome="error")
+            await _edit_message_safely(
+                query.message,
+                translate("self_host_disabled", language),
+                user_id,
+            )
+            return
+
+        user_connections[user_id] = alias
+        audit.record("connect.local", user_id=user_id, alias=alias, outcome="success")
+        logger.info("SELF-HOST CONN: user %s opened local target", user_id)
+        await _open_dashboard(update, user_id, alias)
+        return
+
+    decision = DESTINATIONS.evaluate(target.hostname)
     if not decision.allowed:
         METRICS.inc("destination_denied_total", reason=decision.reason)
         audit.record(
@@ -856,64 +761,41 @@ async def handle_server_connection(update: Update, context: ContextTypes.DEFAULT
             user_id=user_id,
             alias=alias,
             outcome="denied",
-            hostname=server.get("hostname"),
+            hostname=target.hostname,
             reason=decision.reason,
         )
         await query.answer(
             translate(
                 "destination_denied",
                 language,
-                hostname=server.get("hostname", alias),
+                hostname=target.hostname or alias,
                 reason=decision.reason,
             ),
             show_alert=True,
         )
         return
 
-    await query.answer()
-
     try:
-        await _edit_message_safely(query.message, translate('connecting_to_server', language, alias=alias), user_id)
+        await _edit_message_safely(query.message, translate("connecting_to_server", language, alias=alias), user_id)
 
-        # 3. SECURITY: Hard Timeout (جلوگیری از فریز شدن ربات)
-        # اتصال نباید بیشتر از ۱۰ ثانیه طول بکشه.
-        async def _connect_with_timeout():
+        async def _connect_with_timeout() -> None:
             async for _, __ in ssh_manager.run_command(user_id, alias, "echo 'Secure Handshake'"):
                 pass
 
-        # Modern async timeout (Python 3.11+)
         try:
             async with asyncio.timeout(10.0):
                 await _connect_with_timeout()
         except TimeoutError:
-            logger.warning(f"Connection timeout for {alias} (User: {user_id})")
-            await _edit_message_safely(query.message, translate('error_connection_refused', language, alias=alias), user_id)
+            logger.warning("Connection timeout for %s (user %s)", alias, user_id)
+            await _edit_message_safely(
+                query.message, translate("error_connection_refused", language, alias=alias), user_id
+            )
             return
 
-        # ثبت موفقیت
         user_connections[user_id] = alias
-        logger.info(f"SECURE CONN: User {user_id} -> Server '{alias}'")
+        logger.info("SECURE CONN: user %s -> %s", user_id, alias)
+        await _open_dashboard(update, user_id, alias)
 
-        # چیدمان دکمه‌ها (همون چیدمان تمیز قبلی)
-        keyboard = [
-            [InlineKeyboardButton("▶️ Run Command", callback_data=f"run_command_{alias}"),
-             InlineKeyboardButton("🖥️ Terminal", callback_data=f"start_shell_{alias}")],
-            [InlineKeyboardButton("📊 Status", callback_data=f"server_status_menu_{alias}"),
-             InlineKeyboardButton("⚙️ Sys Ops", callback_data=f"system_commands_menu_{alias}")],
-            [InlineKeyboardButton("🔧 Services", callback_data=f"service_management_menu_{alias}"),
-             InlineKeyboardButton("⚙️ Processes", callback_data=f"process_management_menu_{alias}")],
-            [InlineKeyboardButton("🐳 Docker", callback_data=f"docker_management_menu_{alias}"),
-             InlineKeyboardButton("📦 Packages", callback_data=f"package_management_menu_{alias}")],
-            [InlineKeyboardButton("📁 Files", callback_data=f"file_manager_menu_{alias}"),
-             InlineKeyboardButton("🔥 Firewall", callback_data=f"firewall_management_menu_{alias}")],
-            [InlineKeyboardButton("🔌 Disconnect", callback_data=f"disconnect_{alias}")]
-        ]
-        
-        text = translate('connected_to_server', language, alias=alias)
-        await _edit_message_safely(query.message, text, user_id, reply_markup=InlineKeyboardMarkup(keyboard))
-
-    # --- Secure Error Handling ---
-    # ارورها رو کامل لاگ می‌کنیم ولی به کاربر جزئیات فنی نمیدیم
     except HostKeyMismatch as exc:
         METRICS.inc("ssh_host_key_mismatch_total")
         audit.record(
@@ -925,37 +807,28 @@ async def handle_server_connection(update: Update, context: ContextTypes.DEFAULT
             presented=exc.actual,
         )
         await _edit_message_safely(
-            query.message,
-            _host_key_mismatch_message(alias, exc, language),
-            user_id,
-            preformatted=True,
+            query.message, _host_key_mismatch_message(alias, exc, language), user_id, preformatted=True
         )
     except DestinationDenied as exc:
         METRICS.inc("destination_denied_total", reason=exc.reason)
-        audit.record(
-            "connect.destination_denied",
-            user_id=user_id,
-            alias=alias,
-            outcome="denied",
-            reason=exc.reason,
-        )
+        audit.record("connect.destination_denied", user_id=user_id, alias=alias, outcome="denied", reason=exc.reason)
         await query.answer(
             translate("destination_denied", language, hostname=exc.hostname, reason=exc.reason),
             show_alert=True,
         )
     except asyncssh.PermissionDenied:
-        logger.warning(f"AUTH FAIL: {alias} | User: {user_id}")
-        await _send_connection_error(query, user_id, 'error_auth_failed', alias=alias)
+        logger.warning("AUTH FAIL: %s | user %s", alias, user_id)
+        await _send_connection_error(query, user_id, "error_auth_failed", alias=alias)
     except ConnectionRefusedError:
-        logger.warning(f"CONN REFUSED: {alias}")
-        await _send_connection_error(query, user_id, 'error_connection_refused', alias=alias)
+        logger.warning("CONN REFUSED: %s", alias)
+        await _send_connection_error(query, user_id, "error_connection_refused", alias=alias)
     except socket.gaierror:
-        logger.warning(f"DNS FAIL: {alias}")
-        await _send_connection_error(query, user_id, 'error_host_not_found', alias=alias, error="DNS Error")
-    except Exception as e:
-        # امنیت: لاگ کردن کامل ارور برای ادمین، اما ارسال پیام عمومی برای کاربر
-        logger.error(f"UNEXPECTED ERROR in connection handler: {e}", exc_info=True)
-        await _send_connection_error(query, user_id, 'error_generic_connection', alias=alias, error="Internal Security Error")
+        logger.warning("DNS FAIL: %s", alias)
+        await _send_connection_error(query, user_id, "error_host_not_found", alias=alias, error="DNS")
+    except Exception as exc:  # noqa: BLE001 - never leak internals to the user
+        logger.error("UNEXPECTED ERROR in connection handler: %s", exc, exc_info=True)
+        await _send_connection_error(query, user_id, "error_generic_connection", alias=alias, error="Internal error")
+
 
 # --- Debugging ---
 async def send_debug_message(update: Update, text: str):
@@ -2490,7 +2363,11 @@ async def disconnect(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             del user_connections[user_id]
 
         logger.info(f"User {user_id} disconnected from {alias}.")
-        await _edit_message_safely(query.message, "🔌 **Disconnected successfully.**", user_id, preformatted=True)
+        await _edit_message_safely(
+            query.message,
+            translate("disconnected", _get_user_language(user_id), alias=alias),
+            user_id,
+        )
         await main_menu(update, context)
 
     except Exception as e:
@@ -3070,8 +2947,9 @@ async def remove_server_confirm(update: Update, context: ContextTypes.DEFAULT_TY
 # --- Security Audit ---
 @admin_authorized
 @rate_limit("admin", max_calls=10, period=60.0)
+@admin_authorized
 async def audit_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Shows recent security events. Usage: ``/audit [count]``."""
+    """Shows recent security events (admin only). Usage: ``/audit [count]``."""
     user_id = update.effective_user.id
     language = _get_user_language(user_id)
     args = context.args or []
@@ -3113,6 +2991,51 @@ async def audit_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         user_id,
         preformatted=True,
     )
+
+
+
+@admin_authorized
+async def audit_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Renders the audit screen inside the menu flow, back-navigation included."""
+    user_id = _extract_user_id(update)
+    language = _get_user_language(user_id)
+    parse_mode = _get_user_parse_mode(user_id)
+    records = audit.tail(12)
+    METRICS.inc("audit_views_total")
+    audit.record("audit.viewed", user_id=user_id, limit=12)
+
+    if not records:
+        lines = [translate("audit_empty", language)]
+    else:
+        lines = [translate("audit_title", language, count=len(records))]
+        for record in records:
+            target = record.get("alias") or record.get("context", {}).get("hostname") or "-"
+            lines.append(
+                "{ts}  {event}  {outcome}  user={uid}  target={target}".format(
+                    ts=str(record.get("timestamp", ""))[11:19],
+                    event=record.get("event", "unknown"),
+                    outcome=record.get("outcome", "-"),
+                    uid=record.get("user_id", "-"),
+                    target=target,
+                )
+            )
+    text = "\n".join(lines)
+    if len(text) > 3900:
+        text = text[:3900] + "…"
+    markup = InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton(translate("menu_admin", language), callback_data="admin_menu")],
+            [InlineKeyboardButton(translate("button_main_menu", language), callback_data="main_menu")],
+        ]
+    )
+    query = update.callback_query
+    if query is not None and query.message is not None:
+        await query.answer()
+        await _edit_message_safely(query.message, text, user_id, reply_markup=markup, preformatted=True)
+    elif update.effective_message is not None:
+        await _send_message_safely(
+            update.effective_message.chat, text, user_id, reply_markup=markup, preformatted=True
+        )
 
 
 # --- Admin Dashboard ---
@@ -3425,6 +3348,12 @@ async def _readiness_probe() -> tuple[bool, dict[str, object]]:
     detail["ssh_manager"] = ssh_manager is not None
     detail["access_mode"] = permissions.mode
     detail["audit_writable"] = await asyncio.to_thread(audit.is_writable)
+    # The catalogs are package data: prove they are readable in this
+    # deployment (wheel install, frozen binary, source checkout) rather than
+    # discovering a missing catalog only through a user's screen.
+    from .presentation.i18n import translate
+
+    detail["i18n"] = translate("servers_self_host_note", "en") != "servers_self_host_note"
 
     if ssh_manager is not None:
         try:
@@ -3467,8 +3396,9 @@ async def post_init(application: Application):
     await _start_health_endpoint()
     await application.bot.set_my_commands([
         BotCommand("start", "Display the main menu"),
+        BotCommand("menu", "Open the main menu"),
         BotCommand("add_server", "Start the guided process to add a new server"),
-        BotCommand("check_updates", "Check for new bot updates"),
+        BotCommand("help", "Explain how the bot works"),
         BotCommand("update_bot", "Update the bot to the latest version"),
         BotCommand("debug", "Toggle verbose debug messages"),
         BotCommand("exit_shell", "Terminate an active interactive shell session"),
@@ -3476,6 +3406,81 @@ async def post_init(application: Application):
         BotCommand("dashboard", "Admin dashboard (admin only)"),
         BotCommand("audit", "Show recent security events (admin only)")
     ])
+
+def _principal(update: Update) -> Principal:
+    """Builds the acting principal from an update (single source of truth)."""
+    user_id = _extract_user_id(update) or 0
+    return Principal(user_id=user_id, is_admin=permissions.is_admin(user_id))
+
+
+def _user_display_name(update: Update) -> str:
+    """Best-effort display name for greetings, never fails on partial updates."""
+    user = update.effective_user
+    if user is None:
+        return "there"
+    return user.full_name or user.username or str(user.id)
+
+
+async def _ui_answer(query, text: str | None = None, alert: bool = False) -> None:
+    """Answers a callback query with an optional localized toast/alert."""
+    if query is None:
+        return
+    try:
+        await query.answer(text=text or None, show_alert=bool(alert))
+    except Exception as exc:  # pragma: no cover - Telegram-side hiccups
+        logger.debug("callback answer failed: %s", exc)
+
+
+def _persist_language(user_id: int, code: str) -> None:
+    """Stores a language choice and refreshes the in-process cache."""
+    set_user_language_preference(user_id, code)
+    user_language_cache[user_id] = code
+    _get_user_language.cache_clear()
+
+
+def _build_container(ssh_core: SSHManager) -> Container:
+    """Composition root: wires adapters, policies and use cases once."""
+    policy = TargetAccessPolicy(local_enabled=config.local_target_enabled)
+    return build_service(
+        ssh_transport=SshTransport(ssh_core),
+        local_transport=LocalTransport(),
+        policy=policy,
+    )
+
+
+def services() -> Container:
+    """Returns the wired container, building it on first use.
+
+    Handlers are also invoked directly by tests (and by the frozen binaries
+    during a smoke test) before ``main()`` ran, so the composition root must be
+    lazily constructible and idempotent.
+    """
+    global container
+    if container is None:
+        container = _build_container(SSHManager())
+        _configure_ui(container)
+    return container
+
+
+def _configure_ui(app_container: Container) -> None:
+    """Installs the presentation-layer context used by every menu handler."""
+    ui.configure(
+        UiContext(
+            get_language=_get_user_language,
+            get_parse_mode=_get_user_parse_mode,
+            principal=_principal,
+            catalog=app_container.catalog,
+            active_target=lambda user_id: user_connections.get(user_id),
+            server_limit=get_user_server_limit,
+            access_mode=lambda: permissions.mode,
+            user_name=_user_display_name,
+            send=_send_message_safely,
+            edit=_edit_message_safely,
+            answer=_ui_answer,
+            persist_language=_persist_language,
+        )
+    )
+
 
 def _configure_security(cfg) -> None:
     """Applies the configuration to the security singletons.
@@ -3514,6 +3519,14 @@ def _configure_security(cfg) -> None:
             "can reach the configured servers. Set access_mode to 'whitelist' or "
             "'admin_only' in config.json."
         )
+    if cfg.local_target_enabled and not permissions.admins:
+        logger.warning(
+            "Self-host target is enabled but no administrator is configured "
+            "(whitelisted_users is empty): the bot's own host will not be reachable."
+        )
+    if not cfg.local_target_enabled:
+        logger.info("Self-host target disabled by configuration.")
+
     if DESTINATIONS.mode == ALLOW_ALL_POLICY:
         logger.warning(
             "SECURITY: destination_policy='allow_all' - any host, including public "
@@ -3534,45 +3547,13 @@ def _configure_security(cfg) -> None:
     METRICS.set("access_mode_open", 1 if mode == OPEN_ACCESS_MODE else 0)
 
 
-def main() -> None:
+def build_application() -> Application:
+    """Builds the PTB application and registers every handler.
+
+    Extracted from ``main`` so the wiring is testable: a test can build the
+    application and assert that every callback pattern has a handler, without
+    a token, a network or a polling loop.
     """
-    Initializes and runs the Telegram bot application.
-    This is the main entry point of the bot.
-    """
-    # Modern lock file handling (2026 standards)
-    if LOCK_FILE.exists():
-        try:
-            pid = int(LOCK_FILE.read_text(encoding='utf-8').strip())
-            # Check if the process is running
-            os.kill(pid, 0)
-            logger.error(f"Lock file exists and process {pid} is running. Another instance of the bot is likely running.")
-            sys.exit(1)
-        except (OSError, ValueError, ProcessLookupError):
-            # Lock file is stale, remove it
-            remove_lock_file()
-
-    create_lock_file()
-
-    global ssh_manager
-
-    # --- Pre-flight Checks ---
-    if not config.telegram_token:
-        logger.error("FATAL: Telegram token is not configured. Please run the setup wizard.")
-        sys.exit(1)
-
-    _configure_security(config)
-
-    # --- Core Component Initialization ---
-    try:
-        initialize_database()
-        ssh_manager = SSHManager()
-    except Exception as e:
-        logger.critical(f"FATAL: Error during database or SSH manager initialization: {e}", exc_info=True)
-        sys.exit(1)
-
-    audit.record("bot.started", outcome="success", access_mode=permissions.mode)
-    METRICS.set("ready", 1)
-
     # --- Application Setup ---
     # Configure request timeout to prevent ReadTimeout errors
     # Default timeout is 5 seconds, increasing to 30 seconds for better reliability
@@ -3705,9 +3686,15 @@ def main() -> None:
     # --- UI & Menu Handlers ---
     application.add_handler(CallbackQueryHandler(main_menu, pattern='^main_menu$'))
     application.add_handler(CallbackQueryHandler(language_menu, pattern='^language_menu$'))
-    application.add_handler(CallbackQueryHandler(set_language, pattern='^set_language_'))
-    application.add_handler(CallbackQueryHandler(connect_server_menu, pattern='^connect_server_menu$'))
-    application.add_handler(CallbackQueryHandler(remove_server_menu, pattern='^remove_server_menu$'))
+    application.add_handler(CallbackQueryHandler(authorized(ui.set_language), pattern='^set_language_'))
+    application.add_handler(CallbackQueryHandler(authorized(ui.servers_menu), pattern='^connect_server_menu$'))
+    application.add_handler(CallbackQueryHandler(authorized(ui.remove_server_menu), pattern='^remove_server_menu$'))
+    application.add_handler(CallbackQueryHandler(authorized(ui.tools_menu), pattern='^tools_menu$'))
+    application.add_handler(CallbackQueryHandler(authorized(ui.settings_menu), pattern='^settings_menu$'))
+    application.add_handler(CallbackQueryHandler(authorized(ui.help_menu), pattern='^help_menu$'))
+    application.add_handler(CallbackQueryHandler(admin_authorized(ui.admin_menu), pattern='^admin_menu$'))
+    application.add_handler(CallbackQueryHandler(authorized(ui.dashboard_panel), pattern='^dashboard_menu$'))
+    application.add_handler(CallbackQueryHandler(admin_authorized(audit_menu), pattern='^audit_menu$'))
     application.add_handler(CallbackQueryHandler(update_bot_command, pattern='^update_bot$'))
     application.add_handler(CallbackQueryHandler(handle_server_connection, pattern='^connect_'))
     application.add_handler(CallbackQueryHandler(start_shell_session, pattern='^start_shell_'))
@@ -3746,6 +3733,64 @@ def main() -> None:
     application.add_handler(CommandHandler('exit_shell', exit_shell))
     application.add_handler(CommandHandler('update_bot', update_bot_command))
     application.add_handler(CommandHandler('dashboard', dashboard_command))
+    application.add_handler(CommandHandler('audit', audit_command))
+    application.add_handler(CommandHandler('help', authorized(ui.help_menu)))
+    application.add_handler(CommandHandler('menu', main_menu))
+
+    return application
+
+
+def main() -> None:
+    """
+    Initializes and runs the Telegram bot application.
+    This is the main entry point of the bot.
+    """
+    # Modern lock file handling (2026 standards)
+    if LOCK_FILE.exists():
+        try:
+            pid = int(LOCK_FILE.read_text(encoding='utf-8').strip())
+            # Check if the process is running
+            os.kill(pid, 0)
+            logger.error(f"Lock file exists and process {pid} is running. Another instance of the bot is likely running.")
+            sys.exit(1)
+        except (OSError, ValueError, ProcessLookupError):
+            # Lock file is stale, remove it
+            remove_lock_file()
+
+    create_lock_file()
+
+    global ssh_manager, container
+
+    # --- Pre-flight Checks ---
+    if not config.telegram_token:
+        logger.error("FATAL: Telegram token is not configured. Please run the setup wizard.")
+        sys.exit(1)
+
+    _configure_security(config)
+
+    # --- Core Component Initialization ---
+    global container
+    try:
+        initialize_database()
+        ssh_core = SSHManager()
+        # One entry point for both target kinds: SSH pooling for stored servers,
+        # local execution for the administrator's self-host target.
+        ssh_manager = RoutingCommandManager(
+            ssh_core,
+            local=LocalTransport(),
+            policy=TargetAccessPolicy(local_enabled=config.local_target_enabled),
+            is_admin=permissions.is_admin,
+        )
+        container = _build_container(ssh_core)
+        _configure_ui(container)
+    except Exception as e:
+        logger.critical(f"FATAL: Error during database or SSH manager initialization: {e}", exc_info=True)
+        sys.exit(1)
+
+    audit.record("bot.started", outcome="success", access_mode=permissions.mode)
+    METRICS.set("ready", 1)
+
+    application = build_application()
 
     # --- Start Bot ---
     logger.info("Bot is starting...")

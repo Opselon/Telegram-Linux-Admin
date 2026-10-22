@@ -64,6 +64,40 @@ This project is designed for professionals, sysadmins, DevOps engineers, and ser
 
 ---
 
+## 🆕 What's new in 4.0
+
+**Your own server, not just the remote ones.** The administrator who installs
+the bot now gets a built-in **self-host target** — the machine running the bot —
+with the same panel as any SSH server:
+
+* ⚡ **Run commands, open a terminal, manage services, Docker, packages, files,
+  firewall, processes, disks and ports** on the bot's own host, with no SSH
+  loopback and no credentials to configure.
+* 🔒 **Administrator-only and fail-closed**: the target is resolved from the
+  administrator identity, re-checked before every command, and can be removed
+  entirely with `"local_target_enabled": false` (or
+  `TLA_LOCAL_TARGET_ENABLED=0`).
+* 📝 **Audited**: every self-host session logs `connect.local`; a non-admin
+  attempt is denied and recorded as `connect.denied`.
+
+**A UI that looks like a product, not a script**: grouped dashboards
+(Command / System / Workloads / Storage / Network), dedicated Servers, Tools,
+Settings, Help and Administration screens, consistent navigation and
+✅-marked language selection — all rendered through a single parse-mode-aware
+view layer.
+
+**Clean, layered architecture**: `domain` → `application` → `infrastructure` →
+`presentation`, with ports for persistence and command transports. One adapter
+per target kind; menus never branch on "is this local or SSH". Read
+[`ARCHITECTURE.md`](ARCHITECTURE.md) for the dependency rule, the security
+guards around the self-host target, and how to add a new target kind.
+
+**15 languages, 1:1 parity**: catalogs live in
+`src/presentation/i18n/catalog/*.json`, and CI fails if any language is missing
+a key *or* a placeholder. No screen silently falls back to English markup.
+
+---
+
 # 🔐 Extreme Security — Post-Quantum Ready
 
 This bot is built with **enterprise-grade security standards**:

@@ -1,3 +1,4 @@
+import shutil
 import os
 import zipfile
 from unittest.mock import AsyncMock, patch
@@ -74,7 +75,9 @@ async def test_restore_command(mock_remove, mock_exists, mock_zipfile, mock_sys,
         f.write("dummy zip content")
 
     async def mock_download(path):
-        os.rename(dummy_zip_path, path)
+        # shutil.move works across filesystems (os.rename would fail with
+        # EXDEV when the download directory is not on the same mount as /tmp).
+        shutil.move(dummy_zip_path, path)
 
     update.message.document.get_file.return_value.download_to_drive = AsyncMock(side_effect=mock_download)
 
