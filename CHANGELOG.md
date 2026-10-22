@@ -4,6 +4,41 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 semantic versioning.
 
+## [3.4.0] — 2026-10-22
+
+Setup gets out of the way: one command configures a production-grade bot, and
+both the one-liner and the guided wizard are covered by an end-to-end suite.
+
+### Added
+
+- **One-command setup** — `install.sh --token … --admin-id …` (or
+  `curl …/install.sh | sudo bash -s -- …`, or
+  `scripts/setup.py --easy`) takes a fresh host to a running systemd service:
+  checkout update, venv, fail-closed config (`whitelist` + `deny_public`, no
+  destinations, mode `0600`), database, `telegram_bot.service`, auto-update
+  cron, start and readiness wait. Idempotent — re-running updates in place.
+- **`--json` summary** for automation: paths, service state, health payloads,
+  and a redacted token (`1234…cdef`); the real token never leaves the `0600`
+  config.
+- **Health port selection** (`--port`, default `8081`, bound to `127.0.0.1`)
+  that walks upward when the port is taken and tells systemd the chosen value.
+- **`scripts/e2e_setup.sh`** — end-to-end harness that runs the easy path and
+  the interactive wizard in throwaway copies, boots each resulting bot and
+  checks `/healthz`, `/readyz`, `/metrics` plus a live Telegram `getMe`.
+- **`tests/test_easy_setup.py`** — pytest coverage of argument parsing,
+  credential discovery, the fail-closed config, systemd unit rendering,
+  the full `easy_setup` pipeline, both wizard routes, and (opt-in via
+  `TLA_E2E_TOKEN`) a real bot process against the real API.
+
+### Fixed
+
+- `scripts/setup.py` no longer aborts the management menu with an
+  indentation error on the final branch.
+- Percent signs and quotes in paths are escaped in generated systemd units,
+  so a checkout under `100% complete/` no longer produces a broken unit.
+- The service account follows `SUDO_USER`, so `sudo ./install.sh` runs the
+  unit as the checkout owner instead of root.
+
 ## [3.3.0] — 2026-10-22
 
 The maintenance wave: the bot now runs its own housekeeping, shows live job
