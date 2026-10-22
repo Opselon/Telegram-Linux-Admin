@@ -81,6 +81,8 @@ def clean_env(tmp_path: Path, **extra: str) -> dict[str, str]:
 
 
 def run_setup(tmp_path: Path, *args: str, stdin: str | None = None) -> subprocess.CompletedProcess:
+    # setup.py writes UTF-8 (including the banner); decoding with the Windows
+    # locale code page would fail, so pin the pipe encoding explicitly.
     return subprocess.run(
         [sys.executable, str(SETUP), *args],
         cwd=str(tmp_path),
@@ -88,6 +90,8 @@ def run_setup(tmp_path: Path, *args: str, stdin: str | None = None) -> subproces
         input=stdin,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=180,
     )
 
@@ -457,7 +461,8 @@ class TestCli:
         env = clean_env(tmp_path, TLA_BOT_TOKEN=TOKEN, TLA_ADMIN_ID="4242")
         result = subprocess.run(
             [sys.executable, str(SETUP), "--easy", "--no-service", "--no-cron", "--no-start"],
-            cwd=str(tmp_path), env=env, capture_output=True, text=True, timeout=180,
+            cwd=str(tmp_path), env=env, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=180,
         )
         assert result.returncode == 0, result.stdout + result.stderr
         data = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
@@ -563,6 +568,8 @@ class TestRealBotProcess:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
         try:
             deadline = time.monotonic() + 60
