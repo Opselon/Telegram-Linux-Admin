@@ -35,3 +35,7 @@ build/
 dist/
 *.spec
 packaging/__pycache__/
+
+# Build metadata
+telegram_linux_admin.egg-info/
+*.egg-info/

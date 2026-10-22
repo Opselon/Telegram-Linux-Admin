@@ -12,6 +12,20 @@ import pytest
 from src import ssh_manager as ssh_module
 from src.ssh_manager import HostKeyMismatch, SSHManager, wrap_remote_command
 
+#: The envelope tests execute locally what the REMOTE host runs. That needs a
+#: POSIX bash on the machine driving the test: Windows runners have none (the
+#: bot itself is defined for remote Linux servers), so there they are skipped
+#: with the reason visible instead of failing the matrix.
+#: The envelope tests locally execute exactly what the REMOTE Linux host runs,
+#: including nested `bash -lc` layers and base64 decoding. There is no Windows
+#: arrangement that reproduces that (a runner's git-bash is a broken partial
+#: environment for it, as CI proved), and the bot itself targets remote Linux
+#: servers, so the class is skipped on Windows with the reason in the marker.
+_envelope_skip = pytest.mark.skipif(
+    os.name == "nt",
+    reason="executes a POSIX bash pipeline that models the remote Linux host",
+)
+
 
 # ---------------------------------------------------------------------------
 # Command envelope (executed, not mocked)
@@ -31,6 +45,7 @@ def _run_envelope(command: str) -> str:
     return "\n".join(lines[1:])
 
 
+@_envelope_skip
 class TestRemoteCommandEnvelope:
     def test_plain_command(self):
         assert _run_envelope("echo hello world").strip() == "hello world"

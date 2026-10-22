@@ -29,7 +29,10 @@ def test_keyfile_is_created_when_missing(monkeypatch, tmp_path):
     assert decrypted == "data"
 
     assert keyfile.exists()
-    assert os.stat(keyfile).st_mode & 0o777 == 0o600
+    # POSIX mode bits are the security contract; NTFS has no equivalent (the
+    # file is protected by directory ACLs), so the assertion is POSIX-only.
+    if os.name != "nt":
+        assert os.stat(keyfile).st_mode & 0o777 == 0o600
 
     data = json.loads(keyfile.read_text(encoding="utf-8"))
     assert data.get("primary_key") == "v1"

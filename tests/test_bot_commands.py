@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import zipfile
 from unittest.mock import AsyncMock, patch
 import pytest
@@ -53,7 +54,9 @@ async def test_backup_command(mock_config):
 @patch('src.main.zipfile.ZipFile')
 @patch('src.main.os.path.exists', return_value=True)
 @patch('src.main.os.remove')
-async def test_restore_command(mock_remove, mock_exists, mock_zipfile, mock_sys, mock_execv, mock_config):
+async def test_restore_command(
+    mock_remove, mock_exists, mock_zipfile, mock_sys, mock_execv, mock_config, tmp_path
+):
     """Test the restore command."""
     mock_config.whitelisted_users = [12345]
     update = AsyncMock()
@@ -69,7 +72,7 @@ async def test_restore_command(mock_remove, mock_exists, mock_zipfile, mock_sys,
     update.message.document.file_size = 1024  # Set an integer value for the size
 
     # Create a dummy file for the download mock
-    dummy_zip_path = "/tmp/test_backup.zip"
+    dummy_zip_path = str(Path(tmp_path) / "test_backup.zip")
     with open(dummy_zip_path, "w") as f:
         f.write("dummy zip content")
 
