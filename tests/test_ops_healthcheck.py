@@ -84,9 +84,12 @@ def test_all_checks_run_even_when_db_fails(tmp_path: Any) -> None:
     import os
 
     database.close_db_connection()
-    # An impossible-to-create DB path (NUL-prefix windows path) so the
-    # database check is the failing one while audit/token stay healthy.
-    impossible = "\\\\.\\nul\\cannot\\mkdir\\here\\probe.db"
+    # A DB path whose PARENT is an existing FILE: mkdir(parent) fails on
+    # every OS, so the database check is the failing one on linux AND
+    # windows (a windows-reserved "nul" prefix is inert on POSIX).
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory")
+    impossible = str(blocker / "sub" / "probe.db")
     os.environ["TLA_DB_FILE"] = impossible
     database._conn = None
     database._conn_path = None
