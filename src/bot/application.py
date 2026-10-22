@@ -31,6 +31,11 @@ from .state import (
 )
 
 from .admin import dashboard_command, update_bot_command
+from .jobs_ui import (
+    cancel_job_callback,
+    jobs_refresh_callback,
+    jobs_status_menu,
+)
 from .backup import (
     backup, cancel_restore, restore_confirmation, restore_file,
     restore_start,
@@ -259,5 +264,12 @@ def build_application(*, on_startup=None, on_shutdown=None) -> Application:
     application.add_handler(CommandHandler('exit_shell', exit_shell))
     application.add_handler(CommandHandler('update_bot', update_bot_command))
     application.add_handler(CommandHandler('dashboard', dashboard_command))
+    application.add_handler(CommandHandler('jobs', jobs_status_menu))
+
+    # --- Jobs panel callbacks (3.3) ---
+    # Each data prefix is registered exactly once; jobscancel_ must be matched
+    # before the bare jobsrefresh so a cancel payload is never re-dispatched.
+    application.add_handler(CallbackQueryHandler(cancel_job_callback, pattern=r'^jobscancel_'))
+    application.add_handler(CallbackQueryHandler(jobs_refresh_callback, pattern=r'^jobsrefresh$'))
 
     return application
