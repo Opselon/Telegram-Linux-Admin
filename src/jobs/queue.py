@@ -138,7 +138,9 @@ class JobQueue:
         self._wake.set()
 
         for job in list(self._pending.values()):
-            self._finalize(job, JobState.CANCELLED, False, "Queue stopped before the job started", "")
+            self._finalize(
+                job, JobState.CANCELLED, False, "Queue stopped before the job started", ""
+            )
 
         tasks = [task for task in self._running_tasks.values() if not task.done()]
         if tasks:
@@ -233,7 +235,9 @@ class JobQueue:
     # -- inspection ------------------------------------------------------
     def list_pending(self, user_id: int | None = None) -> list[Job]:
         """Queued jobs in the order they will run (priority, then FIFO)."""
-        jobs = [job for job in self._pending.values() if user_id is None or job.spec.user_id == user_id]
+        jobs = [
+            job for job in self._pending.values() if user_id is None or job.spec.user_id == user_id
+        ]
         return sorted(jobs, key=lambda job: (job.spec.priority, self._seq.get(job.id, 0)))
 
     def active(self, user_id: int | None = None) -> list[Job]:
@@ -243,7 +247,9 @@ class JobQueue:
         concurrently-started jobs can share a ``time.time()`` tick and the
         random job id is not a stable ordering key.
         """
-        jobs = [job for job in self._running.values() if user_id is None or job.spec.user_id == user_id]
+        jobs = [
+            job for job in self._running.values() if user_id is None or job.spec.user_id == user_id
+        ]
         return sorted(jobs, key=lambda job: self._seq.get(job.id, 0))
 
     def cancel(self, user_id: int, job_id: str) -> bool:
@@ -267,7 +273,7 @@ class JobQueue:
 
     def stats(self) -> dict[str, int]:
         """A flat integer snapshot for /status, health probes and metrics."""
-        return {
+        series: dict[str, int] = {
             "pending": len(self._pending),
             "running": len(self._running),
             "outstanding": len(self._pending) + len(self._running),
@@ -282,6 +288,19 @@ class JobQueue:
             "max_pending_per_user": self._max_pending_per_user,
             "max_pending_total": self._max_pending_total,
         }
+        series["per_user"] = self.stats_per_user()  # type: ignore[assignment]
+        return series
+
+    def stats_per_user(self) -> dict[int, dict[str, int]]:
+        """Per-user {user_id: {running, pending}} breakdown of outstanding work."""
+        breakdown: dict[int, dict[str, int]] = {}
+        for job in list(self._pending.values()) + list(self._running.values()):
+            entry = breakdown.setdefault(job.spec.user_id, {"running": 0, "pending": 0})
+            if job.state is JobState.RUNNING:
+                entry["running"] += 1
+            else:
+                entry["pending"] += 1
+        return breakdown
 
     def set_runner_concurrency(self, value: int) -> None:
         """Changes the global cap at runtime (e.g. a /settings toggle)."""
@@ -411,9 +430,7 @@ class JobQueue:
         self._counts[state.value] = self._counts.get(state.value, 0) + 1
         future = self._futures.pop(job.id, None)
         if future is not None and not future.done():
-            future.set_result(
-                JobResult(job=job, output=output, exit_ok=exit_ok, duration=duration)
-            )
+            future.set_result(JobResult(job=job, output=output, exit_ok=exit_ok, duration=duration))
         self._emit("jobs_finished", state=state.value, exit_ok=exit_ok)
         logger.info("job %s %s (%.3fs)", job.id, state.value, duration)
         self._wake.set()
