@@ -4,6 +4,67 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 semantic versioning.
 
+## [3.2.0] — 2026-10-22
+
+The remaster: one file became a package, and the bot learned to run commands
+on the machine it lives on.
+
+### Added
+
+- **Modular architecture** (`src/bot/`) — the 3,779-line `src/main.py` was
+  split into 15+ focused modules (`state`, `application`, `process`, `servers`,
+  `commands`, `monitoring`, `docker`, `files`, `firewall`, `backup`, `packages`,
+  `processes`, `services`, `shell`, `admin`, `system`, `support`). The old
+  entry point stays importable: every 3.1 name re-exports from `src.main`, and
+  `unittest.mock.patch("src.main.<name>")` keeps working (the facade forwards
+  `__setattr__` into the shared state module, which `__getattr__` alone cannot
+  observe).
+- **Self-VPS execution** (`src/runtime/`) — one `ExecutionTarget` contract for
+  "run here" and "run over SSH". The reserved alias `self` executes commands
+  directly on the bot's own host with the same pid-first streaming, byte cap
+  and timeout semantics as the SSH path. Enabled by default;
+  `TLA_LOCAL_EXECUTION=0` disables it.
+- **Job queue** (`src/jobs/`) — bounded asyncio queue: one running command per
+  user, global concurrency cap, pending caps per user and total, priority with
+  FIFO, `dedupe_key` coalescing, cancellation, graceful drain, per-user stats.
+- **Operator policy** (`src/policy/`) — `readonly` / `standard` / `full` /
+  `locked` authority profiles layered on top of the command risk classifier,
+  with per-alias binding through the `command_profiles` config key, service
+  allowlists, extra deny regexes and per-alias `command_profiles`.
+- **Observability** (`src/observability/`) — JSON-lines file logging with
+  correlation ids and `contextvars` field binding, handler instrumentation
+  (duration, outcome, error type) and `redact()` for bot tokens, passwords,
+  bearer headers and private-key blocks.
+- **Wiring** (`src/bot/integration.py`) — the single place subsystems meet the
+  handlers: policy evaluation runs before the risk classifier on every
+  free-form command, execution is routed through the runtime resolver (local
+  and remote behind one call), queue and metrics are installed at startup and
+  drained at shutdown. Every integration accessor degrades to the 3.1 behavior
+  when its subsystem is absent.
+- **CI** — one `ci.yml` gate (ruff, mypy, workflow validation, tests on Linux
+  and Windows, wheel build + clean-venv install smoke, Docker build with
+  health-endpoint probe, pip-audit on the wheel's resolved dependencies) and a
+  rebuilt `release.yml` (three-OS PyInstaller matrix, deb + rpm packages,
+  SHA256 checksums, generated release notes on tag push).
+- 80+ tests covering the runtime targets, queue semantics, policy matrices and
+  observability contracts; 17 new integration tests drive the real handler
+  against a real local subprocess.
+
+### Changed
+
+- `/readyz` reports `transport` instead of an internal module path, and always
+  includes the SSH pool shape.
+- The wheel ships every subpackage; the console script and health endpoints
+  are verified in CI from a clean venv, not just compiled.
+
+### Fixed
+
+- `httpx`/`httpcore` read-timeout exception types are resolved to real classes;
+  3.1 referenced undefined names on every non-timeout error path.
+- Duplicate handler imports and the `post_init` parameter shadowing that
+  mypy's baseline had absorbed are gone; the per-module mypy baseline now
+  tracks each `src/bot` module, and the new subsystems are fully typed.
+
 ## [3.1.0] — 2026-10-21
 
 Hardening release: the bot now fails closed, pins host keys, refuses dangerous
