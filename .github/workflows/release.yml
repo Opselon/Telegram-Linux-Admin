@@ -136,7 +136,7 @@ jobs:
           echo "Frozen binary smoke test passed."
 
       - name: Upload binary artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bin-${{ matrix.platform_id }}
           path: dist/${{ matrix.binary_name }}
@@ -213,7 +213,7 @@ jobs:
           ls -lah packages
 
       - name: Upload packages artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-assets
           path: packages/
