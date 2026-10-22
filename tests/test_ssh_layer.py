@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import shutil
 import subprocess
 import sys
 
@@ -17,10 +16,14 @@ from src.ssh_manager import HostKeyMismatch, SSHManager, wrap_remote_command
 #: POSIX bash on the machine driving the test: Windows runners have none (the
 #: bot itself is defined for remote Linux servers), so there they are skipped
 #: with the reason visible instead of failing the matrix.
-_bash_available = shutil.which("bash") is not None or shutil.which("sh") is not None
+#: The envelope tests locally execute exactly what the REMOTE Linux host runs,
+#: including nested `bash -lc` layers and base64 decoding. There is no Windows
+#: arrangement that reproduces that (a runner's git-bash is a broken partial
+#: environment for it, as CI proved), and the bot itself targets remote Linux
+#: servers, so the class is skipped on Windows with the reason in the marker.
 _envelope_skip = pytest.mark.skipif(
-    os.name == "nt" and not _bash_available,
-    reason="local bash required to execute the remote-command envelope",
+    os.name == "nt",
+    reason="executes a POSIX bash pipeline that models the remote Linux host",
 )
 
 
