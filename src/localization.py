@@ -77,6 +77,12 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "audit_empty": "🔐 No audit events recorded yet.",
         "server_add_cancelled": "❌ Adding a server was cancelled.",
         "admin_only": "🚫 **Access Denied**\nThis is an admin-only feature.",
+        "ui_back": "🔙 Back",
+        "ui_kv_empty": "(nothing to show)",
+        "ui_nav_prev": "◀️",
+        "ui_nav_next": "▶️",
+        "ui_nav_disabled": "•",
+        "ui_page_indicator": "Page {page} / {pages}",
     },
     "ar": {
         "main_menu_welcome": "🐧 **مرحبًا بك في روبوت إدارة لينكس!**\n\nماذا تريد أن تفعل؟",
@@ -825,7 +831,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
 SUPPORTED_LANGUAGES = tuple(TRANSLATIONS.keys())
 
 
-def translate(key: str, language: str | None = None, **kwargs: str) -> str:
+def translate(key: str, language: str | None = None, **kwargs: object) -> str:
     """Returns a translated string for the given key."""
     lang = language if language in TRANSLATIONS else DEFAULT_LANGUAGE
     template = TRANSLATIONS.get(lang, TRANSLATIONS[DEFAULT_LANGUAGE]).get(key)
