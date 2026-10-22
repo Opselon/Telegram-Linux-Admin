@@ -251,8 +251,9 @@ more users. By default the service runs as the invoking user (`SUDO_USER`),
 not root.
 
 Fine-tuning flags (also accepted by `scripts/setup.py --easy`):
-`--db-file`, `--audit-dir`, `--service-name`, `--no-service`, `--no-cron`,
-`--no-start`, `--destination-policy`, `--port`, `--json`, `--yes`, `-q`.
+`--config`, `--db-file`, `--audit-dir`, `--access-mode`, `--destination-policy`,
+`--verify-timeout`, `--port`, `--no-service`, `--no-cron`, `--no-start`,
+`--json`, `--verbose`.
 
 ## Pro setup — interactive wizard
 

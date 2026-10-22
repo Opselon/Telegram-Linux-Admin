@@ -11,6 +11,17 @@ import urllib.error
 import urllib.request
 from textwrap import fill
 
+# Windows consoles default to a legacy code page (cp1252) that cannot encode
+# the box-drawing characters and emoji used by the wizard, which would abort
+# setup with UnicodeEncodeError before it writes anything. Reconfigure the
+# real streams once at import; pytest's capture objects lack reconfigure and
+# are left untouched.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass
+
 # Add the project root to the Python path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -33,46 +44,53 @@ C_RESET = "\033[0m"
 
 THEME_WIDTH = 70
 
+_JSON_MODE = False  # --json: the summary is the only line written to stdout
+
+
+def _emit(message: str) -> None:
+    """Progress output; goes to stderr in --json mode so stdout stays clean."""
+    print(message, file=sys.stderr if _JSON_MODE else sys.stdout)
+
 def print_banner():
     border = "═" * (THEME_WIDTH - 2)
     title = "TELEGRAM LINUX ADMIN SETUP"
     tagline = "Guided wizard for a secure, happy bot"
-    print(f"\n{C_BOLD}{C_CYAN}╔{border}╗{C_RESET}")
-    print(
+    _emit(f"\n{C_BOLD}{C_CYAN}╔{border}╗{C_RESET}")
+    _emit(
         f"{C_BOLD}{C_CYAN}║{C_RESET} {C_MAGENTA}{title.center(THEME_WIDTH - 4)}{C_RESET} {C_BOLD}{C_CYAN}║{C_RESET}"
     )
-    print(
+    _emit(
         f"{C_BOLD}{C_CYAN}║{C_RESET} {C_DIM}{tagline.center(THEME_WIDTH - 4)}{C_RESET} {C_BOLD}{C_CYAN}║{C_RESET}"
     )
-    print(f"{C_BOLD}{C_CYAN}╚{border}╝{C_RESET}\n")
+    _emit(f"{C_BOLD}{C_CYAN}╚{border}╝{C_RESET}\n")
 
 def print_header(title, icon="✨"):
     border = "─" * (THEME_WIDTH - 2)
     line = f"{icon} {title}"
-    print(f"\n{C_BOLD}{C_BLUE}┌{border}┐{C_RESET}")
-    print(
+    _emit(f"\n{C_BOLD}{C_BLUE}┌{border}┐{C_RESET}")
+    _emit(
         f"{C_BOLD}{C_BLUE}│{C_RESET} {C_BOLD}{line.ljust(THEME_WIDTH - 4)}{C_RESET} {C_BOLD}{C_BLUE}│{C_RESET}"
     )
-    print(f"{C_BOLD}{C_BLUE}└{border}┘{C_RESET}")
+    _emit(f"{C_BOLD}{C_BLUE}└{border}┘{C_RESET}")
 
 def print_menu(options):
     for key, value in options.items():
-        print(f"  {C_CYAN}[{key}]{C_RESET} {value}")
-    print(f"  {C_DIM}{'─' * (THEME_WIDTH - 6)}{C_RESET}")
+        _emit(f"  {C_CYAN}[{key}]{C_RESET} {value}")
+    _emit(f"  {C_DIM}{'─' * (THEME_WIDTH - 6)}{C_RESET}")
 
 def print_success(message):
-    print(f"  {C_GREEN}✔ {message}{C_RESET}")
+    _emit(f"  {C_GREEN}✔ {message}{C_RESET}")
 
 def print_warning(message):
-    print(f"  {C_YELLOW}! {message}{C_RESET}")
+    _emit(f"  {C_YELLOW}! {message}{C_RESET}")
 
 def print_error(message):
-    print(f"  {C_RED}✖ {message}{C_RESET}")
+    _emit(f"  {C_RED}✖ {message}{C_RESET}")
 
 def print_info(message):
     wrapped = fill(message, width=THEME_WIDTH - 6)
     for line in wrapped.splitlines():
-        print(f"  {C_DIM}{line}{C_RESET}")
+        _emit(f"  {C_DIM}{line}{C_RESET}")
 
 def get_input(prompt):
     return input(f"  {C_MAGENTA}? {prompt}:{C_RESET} ")
@@ -677,6 +695,8 @@ def easy_setup(args) -> int:
     non-zero exit code so callers (``install.sh`` / curl) cannot treat a broken
     install as success.
     """
+    global _JSON_MODE
+    _JSON_MODE = bool(getattr(args, "json", False))
     print_header("One-Command Setup (easy)", icon="⚡")
     print_info(
         "Non-interactive mode: token + admin ID + secure defaults "
@@ -892,11 +912,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     """Wizard by default; fully non-interactive when credentials are supplied."""
+    global _JSON_MODE
     args = build_arg_parser().parse_args(argv)
     if args.config:
         global config
         config = Config(args.config)
         os.environ.setdefault("TLA_CONFIG_FILE", os.path.abspath(args.config))
+    _JSON_MODE = bool(getattr(args, "json", False))
     print_banner()
 
     non_interactive = (

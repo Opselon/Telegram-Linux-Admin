@@ -23,6 +23,7 @@ import re
 import socket
 import subprocess
 import sys
+import shutil
 import threading
 import time
 import urllib.request
@@ -35,6 +36,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SETUP = REPO_ROOT / "scripts" / "setup.py"
 INSTALL_SH = REPO_ROOT / "install.sh"
 TOKEN = "123456:ABC-DEF1234567890"
+
+# install.sh is a POSIX script: Windows runners either lack bash or check it
+# out with CRLF, which changes what the shell sees. The script itself is the
+# product for Linux hosts, so its checks live where they are meaningful.
+requires_posix_bash = pytest.mark.skipif(
+    sys.platform == "win32" or shutil.which("bash") is None,
+    reason="install.sh is POSIX shell and needs a real bash",
+)
 
 
 def free_port() -> int:
@@ -324,12 +333,16 @@ class TestEasySetup:
         setup_module["easy_setup"](
             make_args(token=TOKEN, admin_ids=["77"], no_service=True, no_cron=True, json=True)
         )
-        lines = [line for line in capsys.readouterr().out.splitlines() if line.startswith("{")]
-        payload = json.loads(lines[-1])
+        captured = capsys.readouterr()
+        lines = [line for line in captured.out.splitlines() if line.strip()]
+        # stdout carries exactly one machine-readable line; the banner is on stderr
+        assert len(lines) == 1, lines
+        payload = json.loads(lines[0])
         assert payload["ok"] is True
         assert payload["admin_ids"] == ["77"]
         assert TOKEN not in json.dumps(payload)
         assert payload["readiness"] is False
+        assert "🎉" not in captured.out
 
     def test_preserves_unknown_user_keys(self, setup_module, make_args, tmp_path):
         path = tmp_path / "config.json"
@@ -469,6 +482,7 @@ class TestCli:
         assert data["telegram_token"] == TOKEN
 
 
+@requires_posix_bash
 class TestInstallScript:
     def test_bash_syntax_is_valid(self):
         result = subprocess.run(["bash", "-n", str(INSTALL_SH)], capture_output=True, text=True)

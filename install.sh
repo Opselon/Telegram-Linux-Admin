@@ -54,6 +54,14 @@ Options:
                          run from a checkout (default: /opt/telegram-linux-admin
                          as root, ~/.telegram-linux-admin otherwise).
   --branch NAME          Git branch to install (default: main).
+  --config PATH          Config file to write (default: DIR/config.json).
+  --db-file PATH         SQLite database path (default: DIR/database.db).
+  --audit-dir PATH       Audit log directory (default: DIR/var/log).
+  --access-mode MODE     open | whitelist | admin_only (default: whitelist).
+  --destination-policy P allow_all | deny_public | allowlist
+                         (default: deny_public).
+  --verify-timeout SECS  How long to wait for /readyz after start (default: 60).
+  --json                 Print a single JSON summary line (automation).
   --no-service           Do not install/start the systemd unit.
   --no-cron              Do not install the daily auto-update cron job.
   --no-start             Install but do not (re)start the service.
@@ -81,6 +89,8 @@ TOKEN="${TLA_BOT_TOKEN:-}"
 PORT="${TLA_HEALTH_PORT:-}"
 TARGET_DIR="${TLA_HOME:-}"
 EASY=0; NO_SERVICE=0; NO_CRON=0; NO_START=0; VERBOSE=0
+CONFIG_PATH=""; DB_FILE="${TLA_DB_FILE:-}"; AUDIT_DIR="${TLA_AUDIT_DIR:-}"
+ACCESS_MODE=""; DEST_POLICY=""; VERIFY_TIMEOUT=""; JSON_OUT=0
 ADMIN_IDS=()
 
 if [ -n "${TLA_ADMIN_ID:-}" ]; then
@@ -107,6 +117,23 @@ while [ $# -gt 0 ]; do
         --dir=*)        TARGET_DIR="${1#*=}"; shift ;;
         --branch)       need_value "$1" "${2:-}"; BRANCH="$2"; shift 2 ;;
         --branch=*)     BRANCH="${1#*=}"; shift ;;
+        --config)       need_value "$1" "${2:-}"; CONFIG_PATH="$2"; shift 2 ;;
+        --config=*)     CONFIG_PATH="${1#*=}"; shift ;;
+        --db-file)      need_value "$1" "${2:-}"; DB_FILE="$2"; shift 2 ;;
+        --db-file=*)    DB_FILE="${1#*=}"; shift ;;
+        --audit-dir)    need_value "$1" "${2:-}"; AUDIT_DIR="$2"; shift 2 ;;
+        --audit-dir=*)  AUDIT_DIR="${1#*=}"; shift ;;
+        --access-mode)  need_value "$1" "${2:-}"; ACCESS_MODE="$2"; shift 2 ;;
+        --access-mode=*) ACCESS_MODE="${1#*=}"; shift ;;
+        --destination-policy)
+                        need_value "$1" "${2:-}"; DEST_POLICY="$2"; shift 2 ;;
+        --destination-policy=*)
+                        DEST_POLICY="${1#*=}"; shift ;;
+        --verify-timeout)
+                        need_value "$1" "${2:-}"; VERIFY_TIMEOUT="$2"; shift 2 ;;
+        --verify-timeout=*)
+                        VERIFY_TIMEOUT="${1#*=}"; shift ;;
+        --json)         JSON_OUT=1; shift ;;
         --no-service)   NO_SERVICE=1; shift ;;
         --no-cron)      NO_CRON=1; shift ;;
         --no-start)     NO_START=1; shift ;;
@@ -220,18 +247,25 @@ setup_args=()
 [ "$NO_SERVICE" -eq 1 ] && setup_args+=(--no-service)
 [ "$NO_CRON" -eq 1 ] && setup_args+=(--no-cron)
 [ "$NO_START" -eq 1 ] && setup_args+=(--no-start)
+[ "$JSON_OUT" -eq 1 ] && setup_args+=(--json)
 [ -n "$PORT" ] && setup_args+=(--health-port "$PORT")
+[ -n "$CONFIG_PATH" ] && setup_args+=(--config "$CONFIG_PATH")
+[ -n "$ACCESS_MODE" ] && setup_args+=(--access-mode "$ACCESS_MODE")
+[ -n "$DEST_POLICY" ] && setup_args+=(--destination-policy "$DEST_POLICY")
+[ -n "$VERIFY_TIMEOUT" ] && setup_args+=(--verify-timeout "$VERIFY_TIMEOUT")
 
-admin_env=""
+inject=(TLA_BOT_TOKEN="$TOKEN")
 if [ "${#ADMIN_IDS[@]}" -gt 0 ]; then
-    admin_env="$(IFS=,; printf '%s' "${ADMIN_IDS[*]}")"
+    inject+=(TLA_ADMIN_ID="$(IFS=,; printf '%s' "${ADMIN_IDS[*]}")")
 fi
+[ -n "$DB_FILE" ] && inject+=(TLA_DB_FILE="$DB_FILE")
+[ -n "$AUDIT_DIR" ] && inject+=(TLA_AUDIT_DIR="$AUDIT_DIR")
 
-if [ -n "$TOKEN" ] || [ "$EASY" -eq 1 ] || [ -n "$admin_env" ]; then
+if [ -n "$TOKEN" ] || [ "$EASY" -eq 1 ] || [ "${#ADMIN_IDS[@]}" -gt 0 ]; then
     step "Configuring the bot (non-interactive)"
     # The token and IDs travel in the environment, never in argv, so they do
     # not show up in `ps` output or shell history.
-    TLA_BOT_TOKEN="$TOKEN" TLA_ADMIN_ID="$admin_env" \
+    env "${inject[@]}" \
         "$VENV_PY" "$APP_DIR/scripts/setup.py" "${setup_args[@]}" \
         || die "setup failed"
 else
@@ -243,6 +277,11 @@ fi
 # ---------------------------------------------------------------------------
 # Report
 # ---------------------------------------------------------------------------
+# --json promises a single machine-readable line; setup.py already printed it.
+if [ "$JSON_OUT" -eq 1 ]; then
+    exit 0
+fi
+
 step "Result"
 if systemctl list-unit-files telegram_bot.service >/dev/null 2>&1 \
     && systemctl is-enabled --quiet telegram_bot.service 2>/dev/null; then
