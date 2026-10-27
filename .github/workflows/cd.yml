@@ -1,0 +1,95 @@
+# Continuous Deployment for Telegram Linux Admin.
+#
+# PURPOSE / OWNER / CONSUMES / PROVIDES / INVARIANTS / EXTEND
+# PURPOSE: turnkey remote deployment via SSH following successful CI build.
+# OWNER:   devops lane.
+# CONSUMES: GitHub Secrets (SERVER_HOST, SERVER_USER, SERVER_PORT, SSH_PRIVATE_KEY,
+#   TELEGRAM_BOT_TOKEN, ADMIN_USER_ID, TLA_ACCESS_MODE, TLA_DESTINATION_POLICY, TLA_HEALTH_PORT).
+# PROVIDES: fully automated, clean container deployment with zero server-side file dependencies.
+# INVARIANTS: real YAML, no JSON document, never echo secrets, clean container teardown.
+# EXTEND: additional container environments or health checks go into scripts/remote-deploy.sh.
+
+name: CD
+
+"on":
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Image tag to deploy (e.g. latest, or sha-xxxxxxx)"
+        required: false
+        default: "latest"
+  workflow_run:
+    workflows: ["CI"]
+    types:
+      - completed
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cd-remote-deploy
+  cancel-in-progress: false
+
+jobs:
+  check_secrets:
+    name: Check secrets configuration
+    runs-on: ubuntu-latest
+    outputs:
+      deploy: ${{ steps.check.outputs.deploy }}
+    steps:
+      - name: Check SERVER_HOST
+        id: check
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+        run: |
+          if [ -z "$SERVER_HOST" ]; then
+            echo "::notice ::SERVER_HOST is not configured in GitHub Secrets. Skipping automated remote CD."
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  deploy:
+    name: Deploy to remote server
+    needs: [check_secrets]
+    runs-on: ubuntu-latest
+    if: >-
+      needs.check_secrets.outputs.deploy == 'true' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'))
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          INPUT_TAG: ${{ github.event.inputs.image_tag }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          ADMIN_USER_ID: ${{ secrets.ADMIN_USER_ID }}
+          TLA_ACCESS_MODE: ${{ secrets.TLA_ACCESS_MODE }}
+          TLA_DESTINATION_POLICY: ${{ secrets.TLA_DESTINATION_POLICY }}
+          TLA_HEALTH_PORT: ${{ secrets.TLA_HEALTH_PORT }}
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          port: ${{ secrets.SERVER_PORT || 22 }}
+          username: ${{ secrets.SERVER_USER || 'root' }}
+          key: ${{ secrets.SSH_PRIVATE_KEY || secrets.SERVER_SSH_KEY }}
+          envs: INPUT_TAG,TELEGRAM_BOT_TOKEN,ADMIN_USER_ID,TLA_ACCESS_MODE,TLA_DESTINATION_POLICY,TLA_HEALTH_PORT
+          script_stop: true
+          script: |
+            set -e
+            export IMAGE_TAG="${INPUT_TAG:-latest}"
+            DEPLOY_DIR="${DEPLOY_DIR:-/root/telegram-admin-bot}"
+            mkdir -p "$DEPLOY_DIR"
+
+            if [ -f "/root/Telegram-Linux-Admin/scripts/remote-deploy.sh" ]; then
+              chmod +x "/root/Telegram-Linux-Admin/scripts/remote-deploy.sh"
+              "/root/Telegram-Linux-Admin/scripts/remote-deploy.sh"
+            elif [ -f "/opt/telegram-linux-admin/scripts/remote-deploy.sh" ]; then
+              chmod +x "/opt/telegram-linux-admin/scripts/remote-deploy.sh"
+              "/opt/telegram-linux-admin/scripts/remote-deploy.sh"
+            else
+              curl -fsSL https://raw.githubusercontent.com/Opselon/Telegram-Linux-Admin/main/scripts/remote-deploy.sh -o /tmp/remote-deploy.sh
+              chmod +x /tmp/remote-deploy.sh
+              /tmp/remote-deploy.sh
+            fi

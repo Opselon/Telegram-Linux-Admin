@@ -130,3 +130,23 @@ def test_load_config_with_non_string_token_records_error(tmp_path):
     config = Config(str(cfg_path))
     assert config.telegram_token == ""
     assert isinstance(config.last_error, ConfigError)
+
+
+def test_load_config_from_env_vars_when_file_missing(tmp_path, monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123456:ABC-DEF1234567890")
+    monkeypatch.setenv("ADMIN_USER_ID", "1001,1002")
+
+    config = Config(str(tmp_path / "non_existent.json"))
+    assert config.telegram_token == "123456:ABC-DEF1234567890"
+    assert config.whitelisted_users == [1001, 1002]
+
+
+def test_load_config_from_env_vars_when_file_empty_token(tmp_path, monkeypatch):
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(json.dumps({"telegram_token": ""}), encoding="utf-8")
+    monkeypatch.setenv("TLA_BOT_TOKEN", "999888:XYZ-1234567890")
+    monkeypatch.setenv("TLA_ADMIN_ID", "55555")
+
+    config = Config(str(cfg_path))
+    assert config.telegram_token == "999888:XYZ-1234567890"
+    assert config.whitelisted_users == [55555]
