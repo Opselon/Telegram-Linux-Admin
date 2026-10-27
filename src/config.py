@@ -96,6 +96,15 @@ class Config:
             self.warnings = []
 
             if not os.path.exists(self.path):
+                env_token = os.environ.get("TLA_BOT_TOKEN") or os.environ.get("TELEGRAM_BOT_TOKEN") or ""
+                if env_token:
+                    try:
+                        self.telegram_token = validate_token(env_token)
+                    except ValueError as exc:
+                        self.last_error = ConfigError(f"Invalid telegram_token in env: {exc}")
+                env_users = os.environ.get("TLA_ADMIN_ID") or os.environ.get("ADMIN_USER_ID") or ""
+                if env_users:
+                    self.whitelisted_users = self._sanitize_users(env_users.split(","))
                 return
 
             self._audit_permissions()
@@ -130,9 +139,21 @@ class Config:
             else:
                 self.telegram_token = ""
 
+            if not self.telegram_token:
+                env_token = os.environ.get("TLA_BOT_TOKEN") or os.environ.get("TELEGRAM_BOT_TOKEN") or ""
+                if env_token:
+                    try:
+                        self.telegram_token = validate_token(env_token)
+                    except ValueError as exc:
+                        self.last_error = ConfigError(f"Invalid telegram_token in env: {exc}")
+
             self.whitelisted_users = self._sanitize_users(
                 data.get("whitelisted_users", [])
             )
+            if not self.whitelisted_users:
+                env_users = os.environ.get("TLA_ADMIN_ID") or os.environ.get("ADMIN_USER_ID") or ""
+                if env_users:
+                    self.whitelisted_users = self._sanitize_users(env_users.split(","))
 
             raw_mode = data.get("access_mode", DEFAULT_ACCESS_MODE)
             if isinstance(raw_mode, str):

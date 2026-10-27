@@ -331,6 +331,30 @@ encryption key in a root-owned mount. If it cannot, `/readyz` reports `503` with
 `audit_writable: false` and the log states exactly which path failed — the bot
 refuses to call itself ready while it is silently losing audit records.
 
+### Turnkey Remote Continuous Deployment (GitHub Actions)
+
+Telegram Linux Admin ships with an automated CD workflow (`.github/workflows/cd.yml`)
+and a turnkey remote runner (`scripts/remote-deploy.sh`). On every successful CI build
+on the `main` branch, the bot can deploy automatically to remote hosts over SSH.
+
+#### Required GitHub Secrets
+
+Configure the following secrets in **Settings -> Secrets and variables -> Actions**:
+
+* `SERVER_HOST`: Remote server IP or hostname (e.g. `80.47.236.99`)
+* `SERVER_USER`: SSH login username (default `root`)
+* `SERVER_PORT`: SSH port (default `22`)
+* `SSH_PRIVATE_KEY` / `SERVER_SSH_KEY`: Ed25519 or RSA private key authorized on the target host
+* `TELEGRAM_BOT_TOKEN`: Telegram bot token from `@BotFather`
+* `ADMIN_USER_ID`: Whitelisted Telegram user ID(s), comma-separated
+* `TLA_ACCESS_MODE`: `whitelist` (recommended) or `admin_only`
+* `TLA_DESTINATION_POLICY`: `deny_public` (default)
+* `TLA_HEALTH_PORT`: Loopback health port (default `8082`)
+
+The runner cleanly tears down any previous container and stops host-level polling
+conflicts, updates `.env` and `config.json` with strict `0600` permissions, pulls
+the latest GHCR image, and verifies health via `/healthz`.
+
 ---
 
 # 📖 Usage
