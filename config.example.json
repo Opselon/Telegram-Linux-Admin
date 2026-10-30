@@ -3,7 +3,8 @@
   "whitelisted_users": [
     123456789
   ],
-  "access_mode": "whitelist",
+  "access_mode": "admin_only",
+  "setup_pin": "OPTIONAL_ONE_TIME_ADMIN_CLAIM_PIN",
   "destination_policy": "deny_public",
   "allowed_destinations": [
     "10.0.0.0/8",

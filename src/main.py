@@ -161,6 +161,17 @@ from .bot.system import (
     execute_system_command,
     system_commands_menu,
 )
+from .bot.host_status import quick_status
+from .bot.security_center import (
+    audit_tail,
+    config_summary,
+    security_menu,
+    set_access_mode,
+    whitelist_add_capture,
+    whitelist_add_start,
+    whitelist_remove,
+    whitelist_view,
+)
 from .bot import state as _state
 
 #: Names 3.2 centralises in ``state``; ``__setattr__`` forwards writes there so

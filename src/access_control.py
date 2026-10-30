@@ -15,6 +15,8 @@ all mutations happen under a lock and are microsecond scale.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import os
 import time
 from collections import deque
@@ -31,7 +33,10 @@ WHITELIST = "whitelist"
 ADMIN_ONLY = "admin_only"
 
 _VALID_MODES = frozenset({OPEN, WHITELIST, ADMIN_ONLY})
-_DEFAULT_MODE = os.environ.get("TLA_ACCESS_MODE", OPEN)
+#: Fail-closed: an unconfigured deployment must not trust strangers.  The
+#: historical ``open`` default let anyone who discovered the bot reach the
+#: host; ``open`` now has to be chosen explicitly via ``TLA_ACCESS_MODE``.
+_DEFAULT_MODE = os.environ.get("TLA_ACCESS_MODE", ADMIN_ONLY)
 
 
 class AccessDenied(Exception):
@@ -221,6 +226,88 @@ class RateLimiter:
 
 
 # ---------------------------------------------------------------------------
+# First-run admin enrollment (setup PIN)
+# ---------------------------------------------------------------------------
+
+
+class SetupEnrollment:
+    """One-time admin claim via a setup PIN.
+
+    A fresh deployment has no admin configured, so its owner cannot use the
+    bot yet — and cannot know their numeric Telegram ID offhand.  When
+    ``TLA_SETUP_PIN`` (or ``config.json``'s ``setup_pin``) is set and the
+    whitelist is empty, the first user to send ``/start <pin>`` is enrolled
+    as admin.  Attempts are throttled (5 failures → 15 minute lockout per
+    user) and the PIN is compared with :func:`hmac.compare_digest`, never
+    stored in plaintext after construction.
+    """
+
+    MAX_ATTEMPTS = 5
+    LOCKOUT_SECONDS = 15 * 60.0
+
+    def __init__(self, pin: str = "") -> None:
+        self._lock = RLock()
+        self._pin_hash: str = (
+            hashlib.sha256(pin.strip().encode("utf-8")).hexdigest() if pin.strip() else ""
+        )
+        self._attempts: MutableMapping[int, int] = {}
+        self._lockouts: MutableMapping[int, float] = {}
+
+    @property
+    def enabled(self) -> bool:
+        """True when a PIN is configured and enrollment may proceed."""
+        with self._lock:
+            return bool(self._pin_hash)
+
+    def _locked_for(self, user_id: int, now: float) -> float:
+        """Returns remaining lockout seconds for ``user_id`` (0 if none)."""
+        until = self._lockouts.get(user_id)
+        if until is None:
+            return 0.0
+        remaining = until - now
+        if remaining <= 0:
+            self._lockouts.pop(user_id, None)
+            self._attempts.pop(user_id, None)
+            return 0.0
+        return remaining
+
+    def verify(self, user_id: int | None, pin: str) -> tuple[bool, str]:
+        """Checks a claimed PIN; returns ``(ok, message_key)``.
+
+        ``message_key`` explains the outcome for localization:
+        ``setup_ok``, ``setup_disabled``, ``setup_locked_out``,
+        ``setup_wrong_pin`` or ``setup_not_available``.
+        """
+        if user_id is None:
+            return False, "setup_not_available"
+        now = time.monotonic()
+        with self._lock:
+            if not self._pin_hash:
+                return False, "setup_disabled"
+            remaining = self._locked_for(user_id, now)
+            if remaining > 0:
+                return False, "setup_locked_out"
+            candidate = hashlib.sha256(pin.strip().encode("utf-8")).hexdigest()
+            if hmac.compare_digest(candidate, self._pin_hash):
+                # Burn the PIN after a successful claim: single-use.
+                self._pin_hash = ""
+                self._attempts.pop(user_id, None)
+                return True, "setup_ok"
+            self._attempts[user_id] = self._attempts.get(user_id, 0) + 1
+            if self._attempts[user_id] >= self.MAX_ATTEMPTS:
+                self._lockouts[user_id] = now + self.LOCKOUT_SECONDS
+                self._attempts.pop(user_id, None)
+                return False, "setup_locked_out"
+            return False, "setup_wrong_pin"
+
+    def reset(self) -> None:
+        """Clears attempts and lockouts (used by tests and re-configuration)."""
+        with self._lock:
+            self._attempts.clear()
+            self._lockouts.clear()
+
+
+# ---------------------------------------------------------------------------
 # Singletons
 # ---------------------------------------------------------------------------
 
@@ -229,3 +316,6 @@ permissions = PermissionManager()
 
 #: Process-wide rate limiter used by the ``rate_limit`` decorator.
 rate_limiter = RateLimiter()
+
+#: Process-wide setup-PIN enrollment; ``lifecycle`` syncs it with ``config``.
+setup_enrollment = SetupEnrollment()

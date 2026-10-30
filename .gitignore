@@ -8,8 +8,14 @@ env/
 venv/
 pip-selfcheck.json
 
-# Config
+# Config / secrets — NEVER commit runtime credentials
 config.json
+.env
+.env.*
+!.env.example
+*.key
+var/
+bot.lock
 
 # Database
 database.db
@@ -22,6 +28,12 @@ database.db-wal
 var/
 *.lock
 *.log
+
+# Test / tooling artifacts
+.coverage
+.coverage.*
+.testartifacts/
+htmlcov/
 
 # Editor / OS artifacts
 .vs/

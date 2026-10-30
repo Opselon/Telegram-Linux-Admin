@@ -50,6 +50,11 @@ from .files import (
     cancel_file_manager_action, file_manager_action_start, file_manager_dispatch, file_manager_menu,
     upload_file,
 )
+from .host_status import quick_status
+from .security_center import (
+    audit_tail, config_summary, security_menu, set_access_mode,
+    whitelist_add_capture, whitelist_add_start, whitelist_remove, whitelist_view,
+)
 from .firewall import (
     cancel_firewall_action, execute_firewall_action, firewall_action_start, firewall_management_menu,
     firewall_status,
@@ -224,6 +229,17 @@ def build_application(*, on_startup=None, on_shutdown=None) -> Application:
     application.add_handler(CallbackQueryHandler(main_menu, pattern='^main_menu$'))
     application.add_handler(CallbackQueryHandler(language_menu, pattern='^language_menu$'))
     application.add_handler(CallbackQueryHandler(set_language, pattern='^set_language_'))
+    application.add_handler(CallbackQueryHandler(quick_status, pattern='^host_status$'))
+
+    # --- Security Center (3.5): specific sec_ routes first ---
+    application.add_handler(CallbackQueryHandler(set_access_mode, pattern='^sec_mode_'))
+    application.add_handler(CallbackQueryHandler(whitelist_view, pattern='^sec_whitelist$'))
+    application.add_handler(CallbackQueryHandler(whitelist_add_start, pattern='^sec_add_start$'))
+    application.add_handler(CallbackQueryHandler(whitelist_remove, pattern='^sec_remove_'))
+    application.add_handler(CallbackQueryHandler(config_summary, pattern='^sec_config$'))
+    application.add_handler(CallbackQueryHandler(audit_tail, pattern='^sec_audit$'))
+    application.add_handler(CallbackQueryHandler(security_menu, pattern='^sec_menu$'))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, whitelist_add_capture))
     application.add_handler(CallbackQueryHandler(connect_server_menu, pattern='^connect_server_menu$'))
     application.add_handler(CallbackQueryHandler(remove_server_menu, pattern='^remove_server_menu$'))
     application.add_handler(CallbackQueryHandler(update_bot_command, pattern='^update_bot$'))
@@ -265,6 +281,8 @@ def build_application(*, on_startup=None, on_shutdown=None) -> Application:
     application.add_handler(CommandHandler('update_bot', update_bot_command))
     application.add_handler(CommandHandler('dashboard', dashboard_command))
     application.add_handler(CommandHandler('jobs', jobs_status_menu))
+    application.add_handler(CommandHandler('security', security_menu))
+    application.add_handler(CommandHandler('status', quick_status))
 
     # --- Jobs panel callbacks (3.3) ---
     # Each data prefix is registered exactly once; jobscancel_ must be matched

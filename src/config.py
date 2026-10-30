@@ -9,15 +9,69 @@ import tempfile
 import threading
 from typing import Iterable, List
 
+
+def load_dotenv(path: str | None = None) -> list[str]:
+    """Loads ``KEY=VALUE`` pairs from a ``.env`` file into ``os.environ``.
+
+    Searched locations (first match wins): an explicit ``path`` argument,
+    the file named by ``TLA_ENV_FILE``, ``.env`` next to the config file
+    and finally ``./.env``.  Real environment variables always win — a
+    ``.env`` entry never overrides an already-set variable.  Returns the
+    list of variable names that were actually applied.
+    """
+    candidates: list[str] = []
+    if path:
+        candidates.append(path)
+    env_file = os.environ.get("TLA_ENV_FILE")
+    if env_file:
+        candidates.append(env_file)
+    config_dir = os.path.dirname(os.environ.get("TLA_CONFIG_FILE", "config.json"))
+    if config_dir:
+        candidates.append(os.path.join(config_dir, ".env"))
+    candidates.append(".env")
+
+    applied: list[str] = []
+    for candidate in candidates:
+        if not candidate or not os.path.isfile(candidate):
+            continue
+        try:
+            with open(candidate, "r", encoding="utf-8") as handle:
+                lines = handle.readlines()
+        except OSError:
+            continue
+        for raw_line in lines:
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if not key or not key.replace("_", "").replace("-", "").isalnum():
+                continue
+            if key in os.environ:
+                continue
+            os.environ[key] = value
+            applied.append(key)
+        break
+    return applied
+
+
+# Load a local .env (if present) before any module-level env reads below so
+# deployments can keep the bot token and admin id out of the shell profile.
+load_dotenv()
+
 DEFAULT_CONFIG_FILE = os.environ.get("TLA_CONFIG_FILE", "config.json")
 
 #: Valid values for the ``access_mode`` setting.  ``open`` keeps the
 #: historical "any Telegram user may talk to the bot" behaviour, the other two
 #: are fail-closed modes for private deployments.
 VALID_ACCESS_MODES = ("open", "whitelist", "admin_only")
-DEFAULT_ACCESS_MODE = os.environ.get("TLA_ACCESS_MODE", "open").strip().lower()
+#: Fail-closed default: an unconfigured deployment denies everyone instead of
+#: exposing the bot to every Telegram user who discovers it.  ``open`` must be
+#: chosen explicitly (env ``TLA_ACCESS_MODE`` or ``config.json``).
+DEFAULT_ACCESS_MODE = os.environ.get("TLA_ACCESS_MODE", "admin_only").strip().lower()
 if DEFAULT_ACCESS_MODE not in VALID_ACCESS_MODES:
-    DEFAULT_ACCESS_MODE = "open"
+    DEFAULT_ACCESS_MODE = "admin_only"
 
 
 class ConfigError(RuntimeError):
@@ -68,6 +122,10 @@ class Config:
         self.telegram_token: str = ""
         self.whitelisted_users: List[int] = []
         self.access_mode: str = DEFAULT_ACCESS_MODE
+        #: One-time enrollment PIN: while no admin is configured, a user may
+        #: claim admin by sending ``/start <pin>``.  Never stored in plaintext
+        #: in memory longer than needed and never persisted back to disk.
+        self.setup_pin: str = ""
         self.destination_policy: str = os.environ.get("TLA_DESTINATION_POLICY", "allow_all")
         self.allowed_destinations: List[str] = [
             item.strip()
@@ -94,6 +152,7 @@ class Config:
             self.allowed_destinations = []
             self.last_error = None
             self.warnings = []
+            self.setup_pin = os.environ.get("TLA_SETUP_PIN", "").strip()
 
             if not os.path.exists(self.path):
                 env_token = os.environ.get("TLA_BOT_TOKEN") or os.environ.get("TELEGRAM_BOT_TOKEN") or ""
@@ -178,6 +237,12 @@ class Config:
                 self.allowed_destinations = [
                     str(item).strip() for item in raw_allow if str(item).strip()
                 ]
+
+            # A file-provided PIN never overrides an explicit env PIN; the
+            # value stays in ``extra`` so save_config round-trips it verbatim.
+            raw_pin = data.get("setup_pin")
+            if isinstance(raw_pin, str) and raw_pin.strip() and not self.setup_pin:
+                self.setup_pin = raw_pin.strip()
 
             self.extra = {
                 key: value

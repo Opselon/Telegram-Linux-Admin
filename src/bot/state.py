@@ -29,7 +29,7 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
-from ..access_control import permissions, rate_limiter
+from ..access_control import SetupEnrollment, permissions, rate_limiter
 from ..audit import audit
 from ..command_policy import CONFIRMATIONS
 from ..config import config
@@ -60,6 +60,8 @@ MONITORING_TASKS: dict[int, Any] = {}
 LOCK_FILE: Path = Path("bot.lock")
 #: membership set for language validation (SUPPORTED_LANGUAGES is a mapping).
 SUPPORTED_LANGUAGE_SET = set(SUPPORTED_LANGUAGES)
+#: One-time admin enrollment via setup PIN; rebuilt by ``lifecycle`` at boot.
+setup_enrollment: SetupEnrollment = SetupEnrollment("")
 
 # --- 3.2 subsystems --------------------------------------------------------
 # Created by ``src/bot/process.py`` during startup and read by handlers through

@@ -4,6 +4,46 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 semantic versioning.
 
+## [3.5.0] — 2026-10-30
+
+Security-first release: the incident-response hardening plus a styled UI and a
+pro-grade security pipeline.
+
+### Security
+
+- **Fail-closed by default** — `access_mode` now defaults to `admin_only`
+  instead of `open`. An unconfigured deployment denies every Telegram user
+  instead of trusting strangers; `open` must be chosen explicitly.
+- **One-time admin enrollment (setup PIN)** — with `TLA_SETUP_PIN` set and no
+  admin configured, the first `/start <pin>` claims admin and burns the PIN.
+  Constant-time comparison, 5-attempt lockout, audited.
+- **`.env` support** — `TLA_BOT_TOKEN` / `TLA_ADMIN_ID` / `TLA_SETUP_PIN` (and
+  friends) load from `.env` next to `config.json`; real env vars always win.
+- **Stranger-safe `/start`** — unauthorized users see only their own Telegram
+  ID and enrollment guidance; the menu is never rendered for them.
+- **Secret-scan pipeline** — new `security.yml` workflow: CodeQL SAST, gitleaks
+  over full history, dependency-review on PRs, trivy container scan (SARIF to
+  the security tab) and a CycloneDX SBOM artifact.
+- **Hygiene** — removed the committed `.coverage` artifact and the leftover
+  scratch test; `.dockerignore` keeps secrets and tests out of image builds;
+  CI gained a shellcheck job and a nightly schedule.
+
+### Added
+
+- **Security Center** (`/security`) — admin panel for access-mode switching
+  (double-tap confirm for `open`), whitelist add/remove with last-admin guard,
+  non-secret config view and audit tail. Every mutation is audited.
+- **Host status panel** (`/status`) — live CPU/RAM/swap/load/disk/uptime of the
+  bot host with a refresh button; stdlib-only, read-only.
+- **Styled UI kit** — canonical emoji icon set, `styled_menu` with 1/2-column
+  layouts and callback-aware icons, icon-bearing main menu with a Status and
+  Security row; existing callback wire formats are unchanged.
+
+### Changed
+
+- `/start` no longer leaks the menu to unauthorized users; `config.example.json`
+  and the README document the fail-closed posture and the new enrollment flow.
+
 ## [3.4.0] — 2026-10-22
 
 Setup gets out of the way: one command configures a production-grade bot, and

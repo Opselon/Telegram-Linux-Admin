@@ -20,6 +20,7 @@ from telegram import BotCommand
 from telegram.ext import Application
 
 from ..access_control import OPEN as OPEN_ACCESS_MODE
+from ..access_control import SetupEnrollment
 from ..access_control import permissions
 from ..audit import audit
 from ..config import config
@@ -168,7 +169,9 @@ async def post_init(application: Application):
         BotCommand("cancel", "Cancel the current multi-step operation (like adding a server)"),
         BotCommand("dashboard", "Admin dashboard (admin only)"),
         BotCommand("jobs", "Show your running and waiting jobs (admin only)"),
-        BotCommand("audit", "Show recent security events (admin only)")
+        BotCommand("audit", "Show recent security events (admin only)"),
+        BotCommand("security", "Security Center: access modes and whitelist (admin only)"),
+        BotCommand("status", "Live status of the host running the bot")
     ])
 
 async def _start_ops_scheduler(application: Application) -> None:
@@ -236,6 +239,22 @@ def _configure_security(cfg) -> None:
             "No whitelisted users configured: nobody will be able to use the bot "
             "while access_mode is %r.", mode,
         )
+        pin = getattr(cfg, "setup_pin", "") or ""
+        if pin:
+            state.setup_enrollment = SetupEnrollment(pin)
+            logger.warning(
+                "Setup PIN detected and no admin configured: the first user to "
+                "send '/start <pin>' becomes the admin, then the PIN is burned."
+            )
+        else:
+            state.setup_enrollment = SetupEnrollment("")
+            logger.warning(
+                "Set TLA_SETUP_PIN (env or config.json 'setup_pin') to enroll the "
+                "first admin via '/start <pin>', or add your Telegram user ID to "
+                "TLA_ADMIN_ID."
+            )
+    else:
+        state.setup_enrollment = SetupEnrollment("")
 
     try:
         DESTINATIONS.reconfigure(cfg.destination_policy, tuple(cfg.allowed_destinations))

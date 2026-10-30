@@ -93,6 +93,50 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "ui_nav_next": "▶️",
         "ui_nav_disabled": "•",
         "ui_page_indicator": "Page {page} / {pages}",
+
+        # --- 3.5: styled main menu ---
+        "main_menu_title": "Welcome to your Linux Admin Bot!",
+        "main_menu_prompt": "What would you like to do?",
+        "button_host_status": "Host Status",
+        "button_security_center": "Security",
+        "button_backup": "Backup",
+        "access_denied_notice": "This bot is private and your account is not authorized.",
+        "setup_your_id": "Your Telegram ID: `{uid}` — the owner must add this ID to the whitelist.",
+
+        # --- 3.5: setup PIN enrollment ---
+        "setup_ok": "✅ You are now the bot admin. The setup PIN was burned and cannot be reused.",
+        "setup_disabled": "Setup PIN is not configured.",
+        "setup_locked_out": "⛔ Too many attempts. Try again later.",
+        "setup_wrong_pin": "❌ Wrong setup PIN.",
+        "setup_not_available": "Enrollment is not available.",
+
+        # --- 3.5: host status panel ---
+        "status_title": "Host Status",
+        "status_refresh": "Refresh",
+
+        # --- 3.5: security center ---
+        "sec_title": "Security Center",
+        "sec_mode_label": "Access mode",
+        "sec_admin_label": "Admin",
+        "sec_whitelist_label": "Whitelisted users",
+        "sec_pin_label": "Setup PIN",
+        "sec_pin_armed": "armed",
+        "sec_pin_off": "off",
+        "sec_policy_label": "Destination policy",
+        "sec_token_label": "Bot token",
+        "sec_token_missing": "NOT SET",
+        "sec_mode_set": "Access mode set to: {mode}",
+        "sec_open_confirm": "⚠️ Tap again to allow EVERY Telegram user to reach this bot. This is dangerous.",
+        "sec_whitelist_title": "Whitelisted users (tap to remove)",
+        "sec_whitelist_hint": "Tap a user ID to remove it.",
+        "sec_whitelist_empty": "No whitelisted users configured.",
+        "sec_add_prompt": "Send the Telegram user ID (or comma-separated IDs) to whitelist.",
+        "sec_add_invalid": "Invalid Telegram user ID. Send a positive integer.",
+        "sec_add_done": "User {uid} whitelisted and is now active.",
+        "sec_remove_last_admin": "Refusing to remove the last whitelisted user — add another admin first.",
+        "sec_remove_done": "User {uid} removed.",
+        "sec_remove_missing": "User {uid} was not on the whitelist.",
+        "sec_config_title": "Configuration (non-secret)",
     },
     "ar": {
         "main_menu_welcome": "🐧 **مرحبًا بك في روبوت إدارة لينكس!**\n\nماذا تريد أن تفعل؟",

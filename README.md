@@ -484,15 +484,25 @@ All messages are properly escaped and formatted for each language.
 {
   "telegram_token": "YOUR_BOT_TOKEN",
   "whitelisted_users": [YOUR_TELEGRAM_USER_ID],
-  "access_mode": "whitelist",
+  "access_mode": "admin_only",
   "destination_policy": "deny_public",
   "allowed_destinations": ["10.0.0.0/8", "192.168.0.0/16"]
 }
 ```
 
 Unknown keys are preserved verbatim on save, so hand-written settings are never
-clobbered. The file is tightened to mode `600` on load. Environment variables
-override the file:
+clobbered. The file is tightened to mode `600` on load.
+
+**Since 3.5 the bot also loads a `.env` file** (copy `.env.example`) holding the
+same variables — useful to keep the token out of shell profiles. Real
+environment variables always win over `.env` values:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `TLA_BOT_TOKEN` | *(empty)* | Bot token (also accepted: `TELEGRAM_BOT_TOKEN`) |
+| `TLA_ADMIN_ID` | *(empty)* | Owner's Telegram user ID (also: `ADMIN_USER_ID`) |
+| `TLA_SETUP_PIN` | *(empty)* | One-time `/start <pin>` admin claim PIN |
+| `TLA_ENV_FILE` | `.env` | Alternate dotenv path |
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -500,7 +510,7 @@ override the file:
 | `TLA_DB_FILE` | `database.db` | SQLite database path |
 | `TLA_ENCRYPTION_KEY` | *(unset)* | Fernet key, avoids a key file on disk |
 | `TLA_ENCRYPTION_KEY_FILE` | `var/encryption.key` | Key file when the env var is unset |
-| `TLA_ACCESS_MODE` | `open` | `open`, `whitelist` or `admin_only` |
+| `TLA_ACCESS_MODE` | `admin_only` | `open`, `whitelist` or `admin_only` — **3.5 default changed from `open` to fail-closed** |
 | `TLA_DESTINATION_POLICY` | `allow_all` | `allow_all`, `deny_public` or `allowlist` |
 | `TLA_ALLOWED_DESTINATIONS` | *(empty)* | Comma-separated CIDRs for `allowlist` |
 | `TLA_HEALTH_PORT` | *(unset)* | Enables `/healthz`, `/readyz`, `/metrics` |
@@ -527,7 +537,30 @@ Every handler passes through a single gate backed by `src/access_control.py`:
 - `admin_only` — only the first whitelisted ID (the administrator) is served.
 
 Unknown users get a translated denial, the denial is audited, and the handler
-never runs. The mode can be changed at runtime with `/access` (admin only).
+never runs. The mode can be changed at runtime with `/access` (admin only) or
+from the **Security Center** (`/security`).
+
+### First-run enrollment (setup PIN, 3.5)
+
+A fresh deployment has no admin yet. Set `TLA_SETUP_PIN` (or `setup_pin` in
+`config.json`) before the first boot; the first user to send `/start <pin>`
+becomes the admin and the PIN is burned immediately. Wrong attempts are
+rate-limited (5 failures → 15-minute lockout per user) and every attempt is
+audited. The PIN never grants anything once an admin exists.
+
+### Security Center (`/security`, 3.5)
+
+One panel for every access decision: current mode, admin ID, whitelist size,
+enrollment-PIN state, destination policy and a masked token view — with
+buttons to switch modes (open requires a second confirmation tap), add/remove
+whitelisted users, inspect the non-secret configuration and tail the audit
+log. All actions are admin-only and audited.
+
+### Host status panel (`/status`, 3.5)
+
+A one-tap snapshot of the machine running the bot: CPU (live two-sample),
+RAM/swap, load average, disk, uptime and runtime identity — with a Refresh
+button. Read-only, no SSH session required.
 
 ## Destination policy
 

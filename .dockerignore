@@ -1,0 +1,45 @@
+# --- VCS / CI ---
+.git/
+.github/
+.gitignore
+.gitattributes
+
+# --- Python artifacts ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.venv/
+venv/
+
+# --- Tests (not needed inside the runtime image) ---
+tests/
+scripts/ci/
+.tox
+
+# --- Secrets: NEVER bake runtime config into the image ---
+config.json
+.env
+.env.*
+*.key
+var/
+*.db
+*.db-shm
+*.db-wal
+bot.lock
+
+# --- Docs / editor ---
+*.md
+!README.md
+.vscode/
+.idea/
+.DS_Store

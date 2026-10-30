@@ -41,7 +41,17 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from ..localization import translate
 from . import pagination
 
-__all__ = ["menu", "kv_panel", "paged", "PagedPage", "LABEL_MAX", "MENU_MAX_ROWS"]
+__all__ = [
+    "menu",
+    "kv_panel",
+    "paged",
+    "PagedPage",
+    "LABEL_MAX",
+    "MENU_MAX_ROWS",
+    "ICONS",
+    "styled_menu",
+    "section_row",
+]
 
 #: Menu button label limit; longer labels truncate with an ellipsis.
 LABEL_MAX = 24
@@ -52,12 +62,131 @@ MENU_MAX_ROWS = 8
 #: per_page floor used when a caller passes a non-positive page size.
 _FALLBACK_PER_PAGE = 6
 
+#: Canonical icon set.  Deterministic, emoji-only (no image assets), applied
+#: by ``styled_menu`` so every menu inherits the same visual language.
+ICONS: dict[str, str] = {
+    "system": "🖥",
+    "server": "🌐",
+    "security": "🛡",
+    "tools": "🧰",
+    "settings": "⚙️",
+    "status": "📊",
+    "shell": "⌨️",
+    "files": "📁",
+    "docker": "🐳",
+    "packages": "📦",
+    "firewall": "🔥",
+    "processes": "⚙️",
+    "services": "🧩",
+    "backup": "💾",
+    "restore": "♻️",
+    "update": "🔄",
+    "language": "🌍",
+    "back": "🔙",
+    "add": "➕",
+    "remove": "➖",
+    "connect": "🔌",
+    "warn": "⚠️",
+    "ok": "✅",
+    "denied": "⛔",
+    "home": "🏠",
+}
+
+#: Callback-data → icon-key aliases for the established wire-format names
+#: (those callbacks predate the icon system and cannot be renamed).
+CALLBACK_ICON_ALIASES: dict[str, str] = {
+    "host_status": "status",
+    "sec_menu": "security",
+    "connect_server_menu": "connect",
+    "add_server_start": "add",
+    "remove_server_menu": "remove",
+    "language_menu": "language",
+    "backup": "backup",
+    "restore": "restore",
+    "service_management_menu_": "services",
+    "package_management_menu_": "packages",
+    "docker_management_menu_": "docker",
+    "firewall_management_menu_": "firewall",
+    "process_management_menu_": "processes",
+    "file_manager_menu_": "files",
+    "system_commands_menu_": "tools",
+}
+
+
+def _icon_for(callback_data: str) -> str:
+    """Best-effort icon for a callback name: exact key, alias, first segment."""
+    if callback_data in ICONS:
+        return ICONS[callback_data]
+    alias = CALLBACK_ICON_ALIASES.get(callback_data)
+    if alias:
+        return ICONS.get(alias, "")
+    return ICONS.get(callback_data.split("_", 1)[0], "")
+
 
 def _truncate(label: str, limit: int = LABEL_MAX) -> str:
     """Truncates ``label`` to ``limit`` chars, appending an ellipsis when cut."""
     if len(label) <= limit:
         return label
     return label[: limit - 1] + "…"
+
+
+def styled_menu(
+    title: str,
+    items: list[tuple[str, str]],
+    back: str | None = None,
+    *,
+    columns: int = 1,
+    icons: bool = True,
+) -> tuple[str, InlineKeyboardMarkup]:
+    """Builds a styled menu: icon-labelled buttons in one or two columns.
+
+    Deterministic like :func:`menu`: ``items`` render in the given order,
+    labels truncate identically, and the trailing ``back`` row is appended
+    last when given.  ``columns`` may only be 1 or 2; with 2, items fill
+    left-to-right per row and a lone trailing item occupies a single cell.
+    ``icons`` prefixes each label with the icon registered in ``ICONS``
+    under the item's icon key — items may carry their own icon inline
+    instead, in which case no prefix is added.
+    """
+    if columns not in (1, 2):
+        columns = 1
+    keyboard: list[list[InlineKeyboardButton]] = []
+
+    def _button(label: str, cb: str) -> InlineKeyboardButton:
+        rendered = label
+        if icons and not any(emoji in label for emoji in ICONS.values()):
+            icon = _icon_for(cb)
+            if icon:
+                rendered = f"{icon} {label}"
+        return InlineKeyboardButton(_truncate(rendered), callback_data=cb)
+
+    if columns == 1:
+        keyboard = [[_button(label, cb)] for label, cb in items[:MENU_MAX_ROWS]]
+    else:
+        window = items[: MENU_MAX_ROWS * 2]
+        for index in range(0, len(window), 2):
+            row = [_button(window[index][0], window[index][1])]
+            if index + 1 < len(window):
+                row.append(_button(window[index + 1][0], window[index + 1][1]))
+            keyboard.append(row)
+    if back is not None:
+        back_icon = ICONS["back"]
+        keyboard.append(
+            [InlineKeyboardButton(f"{back_icon} {translate('ui_back')}", callback_data=back)]
+        )
+    return (title, InlineKeyboardMarkup(keyboard))
+
+
+def section_row(
+    sections: list[tuple[str, str]],
+) -> list[list[InlineKeyboardButton]]:
+    """Renders one row of section buttons (2-3 per row, icon-prefixed)."""
+    row: list[InlineKeyboardButton] = []
+    for label, cb in sections:
+        icon = _icon_for(cb)
+        text = f"{icon} {label}" if icon and icon not in label else label
+        row.append(InlineKeyboardButton(_truncate(text), callback_data=cb))
+    return [row]
 
 
 def menu(
@@ -77,7 +206,8 @@ def menu(
       not content, so it never counts against the 8-row clamp.
     """
     keyboard: list[list[InlineKeyboardButton]] = [
-        [InlineKeyboardButton(_truncate(label), callback_data=cb)] for label, cb in items[:MENU_MAX_ROWS]
+        [InlineKeyboardButton(_truncate(label), callback_data=cb)]
+        for label, cb in items[:MENU_MAX_ROWS]
     ]
     if back is not None:
         keyboard.append([InlineKeyboardButton(_truncate(translate("ui_back")), callback_data=back)])
@@ -97,6 +227,7 @@ def kv_panel(title: str, pairs: list[tuple[str, str]]) -> tuple[str, InlineKeybo
     Empty input renders the localized ``ui_kv_empty`` placeholder inside
     the fence rather than an empty block.
     """
+
     # A value/label carrying ``` would close the block early and let the
     # tail be parsed as MarkdownV2 - defang it to a non-breaking lookalike
     # (zero-width joined backtick) so user data can never exit the fence.

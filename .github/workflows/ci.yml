@@ -19,6 +19,9 @@ name: CI
     branches: ["**"]
     tags: ["v*"]
   pull_request:
+  schedule:
+    # Nightly dependency-rot and flake detector at 03:40 UTC.
+    - cron: "40 3 * * *"
   workflow_dispatch:
 
 permissions:
@@ -61,6 +64,18 @@ jobs:
       # once the orchestrator has migrated the tree.
       - name: ruff format --check (scripts/ci)
         run: ruff format --check scripts/ci
+
+  shellcheck:
+    name: Shell check (shellcheck)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run shellcheck on install/deploy scripts
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck -S warning install.sh scripts/*.sh scripts/ci/*.sh
 
   typecheck:
     name: Typecheck (mypy)
@@ -108,7 +123,7 @@ jobs:
 
   test:
     name: Test (${{ matrix.os }})
-    needs: [lint, typecheck, validate-workflows]
+    needs: [lint, shellcheck, typecheck, validate-workflows]
     strategy:
       fail-fast: false
       matrix:
@@ -337,7 +352,7 @@ jobs:
     # `needs` with the full job list makes this job the single status the
     # branch protection rule should require. `if: always()` lets it run and
     # report even when an upstream gate failed.
-    needs: [lint, typecheck, validate-workflows, test, package, docker, security]
+    needs: [lint, shellcheck, typecheck, validate-workflows, test, package, docker, security]
     if: always()
     runs-on: ubuntu-latest
     steps:
