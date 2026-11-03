@@ -259,6 +259,44 @@ def test_rotation_leaves_data_decryptable_when_interrupted(env):
     assert key_data["keys"]["v1"] == original_key
 
 
+def test_cipher_cache_follows_the_configured_key_file(env, tmp_path, monkeypatch):
+    """The cache must be keyed on ``TLA_ENCRYPTION_KEY_FILE``, not bound to
+    whatever file happened to be configured first.
+
+    Reproduced the pollution across the suite: a fixture pointed the module at
+    a throwaway key file, monkeypatch restored the environment variable, and
+    every later test still used the throwaway keys — or raised ``KeyError``
+    once rotation had moved the primary on.
+    """
+    env.security_module.encrypt_secret("first")
+
+    # Point at a *different* key file and warm it up.
+    other = tmp_path / "other.key"
+    other_key = env.security_module.Fernet.generate_key().decode()
+    other.write_text(
+        env.security_module.json.dumps(
+            {"primary_key": "v1", "keys": {"v1": other_key}}
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TLA_ENCRYPTION_KEY_FILE", str(other))
+
+    ciphertext = env.security_module.encrypt_secret("second")
+    assert ciphertext.startswith(b"v1:")
+
+    # Back to the first file: the process must read the FIRST file again,
+    # not keep whatever it cached from the second.
+    monkeypatch.setenv("TLA_ENCRYPTION_KEY_FILE", str(env.key_path))
+    first_again = env.security_module.encrypt_secret("third")
+
+    # A value encrypted under the other file must NOT decrypt here, proving
+    # the two files' ciphers were never conflated.
+    with pytest.raises(env.security_module.SecretEncryptionError):
+        env.security_module.decrypt_secret(ciphertext)
+    # And the first file's own round trip still works.
+    assert env.security_module.decrypt_secret(first_again) == "third"
+
+
 def test_decoding_a_corrupt_value_fails_closed(env):
     """A corrupt base64 row must not crash with binascii.Error — it must raise
     the module's own error type so callers can handle it uniformly."""
