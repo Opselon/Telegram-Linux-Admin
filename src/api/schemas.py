@@ -37,6 +37,7 @@ class AccountOut(BaseModel):
     username: str
     role: str
     permissions: list[str] = []
+    mfa_enabled: bool = False
 
 
 # --- servers ----------------------------------------------------------------

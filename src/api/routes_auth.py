@@ -28,11 +28,13 @@ def _issue_session(response: Response, token: str) -> None:
 
 
 def _account_out(actor: Actor, username: str) -> AccountOut:
+    web = store.get_web_user_by_account(actor.account_id)
     return AccountOut(
         account_id=actor.account_id,
         username=username,
         role=actor.role,
         permissions=sorted(actor.permissions),
+        mfa_enabled=bool(web and web.get("totp_enabled")),
     )
 
 
