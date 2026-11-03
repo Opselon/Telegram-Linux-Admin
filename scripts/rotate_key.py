@@ -25,6 +25,19 @@ from cryptography.fernet import Fernet, InvalidToken
 # Ensure the script can find the 'src' directory
 sys.path.append(str(Path(__file__).parent.parent))
 
+# Windows consoles default to the legacy cp1252 codepage, which cannot encode
+# the emoji this script prints — a hard UnicodeEncodeError on the very first
+# line. Force UTF-8 on stdout/stderr so the script is portable. pytest's
+# capture objects (and Pyright's TextIO stub) lack reconfigure, hence the
+# hasattr guard.
+for _stream in (sys.stdout, sys.stderr):
+    _reconfigure = getattr(_stream, "reconfigure", None)
+    if callable(_reconfigure):
+        try:
+            _reconfigure(encoding="utf-8")
+        except (OSError, ValueError):
+            pass
+
 from src.database import get_all_servers, update_server, close_db_connection
 from src.security import _get_key_path, _load_keys, _reload_ciphers, SecretEncryptionError
 

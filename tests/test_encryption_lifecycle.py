@@ -127,7 +127,14 @@ def test_cipher_cache_invalidates_after_key_rotation(env):
 
 
 def test_key_file_permissions_are_restricted(env):
-    """The generated key file must not be world/group readable."""
+    """The generated key file must not be world/group readable.
+
+    Windows has no POSIX file modes (the repo already deselects
+    ``test_keyfile_is_created_when_missing`` in CI for the same reason), so
+    the 0600 assertion is POSIX-only there.
+    """
+    if os.name == "nt":
+        pytest.skip("POSIX file modes are not implemented on Windows")
     # The key file is created lazily on first use.
     env.security_module.encrypt_secret("warmup")
     mode = env.key_path.stat().st_mode & 0o777
