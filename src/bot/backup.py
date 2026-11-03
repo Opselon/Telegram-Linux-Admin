@@ -33,6 +33,7 @@ from ..database import (
     _resolve_db_path,
 )
 from ..security import _get_key_path as get_encryption_key_path
+from ..security import _reload_ciphers as reload_ciphers
 from ..config import DEFAULT_CONFIG_FILE
 from datetime import datetime
 import asyncio
@@ -538,6 +539,11 @@ async def restore_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             shutil.copy2(extracted_key, key_tmp)
             os.chmod(key_tmp, 0o600)
             os.replace(key_tmp, str(key_target))
+            # The running process cached the old ciphers at import time; the
+            # restored key replaces them, so drop the cache or every decrypt
+            # of the restored credentials fails and every new encrypt is
+            # written under a key the process no longer holds.
+            reload_ciphers()
         else:
             # A backup that predates key restore carries no key member. The
             # live key is left untouched — but the operator must be told that

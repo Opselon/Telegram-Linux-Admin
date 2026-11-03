@@ -14,17 +14,57 @@ This script performs the following actions:
 This ensures a seamless key rotation without invalidating existing data.
 """
 
+import base64
 import os
 import sys
 import json
+import sqlite3
 from pathlib import Path
 from cryptography.fernet import Fernet, InvalidToken
 
 # Ensure the script can find the 'src' directory
 sys.path.append(str(Path(__file__).parent.parent))
 
+# Windows consoles default to the legacy cp1252 codepage, which cannot encode
+# the emoji this script prints — a hard UnicodeEncodeError on the very first
+# line. Force UTF-8 on stdout/stderr so the script is portable. pytest's
+# capture objects (and Pyright's TextIO stub) lack reconfigure, hence the
+# hasattr guard.
+for _stream in (sys.stdout, sys.stderr):
+    _reconfigure = getattr(_stream, "reconfigure", None)
+    if callable(_reconfigure):
+        try:
+            _reconfigure(encoding="utf-8")
+        except (OSError, ValueError):
+            pass
+
 from src.database import get_all_servers, update_server, close_db_connection
-from src.security import _get_key_path, _load_keys, SecretEncryptionError
+from src.security import _get_key_path, _load_keys, _reload_ciphers, SecretEncryptionError
+
+
+def _reload_ciphers_running_process() -> None:
+    """Invalidates the cipher cache.
+
+    ``scripts/rotate_key.py`` runs as its own process, so clearing the cache
+    here only helps itself. It also runs (as a shim) under the bot's process
+    when invoked from a long-lived context; in that case the bot's next
+    encrypt/decrypt picks up the new primary instead of raising ``KeyError``
+    on the stale one.
+    """
+    _reload_ciphers()
+
+
+def _open_database_raw() -> sqlite3.Connection:
+    """Opens the database directly to read still-encrypted ciphertext.
+
+    ``database.get_all_servers`` decrypts before returning, which would leave
+    rotation nothing to re-encrypt. This reads the raw stored bytes (Base64-
+    wrapped, version-prefixed Fernet ciphertext) exactly as they live on disk.
+    """
+    db_path = os.environ.get("TLA_DB_FILE", "database.db")
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = None
+    return conn
 
 def rotate_encryption_key():
     """
@@ -58,49 +98,84 @@ def rotate_encryption_key():
         all_keys = {k: v.encode('utf-8') for k, v in key_data["keys"].items()}
         ciphers = {v: Fernet(k) for v, k in all_keys.items()}
 
-        # Step 4: Re-encrypt all secrets in the database
+        # Step 5: Write the new key file BEFORE any database record is touched.
+        #
+        # The previous order re-encrypted the database first and persisted the
+        # key afterwards, so a crash in between left the database encrypted
+        # under a key that had never been written — every credential
+        # irreversibly lost. Writing the key first means the worst case is a
+        # database still encrypted under the old key, which the key file still
+        # holds (rotation keeps every old key), so the state is always
+        # recoverable.
+        #
+        # The write is atomic: a temp file on the same filesystem, chmod 0600
+        # *before* the content is linked, then os.replace. The old code
+        # truncated the live file in place, so a concurrent reader could catch
+        # it mid-write and raise "Key file is corrupted".
+        print(f"   - Saving updated key file to {key_path}...")
+        key_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_key = key_path.with_suffix(key_path.suffix + ".new")
+        fd = os.open(tmp_key, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(key_data, f, indent=2)
+        except BaseException:
+            os.close(fd)
+            raise
+        os.replace(tmp_key, key_path)
+        # The running bot cached the old ciphers; drop them so it picks up the
+        # new primary on its next use.
+        _reload_ciphers_running_process()
+
+        # Step 6: Re-encrypt all secrets in the database (key persisted in step 5)
         print("   - Re-encrypting secrets in the database...")
-        servers = get_all_servers()
-        if not servers:
+        # Read the raw (still-encrypted, base64-wrapped) rows: get_all_servers()
+        # returns decrypted plaintext, and re-running a decrypt helper on it
+        # fails. Rotation must see the ciphertext as stored.
+        conn = _open_database_raw()
+        try:
+            rows = conn.execute("SELECT owner_id, alias, password, key_path FROM servers").fetchall()
+        finally:
+            conn.close()
+        if not rows:
             print("   - No servers found in the database. Nothing to re-encrypt.")
         else:
             re_encrypted_count = 0
-            for server in servers:
-                owner_id = server["owner_id"]
-                alias = server["alias"]
+            for row in rows:
+                owner_id, alias, stored_password, stored_key_path = row
 
-                # Decrypt with old keys
+                # Stored values are Base64-wrapped ciphertext; unwrap to the
+                # versioned bytes the decrypt helper expects.
+                def _unwrap(value):
+                    if value is None:
+                        return None
+                    try:
+                        return base64.b64decode(value)
+                    except Exception:
+                        return value.encode("utf-8")
+
                 try:
-                    decrypted_password = decrypt_with_any_key(server.get("password"), ciphers)
-                    decrypted_key_path = decrypt_with_any_key(server.get("key_path"), ciphers)
+                    decrypted_password = decrypt_with_any_key(_unwrap(stored_password), ciphers)
+                    decrypted_key_path = decrypt_with_any_key(_unwrap(stored_key_path), ciphers)
                 except SecretEncryptionError as e:
                     print(f"   - ERROR: Could not decrypt data for server '{alias}'. Skipping. Error: {e}")
                     continue
 
-                # Re-encrypt with the new primary key
-                new_cipher = ciphers[new_version]
-                encrypted_password = new_cipher.encrypt(decrypted_password.encode('utf-8')) if decrypted_password else None
-                encrypted_key_path = new_cipher.encrypt(decrypted_key_path.encode('utf-8')) if decrypted_key_path else None
-
-                # Prepend version info for storage
-                final_password = f"{new_version}:".encode('utf-8') + encrypted_password if encrypted_password else None
-                final_key_path = f"{new_version}:".encode('utf-8') + encrypted_key_path if encrypted_key_path else None
-
+                # Re-encrypt with the new primary key. The previous version
+                # assembled the versioned ciphertext bytes here and handed
+                # them to update_server(), whose _encrypt_value feeds them to
+                # security.encrypt_secret — which enforces str and raises
+                # TypeError, and would have double-encrypted even if it had
+                # not. update_server owns the versioning and the encryption;
+                # it receives the PLAINTEXT here.
                 update_server(
                     owner_id,
                     alias,
-                    password=final_password,
-                    key_path=final_key_path
+                    password=decrypted_password,
+                    key_path=decrypted_key_path,
                 )
                 re_encrypted_count += 1
             print(f"   - Successfully re-encrypted secrets for {re_encrypted_count} server(s).")
-
-        # Step 5: Write the new key file
-        print(f"   - Saving updated key file to {key_path}...")
-        key_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(key_path, "w", encoding="utf-8") as f:
-            json.dump(key_data, f, indent=2)
-        os.chmod(key_path, 0o600)
 
         print("\n✅ Key rotation complete!")
         print(f"   - New primary key version is '{new_version}'.")
