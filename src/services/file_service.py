@@ -24,7 +24,7 @@ from typing import Any
 from ..audit import audit as _audit
 
 
-def audit_record(event: str, **fields: object) -> None:
+def audit_record(event: str, **fields: Any) -> None:
     """Audit one security-relevant event (shared helper for all services)."""
     _audit.record(event, **fields)
 from .permissions import Actor

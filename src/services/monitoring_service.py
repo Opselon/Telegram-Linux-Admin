@@ -18,7 +18,7 @@ from ..access_control import rate_limiter
 from ..audit import audit as _audit
 
 
-def audit_record(event: str, **fields: object) -> None:
+def audit_record(event: str, **fields: Any) -> None:
     """Audit one security-relevant event (shared helper for all services)."""
     _audit.record(event, **fields)
 from .operations_service import OperationError

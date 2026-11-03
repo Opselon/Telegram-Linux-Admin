@@ -42,16 +42,7 @@ def wire_notifications() -> None:
     """Connects NotificationService emissions into the SSE broker."""
     from ..services import get_services
 
-    async def _bridge(kind: str, payload: dict[str, Any]) -> None:
+    async def _subscriber(kind: str, payload: dict[str, Any]) -> None:
         publish(kind, payload)
-
-    def _subscriber(kind: str, payload: dict[str, Any]) -> None:
-        try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(_bridge(kind, payload))
-        except RuntimeError:
-            # No running loop in this thread (emitter ran from a worker);
-            # publish synchronously — listeners are sync and cheap.
-            publish(kind, payload)
 
     get_services().notifications.subscribe(_subscriber)

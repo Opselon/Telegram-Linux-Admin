@@ -15,7 +15,7 @@ from typing import Any
 from ..audit import audit as _audit
 
 
-def audit_record(event: str, **fields: object) -> None:
+def audit_record(event: str, **fields: Any) -> None:
     """Audit one security-relevant event (shared helper for all services)."""
     _audit.record(event, **fields)
 from .permissions import Actor
@@ -109,7 +109,7 @@ class OperationsService:
             parts = line.split(None, 6)
             if len(parts) < 7:
                 continue
-            entry = {
+            entry: dict[str, Any] = {
                 "pid": int(parts[0]),
                 "ppid": int(parts[1]),
                 "user": parts[2],

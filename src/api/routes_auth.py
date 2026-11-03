@@ -54,7 +54,9 @@ async def setup(payload: SetupRequest, response: Response) -> AccountOut:
                        exc.key, str(exc)) from exc
     _issue_session(response, token)
     set_csrf_cookie(response)
-    actor = store.actor_from_account(store.resolve_session(token))
+    account = store.resolve_session(token)
+    assert account is not None  # just issued
+    actor = store.actor_from_account(account)
     return _account_out(actor, payload.username)
 
 
@@ -75,8 +77,9 @@ async def login(payload: LoginRequest, request: Request, response: Response) -> 
                        details={"retry_after": 900} if status == 429 else None) from exc
     _issue_session(response, token)
     set_csrf_cookie(response)
-    actor = store.actor_from_account(store.resolve_session(token))
-    return _account_out(actor, info["username"])
+    account = store.resolve_session(token)
+    assert account is not None  # just issued
+    return _account_out(store.actor_from_account(account), info["username"])
 
 
 @router.post("/mfa", response_model=AccountOut)
@@ -88,8 +91,9 @@ async def mfa(payload: MFARequest, response: Response) -> AccountOut:
         raise ApiError(401, exc.key, str(exc)) from exc
     _issue_session(response, token)
     set_csrf_cookie(response)
-    actor = store.actor_from_account(store.resolve_session(token))
-    return _account_out(actor, info["username"])
+    account = store.resolve_session(token)
+    assert account is not None  # just issued
+    return _account_out(store.actor_from_account(account), info["username"])
 
 
 @router.post("/logout")

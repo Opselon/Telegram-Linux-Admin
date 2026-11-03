@@ -66,18 +66,23 @@ async def _run_web(stop: asyncio.Event) -> dict[str, bool]:
         host=os.environ.get("TLA_WEB_HOST", "127.0.0.1"),
         port=int(os.environ.get("TLA_WEB_PORT", "8080")),
         log_level="warning",
-        # The runtime owns the loop; uvicorn must not install signal handlers
-        # or try to manage process lifecycle.
-        install_signal_handlers=False,
         lifespan="on",
     )
     server = uvicorn.Server(uvi_config)
+    # The runtime owns the loop and signals; uvicorn must not touch them
+    # (Server.serve() enters self.capture_signals()).
+    server.capture_signals = _null_signals  # type: ignore[method-assign]
     task = asyncio.create_task(server.serve(), name="web-server")
     await stop.wait()
     server.should_exit = True
     with contextlib.suppress(asyncio.TimeoutError):
         await asyncio.wait_for(task, timeout=10)
     return {"web": True}
+
+
+@contextlib.contextmanager
+def _null_signals():  # noqa: ANN202 - uvicorn Server.capture_signals override
+    yield
 
 
 async def _run_bale(stop: asyncio.Event) -> dict[str, bool]:

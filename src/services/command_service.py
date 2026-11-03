@@ -20,7 +20,7 @@ from .. import database
 from ..audit import audit as _audit
 
 
-def audit_record(event: str, **fields: object) -> None:
+def audit_record(event: str, **fields: Any) -> None:
     """Audit one security-relevant event (shared helper for all services)."""
     _audit.record(event, **fields)
 from ..command_policy import CONFIRMATION_TTL, Risk, classify, validate_command_text

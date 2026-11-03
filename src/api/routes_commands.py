@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 from fastapi import APIRouter, Depends
 
 from ..jobs.models import Job, JobState
@@ -9,7 +11,7 @@ from ..services import get_services
 from ..services.command_service import CommandDenied, ConfirmationError
 from ..services.permissions import Actor
 from .deps import ApiError, not_found, rate_limit, require_permission
-from .schemas import CommandRequest, ConfirmRequest, JobOut, PlanOut
+from .schemas import CommandPlanKind, CommandRequest, ConfirmRequest, JobOut, PendingOut, PlanOut
 
 router = APIRouter(tags=["commands"])
 
@@ -42,17 +44,13 @@ async def request_command(payload: CommandRequest,
                        details={"risk": plan.risk, "rule": plan.rule})
     pending = None
     if plan.pending is not None:
-        pending = {
-            "token": plan.pending.token,
-            "server_id": plan.pending.server_id,
-            "alias": plan.pending.alias,
-            "command": plan.pending.command,
-            "risk": plan.pending.risk,
-            "reason": plan.pending.reason,
-            "expires_at": plan.pending.expires_at,
-        }
+        p = plan.pending
+        pending = PendingOut(
+            token=p.token, server_id=p.server_id, alias=p.alias, command=p.command,
+            risk=p.risk, reason=p.reason, expires_at=p.expires_at,
+        )
     return PlanOut(
-        kind=plan.kind, reason=plan.reason, risk=plan.risk, rule=plan.rule,
+        kind=cast(CommandPlanKind, plan.kind), reason=plan.reason, risk=plan.risk, rule=plan.rule,
         job=_job_out(plan.job) if plan.job is not None else None,
         pending=pending,
     )
