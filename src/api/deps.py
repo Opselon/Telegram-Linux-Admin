@@ -43,11 +43,23 @@ def get_session_token(request: Request) -> str | None:
 
 
 async def current_actor(request: Request) -> Actor:
-    """Authenticates the request via the session cookie; 401 when invalid."""
+    """Authenticates the request via the session cookie; 401 when invalid.
+
+    Also applies the default-on per-account API budget (240 req/min, env
+    ``TLA_API_RATE_LIMIT``) — per-route limits stack on top of this.
+    """
     account = store.resolve_session(request.cookies.get(SESSION_COOKIE))
     if account is None:
         raise ApiError(401, "unauthenticated", "Authentication required.")
     actor = store.actor_from_account(account)
+    max_calls = int(os.environ.get("TLA_API_RATE_LIMIT", "240"))
+    allowed, retry_after = rate_limiter.check(
+        actor.account_id, "api:global", max_calls=max_calls, period=60.0
+    )
+    if not allowed:
+        audit.record("security.rate_limited", account_id=actor.account_id)
+        raise ApiError(429, "rate_limited", "Too many requests; slow down.",
+                       details={"retry_after": round(retry_after, 1)})
     if actor.role == "read_only" and account.kind == "web":
         web = store.get_web_user_by_account(account.id)
         if web is not None and web.get("disabled"):
