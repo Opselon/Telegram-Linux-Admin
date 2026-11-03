@@ -39,12 +39,16 @@ from ..localization import DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES, translate
 from ..parse_mode import get_parse_mode
 
 # --- Conversation states (stable ints: PTB persists them in user_data) ---
+# The ints are part of the on-disk persistence contract: a state stored by an
+# older build must decode to the same conversation step. New states are
+# therefore APPENDED at the end; never insert one into the middle or renumber.
 (
     AWAIT_COMMAND, ALIAS, HOSTNAME, USER,
     AUTH_METHOD, PASSWORD, KEY_PATH, AWAIT_RESTORE_CONFIRMATION,
     AWAIT_RESTORE_FILE, AWAIT_SERVICE_NAME, AWAIT_PACKAGE_NAME, AWAIT_CONTAINER_NAME,
     AWAIT_FILE_PATH, AWAIT_UPLOAD_FILE, AWAIT_PID, AWAIT_FIREWALL_RULE,
-) = range(16)
+    PORT,
+) = range(17)
 
 # --- Mutable singletons ----------------------------------------------------
 ssh_manager: Any = None

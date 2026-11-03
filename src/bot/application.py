@@ -27,7 +27,7 @@ from ..access_control import OPEN as OPEN_ACCESS_MODE
 
 from . import state
 from .state import (
-    ALIAS, AUTH_METHOD, AWAIT_COMMAND, AWAIT_CONTAINER_NAME, AWAIT_FILE_PATH, AWAIT_FIREWALL_RULE, AWAIT_PACKAGE_NAME, AWAIT_PID, AWAIT_RESTORE_CONFIRMATION, AWAIT_RESTORE_FILE, AWAIT_SERVICE_NAME, AWAIT_UPLOAD_FILE, HOSTNAME, KEY_PATH, PASSWORD, USER,
+    ALIAS, AUTH_METHOD, AWAIT_COMMAND, AWAIT_CONTAINER_NAME, AWAIT_FILE_PATH, AWAIT_FIREWALL_RULE, AWAIT_PACKAGE_NAME, AWAIT_PID, AWAIT_RESTORE_CONFIRMATION, AWAIT_RESTORE_FILE, AWAIT_SERVICE_NAME, AWAIT_UPLOAD_FILE, HOSTNAME, KEY_PATH, PASSWORD, PORT, USER,
 )
 
 from .admin import dashboard_command, update_bot_command
@@ -78,7 +78,7 @@ from .processes import (
 )
 from .servers import (
     add_server_start, auth_method_invalid_input, cancel_add_server, connect_server_menu,
-    disconnect, get_alias, get_auth_method, get_hostname,
+    disconnect, get_alias, get_auth_method, get_hostname, get_port,
     get_key_path, get_password, get_user, handle_server_connection,
     remove_server_confirm, remove_server_menu,
 )
@@ -125,6 +125,7 @@ def build_application(*, on_startup=None, on_shutdown=None) -> Application:
         states={
             ALIAS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_alias)],
             HOSTNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_hostname)],
+            PORT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_port)],
             USER: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_user)],
             AUTH_METHOD: [
                 CallbackQueryHandler(get_auth_method),

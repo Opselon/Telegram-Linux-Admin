@@ -308,6 +308,9 @@ def initialize_database() -> None:
         )
         _ensure_column(conn, "servers", "owner_id INTEGER NOT NULL DEFAULT 0", "owner_id")
         _ensure_column(conn, "servers", "host_key TEXT", "host_key")
+        # The SSH port. Existing installs default to 22 — the standard port —
+        # so old records keep working unchanged (the migration is additive).
+        _ensure_column(conn, "servers", "port INTEGER NOT NULL DEFAULT 22", "port")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_servers_owner_alias ON servers(owner_id, alias)"
         )
@@ -328,6 +331,7 @@ def add_server(
     user: str,
     password: str | None = None,
     key_path: str | None = None,
+    port: int = 22,
 ) -> None:
     """Adds a new server definition scoped to a Telegram user."""
     if not isinstance(owner_id, int):
@@ -351,10 +355,10 @@ def add_server(
                 )
             conn.execute(
                 """
-                INSERT INTO servers (owner_id, alias, hostname, user, password, key_path)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO servers (owner_id, alias, hostname, user, password, key_path, port)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (owner_id, alias, hostname, user, encrypted_password, encrypted_key),
+                (owner_id, alias, hostname, user, encrypted_password, encrypted_key, port),
             )
     except sqlite3.IntegrityError as exc:
         raise ValueError(
@@ -370,17 +374,22 @@ def update_server(
     user: str | None = _UNSET,
     password: str | None = _UNSET,
     key_path: str | None = _UNSET,
+    port: int | None = _UNSET,
 ) -> bool:
     """Updates an existing server entry. Returns True if a row was modified."""
     fields: list[str] = []
     params: list[Any] = []
 
-    for name, value in (
-        ("hostname", hostname),
-        ("user", user),
-        ("password", password),
-        ("key_path", key_path),
-    ):
+    updates: list[tuple[str, Any]] = list(
+        (
+            ("hostname", hostname),
+            ("user", user),
+            ("password", password),
+            ("key_path", key_path),
+            ("port", port),
+        )
+    )
+    for name, value in updates:
         if value is _UNSET:
             continue
         if name in {"password", "key_path"}:

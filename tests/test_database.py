@@ -20,8 +20,9 @@ def mock_db_connection(monkeypatch):
     # Create tables expected by the module. This mirrors the production schema
     # in database.initialize_database() exactly — including the
     # FOREIGN KEY ... ON DELETE CASCADE on servers.owner_id, which the previous
-    # fixture omitted. Without it, every cascade behaviour (seed_users, user
-    # removal) is untestable here while silently diverging from production.
+    # fixture omitted, and the port column, which the previous fixture also
+    # omitted. Without them, cascade behaviour and non-22 SSH ports are
+    # untestable here while silently diverging from production.
     conn.execute(
         """
         CREATE TABLE servers (
@@ -34,6 +35,7 @@ def mock_db_connection(monkeypatch):
             key_path TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             host_key TEXT,
+            port INTEGER NOT NULL DEFAULT 22,
             FOREIGN KEY(owner_id) REFERENCES users(telegram_id) ON DELETE CASCADE,
             UNIQUE(owner_id, alias)
         )

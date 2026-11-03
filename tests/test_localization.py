@@ -5,6 +5,8 @@ from src.localization import SUPPORTED_LANGUAGES, translate
 
 PROMPT_KEYS = [
     "prompt_hostname",
+    "prompt_port",
+    "error_invalid_port",
     "prompt_username",
     "prompt_auth_method",
     "prompt_password",
@@ -20,7 +22,7 @@ def test_add_server_prompts_available_for_all_languages():
 
     for language in SUPPORTED_LANGUAGES:
         for key in PROMPT_KEYS:
-            value = translate(key, language, alias="example")
+            value = translate(key, language, alias="example", error="invalid port")
             assert value
             # We should never get the raw key back even if a translation is missing
             assert value != key
