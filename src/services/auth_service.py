@@ -136,6 +136,7 @@ class AuthService:
             except Exception:
                 pass
             self.register_failure(username, client_key)
+            audit_record("auth.login.failed", username=username, outcome="denied")
             raise AuthError("invalid_credentials", "Invalid username or password.")
 
         if user.get("disabled"):

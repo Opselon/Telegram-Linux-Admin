@@ -25,4 +25,11 @@ def _reset_security_state():
     permissions.update(whitelisted=(), admins=())
     rate_limiter.reset()
     audit.set_enabled(True)
+    # 4.0 platform services (AuthService lockout accounting, NotificationService
+    # cooldown state, ...) are process-wide too; rebuild them fresh per test so
+    # lockout/cooldown state cannot leak across test modules.
+    import src.services as services_pkg
+
+    services_pkg._services = None
     yield
+    services_pkg._services = None

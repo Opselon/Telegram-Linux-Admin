@@ -25,6 +25,7 @@ import signal
 from . import database
 from .bot.integration import configure_observability
 from .bot.lifecycle import _configure_security
+from .services.watchdog import ServerWatchdog
 from .config import config
 from .observability import bind_context, log_event
 
@@ -149,6 +150,15 @@ async def run_platform() -> int:
     if token:
         tasks["telegram"] = asyncio.create_task(_run_telegram(stop), name="adapter-telegram")
 
+    # Watchdog (reachability alerts) runs whenever any adapter is live.
+    watchdog: ServerWatchdog | None = None
+    if tasks:
+        from .services import get_services
+        from .services.watchdog import ServerWatchdog
+
+        watchdog = ServerWatchdog(get_services())
+        await watchdog.start()
+
     if not tasks:
         logger.error("no adapter started")
         return 1
@@ -175,6 +185,8 @@ async def run_platform() -> int:
                 results[name] = True
     finally:
         stop.set()
+        if watchdog is not None:
+            await watchdog.stop()
         for task in tasks.values():
             if not task.done():
                 task.cancel()
