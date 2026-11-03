@@ -57,12 +57,30 @@ def _load_keys() -> dict[str, bytes]:
 
 @lru_cache(maxsize=1)
 def _get_ciphers() -> dict[str, Fernet]:
-    """Returns a cached dictionary of Fernet ciphers, one for each key."""
+    """Returns a cached dictionary of Fernet ciphers, one for each key.
+
+    The cache is **versioned by the key file's state**: ``_reload_ciphers``
+    clears it whenever the key file changes (key rotation, restore). Without
+    that, ``encrypt_secret`` and ``decrypt_secret`` in a running process kept
+    using keys loaded at import time — after any rotation the process raised
+    ``KeyError`` on every new encryption and could no longer read its own
+    newly written ciphertext.
+    """
     keys = _load_keys()
     try:
         return {version: Fernet(key) for version, key in keys.items()}
     except Exception as exc:
         raise SecretEncryptionError("One or more keys are invalid Fernet keys.") from exc
+
+
+def _reload_ciphers() -> None:
+    """Drops the cached ciphers so the next access re-reads the key file.
+
+    Called by key rotation (``scripts/rotate_key.py``) and by backup restore,
+    both of which replace the key file under a running process. Safe to call
+    from any thread; a no-op when nothing is cached.
+    """
+    _get_ciphers.cache_clear()
 
 
 def get_primary_key_version() -> str:
