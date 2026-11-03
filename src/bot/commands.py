@@ -49,6 +49,39 @@ from .support import _edit_message_safely, _host_key_mismatch_message, _send_mes
 logger = logging.getLogger(__name__)
 
 
+async def cancel_any_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Top-level ``/cancel``: ends any active conversation for this user.
+
+    Two defects this replaces:
+
+    * ``/cancel`` was registered only as a ConversationHandler *fallback*, so
+      with no conversation active the command the bot's own Telegram menu
+      advertises matched nothing at all and produced no feedback.
+    * ``run_command_handler`` was built with ``fallbacks=[]``, so a user
+      sitting in ``AWAIT_COMMAND`` typing ``/cancel`` was silently ignored:
+      the state's MessageHandler filters out commands and no fallback
+      existed. The user was stuck until they either ran a command or gave up.
+
+    Returns ``ConversationHandler.END`` so this doubles as the missing
+    fallback for ``run_command_handler``.
+    """
+    user_id = update.effective_user.id if update.effective_user else None
+    language = state._get_user_language(user_id)
+
+    # Drop anything this user had partially typed, so the next flow starts
+    # clean instead of inheriting stale alias/hostname/password values.
+    if context.user_data:
+        context.user_data.clear()
+
+    if update.effective_message is not None and update.effective_message.chat is not None:
+        await _send_message_safely(
+            update.effective_message.chat,
+            translate("command_cancelled", language),
+            user_id,
+        )
+    return ConversationHandler.END
+
+
 async def run_command_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Asks the user for a command to run."""
     query = update.callback_query

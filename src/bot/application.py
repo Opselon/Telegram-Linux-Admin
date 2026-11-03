@@ -41,8 +41,8 @@ from .backup import (
     restore_start,
 )
 from .commands import (
-    cancel_command_callback, cancel_command_confirmation, confirm_command_callback,
-    execute_command, run_command_start,
+    cancel_any_conversation, cancel_command_callback, cancel_command_confirmation,
+    confirm_command_callback, execute_command, run_command_start,
 )
 from .docker import (
     cancel_docker_action, docker_action_start, docker_management_menu, docker_ps,
@@ -141,7 +141,10 @@ def build_application(*, on_startup=None, on_shutdown=None) -> Application:
         states={
             AWAIT_COMMAND: [MessageHandler(filters.TEXT & ~filters.COMMAND, execute_command)],
         },
-        fallbacks=[],
+        # /cancel was silently swallowed here: the state's MessageHandler
+        # filters out commands and no fallback existed, so a user in
+        # AWAIT_COMMAND could not cancel at all.
+        fallbacks=[CommandHandler('cancel', cancel_any_conversation)],
     )
     application.add_handler(add_server_handler)
     application.add_handler(run_command_handler)
@@ -285,6 +288,13 @@ def build_application(*, on_startup=None, on_shutdown=None) -> Application:
 
     # --- Command Handlers ---
     application.add_handler(CommandHandler('start', start))
+    # /cancel is advertised in the bot's Telegram command menu, but it was only
+    # ever registered as a ConversationHandler fallback — with no conversation
+    # active it matched nothing and produced no feedback at all. The top-level
+    # handler acknowledges the user; the conversation fallbacks still take
+    # precedence when a conversation is actually active (they are registered
+    # earlier and in the same group).
+    application.add_handler(CommandHandler('cancel', cancel_any_conversation))
     application.add_handler(CommandHandler('language', language_menu))
     application.add_handler(CommandHandler('debug', toggle_debug_mode))
     application.add_handler(CommandHandler('exit_shell', exit_shell))

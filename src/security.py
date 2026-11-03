@@ -55,22 +55,31 @@ def _load_keys() -> dict[str, bytes]:
             raise SecretEncryptionError("Key file is corrupted or has an invalid format.") from exc
 
 
-@lru_cache(maxsize=1)
-def _get_ciphers() -> dict[str, Fernet]:
-    """Returns a cached dictionary of Fernet ciphers, one for each key.
+@lru_cache(maxsize=8)
+def _get_ciphers(_key_file: str = "") -> dict[str, Fernet]:
+    """Returns Fernet ciphers for the current key file.
 
-    The cache is **versioned by the key file's state**: ``_reload_ciphers``
-    clears it whenever the key file changes (key rotation, restore). Without
-    that, ``encrypt_secret`` and ``decrypt_secret`` in a running process kept
-    using keys loaded at import time — after any rotation the process raised
-    ``KeyError`` on every new encryption and could no longer read its own
-    newly written ciphertext.
+    The cache is keyed on the resolved ``TLA_ENCRYPTION_KEY_FILE`` path, so
+    swapping the configured key file (a test fixture, a second install on the
+    same machine) is picked up automatically instead of silently continuing
+    to encrypt and decrypt with the previous file's keys.
+
+    Previously ``@lru_cache(maxsize=1)`` with no argument: in a test session
+    the first fixture pointed the module at a throwaway key file, monkeypatch
+    restored the environment variable, and every later test still used the
+    throwaway keys (or raised ``KeyError`` once rotation had moved the primary
+    on). Use :func:`get_ciphers` rather than calling this directly.
     """
     keys = _load_keys()
     try:
         return {version: Fernet(key) for version, key in keys.items()}
     except Exception as exc:
         raise SecretEncryptionError("One or more keys are invalid Fernet keys.") from exc
+
+
+def get_ciphers() -> dict[str, Fernet]:
+    """Returns the ciphers for the currently configured key file."""
+    return _get_ciphers(str(_get_key_path()))
 
 
 def _reload_ciphers() -> None:
@@ -100,7 +109,7 @@ def encrypt_secret(value: str | None) -> bytes | None:
         raise TypeError("Secrets must be provided as strings.")
 
     primary_key_version = get_primary_key_version()
-    ciphers = _get_ciphers()
+    ciphers = get_ciphers()
     cipher = ciphers[primary_key_version]
 
     encrypted_data = cipher.encrypt(value.encode("utf-8"))
@@ -119,13 +128,13 @@ def decrypt_secret(value: bytes | None) -> str | None:
         if len(parts) != 2:
             # Fallback for old format without version prefix
             primary_key_version = get_primary_key_version()
-            cipher = _get_ciphers()[primary_key_version]
+            cipher = get_ciphers()[primary_key_version]
             return cipher.decrypt(value).decode("utf-8")
 
         key_version, encrypted_data = parts
         key_version_str = key_version.decode("utf-8")
 
-        ciphers = _get_ciphers()
+        ciphers = get_ciphers()
         if key_version_str not in ciphers:
             raise SecretEncryptionError(f"Unknown key version '{key_version_str}' found in data.")
 
