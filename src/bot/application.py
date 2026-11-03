@@ -40,7 +40,10 @@ from .backup import (
     backup, cancel_restore, restore_confirmation, restore_file,
     restore_start,
 )
-from .commands import cancel_command_callback, execute_command, run_command_start
+from .commands import (
+    cancel_command_callback, cancel_command_confirmation, confirm_command_callback,
+    execute_command, run_command_start,
+)
 from .docker import (
     cancel_docker_action, docker_action_start, docker_management_menu, docker_ps,
     execute_docker_action,
@@ -263,6 +266,13 @@ def build_application(*, on_startup=None, on_shutdown=None) -> Application:
     application.add_handler(CallbackQueryHandler(firewall_management_menu, pattern='^firewall_management_menu_'))
     application.add_handler(CallbackQueryHandler(firewall_status, pattern='^fw_status_'))
     application.add_handler(CallbackQueryHandler(cancel_command_callback, pattern='^cancel_command_'))
+    # CONFIRM-band command confirm/cancel buttons (commands.py:289-306).
+    # The 3.2 module split dropped these two registrations: the handlers were
+    # implemented and unit-tested (tests/test_bot_guards.py) but never wired,
+    # so every "✅ Confirm / ❌ Cancel" button rendered for a CONFIRM-band
+    # command was silently ignored in production.
+    application.add_handler(CallbackQueryHandler(confirm_command_callback, pattern='^confirm_cmd_'))
+    application.add_handler(CallbackQueryHandler(cancel_command_confirmation, pattern='^cancel_cmd_'))
     application.add_handler(CallbackQueryHandler(system_commands_menu, pattern='^system_commands_menu_'))
     application.add_handler(CallbackQueryHandler(confirm_system_command, pattern='^reboot_'))
     application.add_handler(CallbackQueryHandler(confirm_system_command, pattern='^shutdown_'))
