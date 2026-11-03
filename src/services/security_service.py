@@ -23,9 +23,6 @@ from . import store
 from .auth_service import AuthError, AuthService
 from .permissions import VALID_ROLES, Actor
 
-AUDIT_FILE = Path(os.environ.get("TLA_AUDIT_FILE", "var/audit/audit.jsonl"))
-
-
 class SecurityService:
     def __init__(self, auth: AuthService) -> None:
         self.auth = auth
@@ -166,8 +163,13 @@ class SecurityService:
     def audit_tail(self, actor: Actor, *, limit: int = 100) -> list[dict[str, Any]]:
         actor.require("security.read")
         limit = max(1, min(int(limit), 500))
+        # Read the live AuditLogger's actual file — the same records the
+        # Telegram Security Center shows (defaults to var/log/audit.log,
+        # TLA_AUDIT_DIR overrides).
+        from ..audit import audit as audit_logger
+
         try:
-            lines = AUDIT_FILE.read_text(encoding="utf-8").splitlines()
+            lines = audit_logger.path.read_text(encoding="utf-8").splitlines()
         except OSError:
             return []
         events: list[dict[str, Any]] = []

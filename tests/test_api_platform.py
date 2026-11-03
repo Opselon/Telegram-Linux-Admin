@@ -105,7 +105,8 @@ def test_login_lockout_after_repeated_failures(client):
     _setup_owner(client)
     client.post("/api/v1/auth/logout", headers={"X-CSRF-Token": client.cookies.get("tla_csrf")})
     code = None
-    for _ in range(5):
+    # 5 failures arm the lockout on the 5th; the 6th attempt is refused.
+    for _ in range(6):
         response = client.post("/api/v1/auth/login",
                                json={"username": "root", "password": "wrong"})
         code = response.json()["error"]["code"]
