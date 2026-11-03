@@ -71,8 +71,9 @@ async def _run_web(stop: asyncio.Event) -> dict[str, bool]:
     )
     server = uvicorn.Server(uvi_config)
     # The runtime owns the loop and signals; uvicorn must not touch them
-    # (Server.serve() enters self.capture_signals()).
-    server.capture_signals = _null_signals  # type: ignore[method-assign]
+    # (Server.serve() enters self.capture_signals()).  setattr keeps this
+    # correct whether or not uvicorn is importable to the type checker.
+    setattr(server, "capture_signals", _null_signals)
     task = asyncio.create_task(server.serve(), name="web-server")
     await stop.wait()
     server.should_exit = True
