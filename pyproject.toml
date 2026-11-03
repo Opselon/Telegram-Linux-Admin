@@ -109,6 +109,9 @@ select = [
 [tool.ruff.lint.per-file-ignores]
 # 4.0 web API: Depends(...) in argument defaults is the FastAPI idiom.
 "src/api/*" = ["B008"]
+# The bale test suites re-export the shared `services` fixture from their
+# helpers module (pytest resolves fixtures from the module namespace).
+"tests/test_bale_*" = ["F401", "F811"]
 "src/main.py" = ["F401", "B007", "B904", "ASYNC109", "ASYNC220", "ASYNC230", "ASYNC240"]
 "src/updater.py" = ["F401", "B904"]
 "src/parse_mode.py" = ["F401"]
