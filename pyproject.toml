@@ -107,6 +107,8 @@ select = [
 # Entries here name the exact findings each file already produces on the base
 # commit 2c0aa07, nothing more - a new finding in these files still fails.
 [tool.ruff.lint.per-file-ignores]
+# 4.0 web API: Depends(...) in argument defaults is the FastAPI idiom.
+"src/api/*" = ["B008"]
 "src/main.py" = ["F401", "B007", "B904", "ASYNC109", "ASYNC220", "ASYNC230", "ASYNC240"]
 "src/updater.py" = ["F401", "B904"]
 "src/parse_mode.py" = ["F401"]

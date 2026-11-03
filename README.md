@@ -56,6 +56,38 @@
 </p>
 
 
+# 🚀 Linux Admin Platform (4.0)
+
+> **4.0 upgrade:** the Telegram bot is now one interface of a full **Linux management platform**. A shared management core (`src/services`) drives three first-class clients:
+
+| Interface | What it is |
+|---|---|
+| **Web Application** | Responsive React/TypeScript dashboard + full server management (dashboard, servers, command console, files, security center, backups). Dark/light, English + Persian (RTL). Served by the built-in FastAPI backend (`/api/v1`, OpenAPI at `/api/docs`). |
+| **Bale Bot** | Interactive Bale bot (`BALE_BOT_TOKEN`): server status, services, command execution with the same SAFE/CONFIRM/BLOCKED policy, notifications with cooldown/dedup, account linking via one-time codes, "Open Management App" button. |
+| **Telegram Bot** | The original bot, unchanged behavior, same core. |
+
+### Quick start (full platform)
+
+```bash
+docker compose -f - up -d <<'YAML'
+services:
+  platform:
+    image: ghcr.io/opselon/telegram-linux-admin:latest
+    ports: ["127.0.0.1:8080:8080"]
+    env_file: .env
+    volumes: ["./data:/app/data"]
+YAML
+# then open http://localhost:8080 (first visit: create the owner account)
+```
+
+Host install (Telegram-only, unchanged): see `install.sh`. Full platform on a host: `pip install ".[bale]"` then `tla-platform`.
+
+* Production: TLS reverse proxy required before exposing the web port — `deploy/README.md`, `deploy/nginx.conf.example`.
+* Security model & threat model: `docs/upgrade/security-model.md`, `SECURITY.md`.
+* Web/Bale architecture: `docs/upgrade/architecture.md`.
+
+---
+
 # 🚀 Telegram Linux Admin (Python Edition)
 
 A modern, **post-quantum encrypted**, multi-user, multi-language **Telegram SSH management bot** that transforms your Telegram chat into a secure command center for all your Linux servers.

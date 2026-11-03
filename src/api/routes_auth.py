@@ -66,9 +66,9 @@ async def login(payload: LoginRequest, request: Request, response: Response) -> 
             payload.username, payload.password,
             client_key=request.client.host if request.client else "?",
         )
-    except MFARequired:
+    except MFARequired as exc:
         raise ApiError(401, "mfa_required", "Verification code required.",
-                       details={"pending_token": None})  # no token leak in body
+                       details={"pending_token": None}) from exc  # no token leak in body
     except AuthError as exc:
         status = 429 if exc.key == "login_locked_out" else 401
         raise ApiError(status, exc.key, str(exc),

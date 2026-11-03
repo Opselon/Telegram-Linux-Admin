@@ -23,12 +23,30 @@ def _get_key_path() -> Path:
     return Path(os.environ.get("TLA_ENCRYPTION_KEY_FILE", "var/encryption.key"))
 
 
-def _load_keys() -> dict[str, bytes]:
-    """Loads and validates the configured encryption keys from a versioned JSON file.
+def _env_key() -> bytes | None:
+    """Key provided directly via the ``TLA_ENCRYPTION_KEY`` environment variable.
 
-    If the file doesn't exist, it generates a new primary key and creates the file.
+    Documented (SECURITY.md, README) but historically unimplemented; container
+    deployments rely on it. When set, it takes precedence over the key file.
+    """
+    value = os.environ.get("TLA_ENCRYPTION_KEY", "").strip()
+    if not value:
+        return None
+    return value.encode("utf-8")
+
+
+def _load_keys() -> dict[str, bytes]:
+    """Loads and validates the configured encryption keys.
+
+    Resolution order: ``TLA_ENCRYPTION_KEY`` env var → versioned key file
+    (``TLA_ENCRYPTION_KEY_FILE``). The key file is created on first use when
+    no env var is set.
     """
     with _KEY_LOCK:
+        env_key = _env_key()
+        if env_key is not None:
+            return {"env": env_key}
+
         key_path = _get_key_path()
         if not key_path.exists():
             # Create a new key file if it doesn't exist
@@ -94,6 +112,8 @@ def _reload_ciphers() -> None:
 
 def get_primary_key_version() -> str:
     """Returns the version of the primary encryption key."""
+    if _env_key() is not None:
+        return "env"
     key_path = _get_key_path()
     if not key_path.exists():
         _load_keys()  # Ensure key file is created

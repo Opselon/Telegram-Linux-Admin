@@ -149,7 +149,7 @@ jobs:
       - name: Install package + dev extras
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
+          python -m pip install -e ".[dev,monitoring,bale]"
 
       # Same command the gate runs locally, so a ratio that fails here fails
       # before the commit too. Floor is 50 because the base tree measures
