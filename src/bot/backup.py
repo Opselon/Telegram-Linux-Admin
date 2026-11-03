@@ -28,6 +28,12 @@ from telegram.ext import ContextTypes
 from telegram.ext import ConversationHandler
 
 from ..parse_mode import MessageBuilder
+from ..database import (
+    replace_database_with, snapshot_database_to, verify_database_file,
+    _resolve_db_path,
+)
+from ..security import _get_key_path as get_encryption_key_path
+from ..config import DEFAULT_CONFIG_FILE
 from datetime import datetime
 import asyncio
 import hashlib
@@ -41,6 +47,11 @@ import zipfile
 from .support import _edit_message_safely, _send_message_safely
 
 logger = logging.getLogger(__name__)
+
+
+def _db_path_for_restore() -> str:
+    """The live database path, resolved the same way ``database.py`` does it."""
+    return str(_resolve_db_path())
 
 
 async def backup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -153,11 +164,29 @@ async def backup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         builder.add_text(f"Compressing {len(validated_files)} file(s)...")
         await progress_msg.edit_text(builder.build(), parse_mode=parse_mode)
         
-        # Create compressed backup with maximum compression
+        # Create compressed backup with maximum compression.
+        #
+        # The database is never written from the live file: in WAL mode the
+        # committed pages live in database.db-wal until a checkpoint, so a raw
+        # copy of database.db is an incomplete page image — the audit proved a
+        # plain copy can be missing *every* table. The database member is
+        # skipped in the loop below and written from an online-backup-API
+        # snapshot instead, which reads through the WAL and yields a
+        # self-consistent, verifiable database.
         with zipfile.ZipFile(backup_filename, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as zipf:
             for file_path, _file_hash in validated_files:
+                if os.path.basename(file_path) == "database.db":
+                    continue  # snapshotted below, never copied from disk
                 zipf.write(file_path, arcname=os.path.basename(file_path))
-            
+
+            snapshot_path = os.path.join(backup_dir, "snapshot_database.db")
+            snapshot_database_to(snapshot_path)
+            if not verify_database_file(snapshot_path):
+                # A snapshot that fails its own integrity check must never be
+                # handed to the operator as a restorable backup.
+                raise ValueError("The database snapshot failed its integrity check.")
+            zipf.write(snapshot_path, arcname="database.db")
+
             # Add metadata as JSON
             metadata_json = json.dumps(backup_metadata, indent=2)
             zipf.writestr("backup_metadata.json", metadata_json)
@@ -408,8 +437,18 @@ async def restore_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         safety_backup_file = os.path.join(safety_backup_dir, f"safety_backup_{safety_backup_timestamp}.zip")
         
         current_files = ["config.json", "database.db"]
+        # The safety snapshot must be a *consistent* database, not a raw copy:
+        # the rollback asset is worthless if it carries an incomplete WAL page
+        # image. Same treatment as the main backup.
+        snapshot_database_to(os.path.join(safety_backup_dir, "database.db"))
         with zipfile.ZipFile(safety_backup_file, 'w', zipfile.ZIP_DEFLATED) as safety_zip:
             for file_path in current_files:
+                if file_path == "database.db":
+                    safety_zip.write(
+                        os.path.join(safety_backup_dir, "database.db"),
+                        arcname="database.db",
+                    )
+                    continue
                 if os.path.exists(file_path):
                     safety_zip.write(file_path, arcname=os.path.basename(file_path))
         
@@ -432,21 +471,33 @@ async def restore_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         builder.add_line()
         builder.add_text("✅ Verifying extracted files...")
         await progress_msg.edit_text(builder.build(), parse_mode=parse_mode)
-        
+
         extracted_config = os.path.join(extract_dir, "config.json")
         extracted_db = os.path.join(extract_dir, "database.db")
-        
+
         if not os.path.exists(extracted_config):
             raise ValueError("Extracted config.json not found")
         if not os.path.exists(extracted_db):
             raise ValueError("Extracted database.db not found")
-        
+
         # Validate JSON structure
         try:
             with open(extracted_config, 'r', encoding='utf-8') as f:
                 json.load(f)  # Validate JSON
         except json.JSONDecodeError as e:
             raise ValueError(f"Invalid JSON in config.json: {e}") from e
+
+        # Validate the candidate database BEFORE it is allowed to touch the
+        # live one. The previous checks only verified the *zip*: CRC, member
+        # names, JSON syntax, non-zero size. A file full of junk passed all of
+        # them and was then copied over the live database. Now the database is
+        # opened read-only and must clear PRAGMA integrity_check and contain
+        # the expected tables, or the restore aborts with nothing written.
+        if not verify_database_file(extracted_db):
+            raise ValueError(
+                "The backup's database is not a valid SQLite database "
+                "(integrity check failed or required tables are missing)."
+            )
         
         # Step 6: Backup current files and restore
         builder.clear()
@@ -454,22 +505,63 @@ async def restore_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         builder.add_line()
         builder.add_text("🔄 Restoring files...")
         await progress_msg.edit_text(builder.build(), parse_mode=parse_mode)
-        
-        # Backup and replace files atomically
-        files_to_restore = [
-            ("config.json", extracted_config),
-            ("database.db", extracted_db)
-        ]
-        
-        for target_file, source_file in files_to_restore:
-            # Backup current file if exists
-            if os.path.exists(target_file):
-                backup_path = os.path.join(safety_backup_dir, os.path.basename(target_file))
-                shutil.copy2(target_file, backup_path)
-            
-            # Copy new file
-            shutil.copy2(source_file, target_file)
-            os.chmod(target_file, 0o600)  # Secure permissions
+
+        # config.json is restored with an atomic rename: copy to a temp file on
+        # the same filesystem, then os.replace so no reader ever sees a
+        # half-written config.
+        config_target = DEFAULT_CONFIG_FILE
+        if os.path.exists(config_target):
+            shutil.copy2(
+                config_target,
+                os.path.join(safety_backup_dir, os.path.basename(config_target)),
+            )
+        config_tmp = config_target + ".restore-tmp"
+        shutil.copy2(extracted_config, config_tmp)
+        os.chmod(config_tmp, 0o600)
+        os.replace(config_tmp, config_target)
+
+        # The encryption key is part of the backup and MUST be restored —
+        # without it every stored SSH password and key path is undecryptable
+        # and the whole servers table is bricked. It was collected by
+        # backup() but the old restore list omitted it, leaving the extracted
+        # copy in a temp directory that the finally block then deleted.
+        key_target = get_encryption_key_path()
+        extracted_key = os.path.join(extract_dir, "encryption.key")
+        if os.path.exists(extracted_key):
+            if key_target.exists():
+                shutil.copy2(
+                    str(key_target),
+                    os.path.join(safety_backup_dir, "encryption.key"),
+                )
+            key_target.parent.mkdir(parents=True, exist_ok=True)
+            key_tmp = str(key_target) + ".restore-tmp"
+            shutil.copy2(extracted_key, key_tmp)
+            os.chmod(key_tmp, 0o600)
+            os.replace(key_tmp, str(key_target))
+        else:
+            # A backup that predates key restore carries no key member. The
+            # live key is left untouched — but the operator must be told that
+            # this restore cannot have brought the key back, because a
+            # mismatched database/key pair bricks every stored credential.
+            logger.warning(
+                "The uploaded backup contains no encryption key member; the "
+                "live key at %s was left in place. If this backup's database "
+                "was encrypted under a different key, stored credentials will "
+                "not decrypt.",
+                key_target,
+            )
+
+        # The database is replaced atomically: close the live connection,
+        # remove the WAL sidecars, os.replace the verified candidate into
+        # place, then reopen and re-verify. A plain shutil.copy2 over the live
+        # file left the old WAL replaying on top of the new page image, so the
+        # restore was silently discarded.
+        if os.path.exists(_db_path_for_restore()):
+            shutil.copy2(
+                _db_path_for_restore(),
+                os.path.join(safety_backup_dir, "database.db"),
+            )
+        replace_database_with(extracted_db)
         
         # Step 7: Verify restore
         builder.clear()
@@ -477,13 +569,19 @@ async def restore_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         builder.add_line()
         builder.add_text("✅ Verifying restore...")
         await progress_msg.edit_text(builder.build(), parse_mode=parse_mode)
-        
-        # Verify files exist and are valid
-        for target_file, _ in files_to_restore:
-            if not os.path.exists(target_file):
-                raise ValueError(f"Restored file {target_file} not found after restore")
-            if os.path.getsize(target_file) == 0:
-                raise ValueError(f"Restored file {target_file} is empty")
+
+        # The database is verified by replace_database_with itself (the swap
+        # is only performed on a valid candidate and re-checked afterwards);
+        # here the config is confirmed present and non-empty, and the key only
+        # when the archive actually carried one.
+        if not os.path.exists(DEFAULT_CONFIG_FILE):
+            raise ValueError(f"Restored file {DEFAULT_CONFIG_FILE} not found after restore")
+        if os.path.getsize(DEFAULT_CONFIG_FILE) == 0:
+            raise ValueError(f"Restored file {DEFAULT_CONFIG_FILE} is empty")
+        if os.path.exists(extracted_key) and not get_encryption_key_path().exists():
+            raise ValueError("The backup's encryption key was not restored.")
+        if not verify_database_file(_db_path_for_restore()):
+            raise ValueError("The restored database failed its post-restore integrity check.")
         
         # Success message
         builder.clear()

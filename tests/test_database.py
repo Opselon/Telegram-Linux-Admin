@@ -17,7 +17,11 @@ def mock_db_connection(monkeypatch):
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
 
-    # Create tables expected by the module.
+    # Create tables expected by the module. This mirrors the production schema
+    # in database.initialize_database() exactly — including the
+    # FOREIGN KEY ... ON DELETE CASCADE on servers.owner_id, which the previous
+    # fixture omitted. Without it, every cascade behaviour (seed_users, user
+    # removal) is untestable here while silently diverging from production.
     conn.execute(
         """
         CREATE TABLE servers (
@@ -29,6 +33,8 @@ def mock_db_connection(monkeypatch):
             password TEXT,
             key_path TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            host_key TEXT,
+            FOREIGN KEY(owner_id) REFERENCES users(telegram_id) ON DELETE CASCADE,
             UNIQUE(owner_id, alias)
         )
         """
@@ -151,6 +157,45 @@ def test_seed_users_deduplicates_input():
     """Duplicate IDs should not trigger integrity errors or persist twice."""
     database.seed_users([5, 5, 3])
     assert database.get_whitelisted_users() == [3, 5]
+
+
+def test_seed_users_preserves_servers_of_users_not_being_removed():
+    """seed_users must never destroy another user's servers.
+
+    The old implementation opened with ``DELETE FROM servers`` — an
+    unconditional wipe of every owner's registrations — before rebuilding the
+    whitelist. Seeding a whitelist that *dropped* one user silently deleted
+    every other user's servers too. Only a removed user's own rows may
+    cascade away.
+    """
+    for uid in (111, 222, 333):
+        database.add_user(uid)
+        for n in (1, 2):
+            database.add_server(
+                uid, f"srv{n}", f"10.0.0.{uid % 250}", "root", password=f"pw{uid}"
+            )
+
+    # Keep 111 and 222 in the whitelist, drop 333.
+    database.seed_users([111, 222])
+
+    # The retained users keep every server.
+    assert database.get_whitelisted_users() == [111, 222]
+    assert [s["alias"] for s in database.get_all_servers(111)] == ["srv1", "srv2"]
+    assert [s["alias"] for s in database.get_all_servers(222)] == ["srv1", "srv2"]
+    # Only the removed user's servers cascade away.
+    assert database.get_all_servers(333) == []
+
+
+def test_seed_users_is_idempotent():
+    """Re-seeding the same whitelist must be a no-op for stored data."""
+    database.add_user(111)
+    database.add_server(111, "prod", "10.0.0.1", "root", password="pw")
+
+    database.seed_users([111])
+    database.seed_users([111])
+
+    assert database.get_whitelisted_users() == [111]
+    assert [s["alias"] for s in database.get_all_servers(111)] == ["prod"]
 
 
 def test_user_language_preference_roundtrip():
