@@ -76,7 +76,7 @@ jobs:
             platform_id: macos-arm64
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Python ${{ matrix.arch }}
         uses: actions/setup-python@v5
