@@ -1,5 +1,7 @@
 import os
 from pathlib import Path
+import shutil
+import sqlite3
 import zipfile
 from unittest.mock import AsyncMock, patch
 import pytest
@@ -52,10 +54,8 @@ async def test_backup_command(mock_config):
 @patch('src.main.os.execv')
 @patch('src.main.sys')
 @patch('src.main.zipfile.ZipFile')
-@patch('src.main.os.path.exists', return_value=True)
-@patch('src.main.os.remove')
 async def test_restore_command(
-    mock_remove, mock_exists, mock_zipfile, mock_sys, mock_execv, mock_config, tmp_path
+    mock_zipfile, mock_sys, mock_execv, mock_config, tmp_path, monkeypatch
 ):
     """Test the restore command."""
     mock_config.whitelisted_users = [12345]
@@ -63,8 +63,20 @@ async def test_restore_command(
     update.effective_user.id = 12345
     context = AsyncMock()
 
-    # Create a dummy config file to be backed up during restore
-    with open("config.json", "w") as f:
+    # Run in a throwaway working directory so the restore never touches the
+    # developer's real config/database/key files. Both the database and the
+    # config path are resolved from environment variables that point here.
+    workdir = tmp_path / "restore-workdir"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+    monkeypatch.setenv("TLA_CONFIG_FILE", str(workdir / "config.json"))
+    monkeypatch.setenv("TLA_DB_FILE", str(workdir / "database.db"))
+    monkeypatch.setenv("TLA_ENCRYPTION_KEY_FILE", str(workdir / "var" / "encryption.key"))
+    from src import database as database_module
+    database_module.close_db_connection()
+
+    # Create the live config that the safety backup will snapshot
+    with open(workdir / "config.json", "w") as f:
         f.write("{}")
 
     # Mock the document object
@@ -81,16 +93,57 @@ async def test_restore_command(
 
     update.message.document.get_file.return_value.download_to_drive = AsyncMock(side_effect=mock_download)
 
-    # Configure the mock ZipFile
-    mock_zipfile.return_value.__enter__.return_value.namelist.return_value = ["config.json", "database.db"]
+    # Configure the mock ZipFile. The database written here must be a *real*
+    # SQLite database: restore now verifies the candidate with
+    # PRAGMA integrity_check before it is allowed to replace the live
+    # database. The previous version of this test wrote the literal string
+    # "dummy data" as the database and asserted the bot restarted onto it —
+    # which is exactly how a junk file could pass every check and replace
+    # the live credential store.
+    real_db_path = tmp_path / "source.db"
+    real_conn = sqlite3.connect(real_db_path)
+    real_conn.executescript(
+        """
+        CREATE TABLE users (
+            id INTEGER PRIMARY KEY,
+            telegram_id INTEGER NOT NULL UNIQUE,
+            plan TEXT NOT NULL DEFAULT 'free'
+        );
+        CREATE TABLE servers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            owner_id INTEGER NOT NULL,
+            alias TEXT NOT NULL,
+            hostname TEXT NOT NULL,
+            user TEXT NOT NULL,
+            password TEXT,
+            key_path TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            host_key TEXT,
+            FOREIGN KEY(owner_id) REFERENCES users(telegram_id) ON DELETE CASCADE,
+            UNIQUE(owner_id, alias)
+        );
+        CREATE TABLE user_preferences (
+            telegram_id INTEGER PRIMARY KEY,
+            language TEXT NOT NULL DEFAULT 'en'
+        );
+        INSERT INTO users (telegram_id) VALUES (12345);
+        INSERT INTO servers (owner_id, alias, hostname, user)
+            VALUES (12345, 'restored-server', '10.9.9.9', 'root');
+        """
+    )
+    real_conn.commit()
+    real_conn.close()
+
+    mock_zipfile.return_value.__enter__.return_value.namelist.return_value = [
+        "config.json", "database.db", "backup_metadata.json"
+    ]
     mock_zipfile.return_value.__enter__.return_value.testzip.return_value = None
 
     def create_dummy_files(extract_dir):
         os.makedirs(extract_dir, exist_ok=True)
         with open(os.path.join(extract_dir, "config.json"), "w") as f:
             f.write("{}")
-        with open(os.path.join(extract_dir, "database.db"), "w") as f:
-            f.write("dummy data")
+        shutil.copy2(real_db_path, os.path.join(extract_dir, "database.db"))
 
     mock_zipfile.return_value.__enter__.return_value.extractall.side_effect = create_dummy_files
 

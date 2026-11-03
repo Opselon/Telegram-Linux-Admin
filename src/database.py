@@ -85,6 +85,107 @@ def get_db_connection() -> sqlite3.Connection:
     return _conn  # type: ignore[return-value]
 
 
+# --- Consistent snapshot / atomic swap -------------------------------------
+#: Version of the schema this build understands. Bumped by every migration.
+SCHEMA_VERSION = 1
+
+
+def verify_database_file(path: str | Path) -> bool:
+    """Returns True only if *path* is a structurally valid SQLite database.
+
+    Opens the file read-only (never touches the live database) and requires
+    both ``PRAGMA integrity_check`` to come back clean and the ``servers``
+    table to exist. This is the gate a restored backup must pass *before* it
+    is allowed to replace the live database.
+    """
+    try:
+        conn = sqlite3.connect(f"file:{Path(path)}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return False
+    try:
+        try:
+            if conn.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                return False
+        except sqlite3.Error:
+            return False
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='servers'"
+            ).fetchone()
+        except sqlite3.Error:
+            return False
+        return bool(row and row[0] == 1)
+    finally:
+        conn.close()
+
+
+def snapshot_database_to(dst_path: str | Path) -> None:
+    """Writes a self-consistent copy of the live database to *dst_path*.
+
+    Uses the SQLite online backup API, which reads through the WAL, so the
+    result is a correct page image even while the bot's connection is open —
+    unlike copying ``database.db`` directly, which in WAL mode is an
+    incomplete image missing everything committed since the last checkpoint.
+    Holds the connection lock for the duration so no writer can advance the
+    WAL mid-copy.
+    """
+    src = get_db_connection()
+    dst = sqlite3.connect(str(dst_path))
+    try:
+        with _conn_lock:
+            src.backup(dst)
+        dst.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    finally:
+        dst.close()
+
+
+def _reset_connection_state() -> None:
+    """Drops the cached connection pointer (caller holds ``_conn_lock``)."""
+    global _conn
+    if _conn is not None:
+        _conn.close()
+        _conn = None
+
+
+def replace_database_with(candidate: str | Path) -> None:
+    """Atomically replaces the live database with *candidate*.
+
+    The candidate is verified first (see :func:`verify_database_file`); only a
+    valid database may replace the live one. The swap itself is
+    ``os.replace`` on the same filesystem, so no reader can ever observe a
+    half-written database. The live connection is closed and the WAL
+    sidecars removed before the swap, then the connection is re-opened and
+    re-verified afterwards. Any failure leaves the previous database in
+    place.
+    """
+    candidate = Path(candidate)
+    if not verify_database_file(candidate):
+        raise ValueError("Refusing to restore: the backup's database is not a valid SQLite database.")
+
+    db_path = _resolve_db_path()
+    global _conn
+    with _conn_lock:
+        _reset_connection_state()
+        # Residual WAL sidecars belong to the old page image; leaving them in
+        # place would let them replay over the swapped-in file.
+        for sidecar in (str(db_path) + "-wal", str(db_path) + "-shm"):
+            try:
+                os.unlink(sidecar)
+            except FileNotFoundError:
+                pass
+        try:
+            os.replace(candidate, db_path)
+        except OSError as exc:
+            # Re-open the previous database before giving up so the bot keeps
+            # running on intact data.
+            _conn = _connect(db_path)
+            raise RuntimeError(f"Could not move the restored database into place: {exc}") from exc
+        _conn = _connect(db_path)
+    if not verify_database_file(db_path):
+        # Extremely unlikely, but never claim success on an unverified swap.
+        raise RuntimeError("The restored database failed its post-restore integrity check.")
+
+
 def close_db_connection() -> None:
     """Closes the database connection."""
     global _conn, _conn_path
@@ -474,13 +575,29 @@ def get_all_user_language_preferences() -> dict[int, str]:
 
 
 def seed_users(user_ids: Iterable[int]) -> None:
-    """Replaces the whitelist with a new set of user IDs."""
+    """Sets the whitelist to exactly *user_ids*, preserving every other user's
+    servers.
+
+    The previous implementation ran ``DELETE FROM servers`` (unconditional, all
+    owners) before deleting users, which destroyed registered servers and SSH
+    credentials for users who were not being removed at all. Only the removal
+    of a *user row* should cascade to that user's servers — the foreign key
+    ``ON DELETE CASCADE`` already does that, so the wholesale delete was both
+    too broad and redundant.
+    """
     unique_ids = list(dict.fromkeys(user_ids))
     with transaction() as conn:
-        conn.execute("DELETE FROM servers")
-        conn.execute("DELETE FROM users")
-        for user_id in unique_ids:
-            _ensure_user(conn, user_id, DEFAULT_PLAN)
+        users_now = {
+            row["telegram_id"] for row in
+            conn.execute("SELECT telegram_id FROM users").fetchall()
+        }
+        wanted = set(unique_ids)
+        for leaving in users_now - wanted:
+            # FK ON DELETE CASCADE removes this user's servers. No other
+            # owner's data is touched.
+            conn.execute("DELETE FROM users WHERE telegram_id = ?", (leaving,))
+        for arriving in wanted - users_now:
+            _ensure_user(conn, arriving, DEFAULT_PLAN)
 
 
 # --- Dashboard Statistics Functions ---
