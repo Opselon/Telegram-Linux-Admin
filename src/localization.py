@@ -34,6 +34,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "button_back_main_menu": "🔙 Back to Main Menu",
         "add_server_prompt": "🖥️ **Add a New Server**\n\nLet's add a new server. What short alias should we use? (e.g., `webserver`)",
         "prompt_hostname": "Great. Now, what is the hostname or IP address?",
+        "prompt_port": "What SSH port does it use? Send a number, or just a dot (.) to keep the standard port 22.",
+        "error_invalid_port": "Invalid port: {error}. Please send a number between 1 and 65535.",
+
         "prompt_username": "And the SSH username?",
         "prompt_auth_method": "How would you like to authenticate?",
         "prompt_password": "Please enter the SSH password.",
@@ -147,6 +150,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "button_back_main_menu": "🔙 العودة إلى القائمة الرئيسية",
         "add_server_prompt": "🖥️ **إضافة خادم جديد**\n\nلنقم بإضافة خادم. ما الاسم المختصر الذي نستخدمه؟ (مثال: `webserver`)",
         "prompt_hostname": "رائع. ما اسم المضيف أو عنوان الـ IP؟",
+        "prompt_port": "ما هو منفذ SSH الذي يستخدمه؟ أرسل رقماً، أو نقطة (.) للاحتفاظ بالمنفذ القياسي 22.",
+        "error_invalid_port": "منفذ غير صالح: {error}. يرجى إرسال رقم بين 1 و 65535.",
+
         "prompt_username": "وما هو اسم مستخدم SSH؟",
         "prompt_auth_method": "كيف تريد المصادقة؟",
         "prompt_password": "يرجى إدخال كلمة مرور SSH.",
@@ -200,6 +206,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "button_back_main_menu": "🔙 بازگشت به منوی اصلی",
         "add_server_prompt": "🖥️ **افزودن سرور جدید**\n\nبیایید یک سرور اضافه کنیم. نام مستعار کوتاه چیست؟ (مثلاً `webserver`)",
         "prompt_hostname": "عالی. نام میزبان یا IP چیست؟",
+        "prompt_port": "از چه پورت SSH استفاده می‌کند؟ یک عدد بفرستید، یا فقط یک نقطه (.) برای نگه داشتن پورت پیش‌فرض 22.",
+        "error_invalid_port": "پورت نامعتبر: {error}. لطفاً عددی بین ۱ و ۶۵۵۳۵ بفرستید.",
+
         "prompt_username": "نام کاربری SSH چیست؟",
         "prompt_auth_method": "چگونه می‌خواهید احراز هویت کنید؟",
         "prompt_password": "لطفاً رمز عبور SSH را وارد کنید.",
@@ -253,6 +262,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "button_back_main_menu": "🔙 Retour au menu principal",
         "add_server_prompt": "🖥️ **Ajouter un nouveau serveur**\n\nChoisissez un alias court (ex. `webserver`).",
         "prompt_hostname": "Génial. Quel est le nom d'hôte ou l'adresse IP ?",
+        "prompt_port": "Quel port SSH utilise-t-il ? Envoyez un nombre, ou juste un point (.) pour conserver le port standard 22.",
+        "error_invalid_port": "Port invalide : {error}. Veuillez envoyer un nombre entre 1 et 65535.",
+
         "prompt_username": "Et le nom d’utilisateur SSH ?",
         "prompt_auth_method": "Comment souhaitez-vous vous authentifier ?",
         "prompt_password": "Veuillez saisir le mot de passe SSH.",
@@ -306,6 +318,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "button_back_main_menu": "🔙 Zurück zum Hauptmenü",
         "add_server_prompt": "🖥️ **Neuen Server hinzufügen**\n\nWie soll der kurze Alias heißen? (z. B. `webserver`)",
         "prompt_hostname": "Super. Wie lautet der Hostname oder die IP-Adresse?",
+        "prompt_port": "Welchen SSH-Port verwendet er? Sende eine Zahl oder nur einen Punkt (.), um den Standardport 22 zu behalten.",
+        "error_invalid_port": "Ungültiger Port: {error}. Bitte sende eine Zahl zwischen 1 und 65535.",
+
         "prompt_username": "Und der SSH-Benutzername?",
         "prompt_auth_method": "Wie möchtest du dich authentifizieren?",
         "prompt_password": "Bitte gib das SSH-Passwort ein.",
@@ -359,6 +374,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "button_back_main_menu": "🔙 Volver al menú principal",
         "add_server_prompt": "🖥️ **Agregar un nuevo servidor**\n\n¿Cuál será el alias corto? (ej. `webserver`)",
         "prompt_hostname": "Genial. ¿Cuál es el nombre de host o la dirección IP?",
+        "prompt_port": "¿Qué puerto SSH utiliza? Envía un número, o solo un punto (.) para mantener el puerto estándar 22.",
+        "error_invalid_port": "Puerto no válido: {error}. Envía un número entre 1 y 65535.",
+
         "prompt_username": "¿Y el nombre de usuario SSH?",
         "prompt_auth_method": "¿Cómo quieres autenticarte?",
         "prompt_password": "Ingresa la contraseña SSH.",
@@ -412,6 +430,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "button_back_main_menu": "🔙 Voltar ao menu principal",
         "add_server_prompt": "🖥️ **Adicionar novo servidor**\n\nQual será o alias curto? (ex.: `webserver`)",
         "prompt_hostname": "Ótimo. Qual é o hostname ou endereço IP?",
+        "prompt_port": "Qual porta SSH ele usa? Envie um número, ou apenas um ponto (.) para manter a porta padrão 22.",
+        "error_invalid_port": "Porta inválida: {error}. Envie um número entre 1 e 65535.",
+
         "prompt_username": "E o nome de usuário SSH?",
         "prompt_auth_method": "Como deseja autenticar?",
         "prompt_password": "Digite a senha SSH.",
@@ -465,6 +486,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "button_back_main_menu": "🔙 Torna al menu principale",
         "add_server_prompt": "🖥️ **Aggiungi un nuovo server**\n\nQual è l'alias breve? (es. `webserver`)",
         "prompt_hostname": "Perfetto. Qual è il nome host o l'indirizzo IP?",
+        "prompt_port": "Quale porta SSH utilizza? Invia un numero, oppure solo un punto (.) per mantenere la porta standard 22.",
+        "error_invalid_port": "Porta non valida: {error}. Invia un numero tra 1 e 65535.",
+
         "prompt_username": "E il nome utente SSH?",
         "prompt_auth_method": "Come vuoi autenticarti?",
         "prompt_password": "Inserisci la password SSH.",
@@ -518,6 +542,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "button_back_main_menu": "🔙 Назад в главное меню",
         "add_server_prompt": "🖥️ **Добавление нового сервера**\n\nКакой короткий псевдоним использовать? (например, `webserver`)",
         "prompt_hostname": "Отлично. Каков адрес хоста или IP?",
+        "prompt_port": "Какой порт SSH он использует? Отправьте число или только точку (.), чтобы сохранить стандартный порт 22.",
+        "error_invalid_port": "Недопустимый порт: {error}. Отправьте число от 1 до 65535.",
+
         "prompt_username": "И имя пользователя SSH?",
         "prompt_auth_method": "Как вы хотите пройти аутентификацию?",
         "prompt_password": "Введите пароль SSH.",
@@ -571,6 +598,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "button_back_main_menu": "🔙 Ana menüye dön",
         "add_server_prompt": "🖥️ **Yeni sunucu ekle**\n\nKısa takma ad ne olsun? (örn. `webserver`)",
         "prompt_hostname": "Harika. Ana makine adı veya IP adresi nedir?",
+        "prompt_port": "Hangi SSH portunu kullanıyor? Bir sayı gönderin veya standart 22 portunu tutmak için sadece bir nokta (.) yazın.",
+        "error_invalid_port": "Geçersiz port: {error}. Lütfen 1 ile 65535 arasında bir sayı gönderin.",
+
         "prompt_username": "SSH kullanıcı adı nedir?",
         "prompt_auth_method": "Nasıl kimlik doğrulamak istersiniz?",
         "prompt_password": "Lütfen SSH parolasını girin.",
@@ -624,6 +654,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "button_back_main_menu": "🔙 返回主菜单",
         "add_server_prompt": "🖥️ **添加新服务器**\n\n请提供一个简短的别名（如 `webserver`）。",
         "prompt_hostname": "很好。主机名或 IP 地址是什么？",
+        "prompt_port": "它使用哪个 SSH 端口？发送一个数字，或者只发一个点 (.) 以保留标准端口 22。",
+        "error_invalid_port": "端口无效：{error}。请发送 1 到 65535 之间的数字。",
+
         "prompt_username": "SSH 用户名是什么？",
         "prompt_auth_method": "您想如何进行认证？",
         "prompt_password": "请输入 SSH 密码。",
@@ -677,6 +710,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "button_back_main_menu": "🔙 メインメニューへ戻る",
         "add_server_prompt": "🖥️ **新しいサーバーを追加**\n\n短いエイリアスは何にしますか？（例: `webserver`）",
         "prompt_hostname": "いいですね。ホスト名またはIPアドレスは何ですか？",
+        "prompt_port": "SSHポートは何番ですか？数字を送信するか、標準の22番ポートを維持するにはドット (.) だけを送ってください。",
+        "error_invalid_port": "無効なポートです: {error}。1から65535までの数字を送ってください。",
+
         "prompt_username": "SSH ユーザー名は？",
         "prompt_auth_method": "どのように認証しますか？",
         "prompt_password": "SSH パスワードを入力してください。",
@@ -730,6 +766,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "button_back_main_menu": "🔙 메인 메뉴로",
         "add_server_prompt": "🖥️ **새 서버 추가**\n\n짧은 별칭은 무엇으로 할까요? (예: `webserver`)",
         "prompt_hostname": "좋아요. 호스트 이름 또는 IP 주소는 무엇인가요?",
+        "prompt_port": "어떤 SSH 포트를 사용하나요? 숫자를 보내거나, 표준 포트 22를 유지하려면 점 (.)만 보내세요.",
+        "error_invalid_port": "잘못된 포트입니다: {error}. 1에서 65535 사이의 숫자를 보내주세요.",
+
         "prompt_username": "SSH 사용자 이름은 무엇인가요?",
         "prompt_auth_method": "어떻게 인증하시겠어요?",
         "prompt_password": "SSH 비밀번호를 입력하세요.",
@@ -783,6 +822,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "button_back_main_menu": "🔙 मुख्य मेनू पर वापस जाएँ",
         "add_server_prompt": "🖥️ **नया सर्वर जोड़ें**\n\nकृपया एक छोटा उपनाम बताएं (जैसे `webserver`).",
         "prompt_hostname": "बहुत बढ़िया। होस्टनेम या IP पता क्या है?",
+        "prompt_port": "यह कौन सा SSH पोर्ट उपयोग करता है? एक नंबर भेजें, या मानक पोर्ट 22 रखने के लिए केवल एक डॉट (.) भेजें।",
+        "error_invalid_port": "अमान्य पोर्ट: {error}। कृपया 1 और 65535 के बीच एक नंबर भेजें।",
+
         "prompt_username": "SSH उपयोगकर्ता नाम क्या है?",
         "prompt_auth_method": "आप कैसे प्रमाणीकरण करना चाहेंगे?",
         "prompt_password": "कृपया SSH पासवर्ड दर्ज करें।",
@@ -836,6 +878,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "button_back_main_menu": "🔙 مرکزی مینو پر واپس جائیں",
         "add_server_prompt": "🖥️ **نیا سرور شامل کریں**\n\nبراہ کرم ایک مختصر نام بتائیں (مثلاً `webserver`).",
         "prompt_hostname": "بہت اچھا۔ میزبان کا نام یا IP ایڈریس کیا ہے؟",
+        "prompt_port": "یہ کون سا SSH پورٹ استعمال کرتا ہے؟ ایک نمبر بھیجیں، یا معیاری پورٹ 22 رکھنے کے لیے صرف ایک نقطہ (.) بھیجیں۔",
+        "error_invalid_port": "غیر درست پورٹ: {error}۔ براہ کرم 1 اور 65535 کے درمیان ایک نمبر بھیجیں۔",
+
         "prompt_username": "اور SSH صارف نام؟",
         "prompt_auth_method": "آپ تصدیق کس طرح کرنا چاہتے ہیں؟",
         "prompt_password": "براہ کرم SSH پاس ورڈ درج کریں۔",

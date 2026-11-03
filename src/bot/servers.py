@@ -37,6 +37,7 @@ from ..ssh_manager import HostKeyMismatch
 from ..validators import validate_alias
 from ..validators import validate_hostname
 from ..validators import validate_key_path
+from ..validators import validate_port
 from ..validators import validate_username
 import asyncio
 import re
@@ -44,7 +45,7 @@ import socket
 
 from . import state
 from .state import (
-    ALIAS, AUTH_METHOD, HOSTNAME, KEY_PATH, PASSWORD, USER, ssh_manager, user_connections,
+    ALIAS, AUTH_METHOD, HOSTNAME, KEY_PATH, PASSWORD, PORT, USER, ssh_manager, user_connections,
 )
 
 from .navigation import main_menu
@@ -93,7 +94,45 @@ async def get_hostname(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     user_id = _extract_user_id(update)
     language = state._get_user_language(user_id)
     context.user_data['hostname'] = update.message.text
-    await _send_message_safely(update.message.chat, translate('prompt_username', language), user_id)
+    await _send_message_safely(
+        update.message.chat,
+        translate('prompt_port', language),
+        user_id,
+    )
+    return PORT
+
+
+async def get_port(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Collects the SSH port, defaulting to 22 on an empty answer.
+
+    Non-numeric or out-of-range input re-asks rather than aborting the whole
+    flow, so one typo does not throw away the alias and hostname the user
+    already typed.
+    """
+    user_id = _extract_user_id(update)
+    language = state._get_user_language(user_id)
+    text = (update.message.text or "").strip()
+
+    if not text:
+        # Empty input keeps the standard port.
+        context.user_data['port'] = 22
+    else:
+        try:
+            context.user_data['port'] = validate_port(text)
+        except ValueError as exc:
+            await _send_message_safely(
+                update.message.chat,
+                translate('error_invalid_port', language, error=str(exc)),
+                user_id,
+            )
+            # Re-ask without losing what has already been collected.
+            return PORT
+
+    await _send_message_safely(
+        update.message.chat,
+        translate('prompt_username', language),
+        user_id,
+    )
     return USER
 
 async def get_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -193,7 +232,8 @@ async def save_server(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             hostname=hostname,
             user=username,
             password=context.user_data.get('password'),
-            key_path=key_path
+            key_path=key_path,
+            port=int(context.user_data.get('port', 22) or 22),
         )
         METRICS.inc("servers_added_total")
         audit.record("server.added", user_id=owner_id, alias=alias, hostname=hostname)
