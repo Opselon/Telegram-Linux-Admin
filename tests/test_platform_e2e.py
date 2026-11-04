@@ -10,6 +10,7 @@ stubbed at the boundary.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 
 import pytest
 from fastapi.testclient import TestClient
@@ -112,3 +113,65 @@ def test_web_login_failure_is_audited(env):
 
     events = [e.get("event") for e in audit.tail(limit=50)]
     assert "auth.login.failed" in events
+
+
+# --- platform runtime ----------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_platform_serves_legacy_health_endpoint(env, monkeypatch):
+    """tla-platform must serve /healthz on TLA_HEALTH_PORT in production mode.
+
+    Regression test for the post-merge CD failure: the Docker ENTRYPOINT moved
+    from tla-bot to tla-platform, but run_platform() only started the health
+    server in SMOKE_TEST mode, so a container healthcheck configured for the
+    legacy port never went healthy.
+    """
+    import socket
+
+    from src.runtime_app import run_platform
+
+    # Production mode (no SMOKE_TEST): web adapter on an ephemeral port, no
+    # bot tokens — the shape a container runs in when only the web UI is on.
+    monkeypatch.delenv("SMOKE_TEST", raising=False)
+    monkeypatch.setenv("TLA_WEB_ENABLED", "1")
+    monkeypatch.setenv("TLA_WEB_HOST", "127.0.0.1")
+    monkeypatch.delenv("BALE_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TLA_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        web_port = s.getsockname()[1]
+    monkeypatch.setenv("TLA_WEB_PORT", str(web_port))
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    monkeypatch.setenv("TLA_HEALTH_PORT", str(port))
+
+    task = asyncio.create_task(run_platform())
+    try:
+        # Wait for the health endpoint to answer (it starts before adapters).
+        # The client must be an in-loop stream: urllib.request would block the
+        # very loop the server runs on.
+        deadline = asyncio.get_running_loop().time() + 30
+        while asyncio.get_running_loop().time() < deadline:
+            try:
+                reader, writer = await asyncio.wait_for(
+                    asyncio.open_connection("127.0.0.1", port), timeout=2
+                )
+                with contextlib.suppress(Exception):
+                    writer.write(b"GET /healthz HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                    await writer.drain()
+                    data = await asyncio.wait_for(reader.read(256), timeout=2)
+                    writer.close()
+                    if data.startswith(b"HTTP/1.1 200"):
+                        break
+            except (OSError, TimeoutError, asyncio.TimeoutError):
+                await asyncio.sleep(0.2)
+        else:  # pragma: no cover
+            pytest.fail("platform never answered /healthz on TLA_HEALTH_PORT")
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
