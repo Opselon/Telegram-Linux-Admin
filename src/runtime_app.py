@@ -73,7 +73,7 @@ async def _run_web(stop: asyncio.Event) -> dict[str, bool]:
     # The runtime owns the loop and signals; uvicorn must not touch them
     # (Server.serve() enters self.capture_signals()).  setattr keeps this
     # correct whether or not uvicorn is importable to the type checker.
-    setattr(server, "capture_signals", _null_signals)
+    setattr(server, "capture_signals", _null_signals)  # noqa: B010 - dynamic target
     task = asyncio.create_task(server.serve(), name="web-server")
     await stop.wait()
     server.should_exit = True

@@ -33,7 +33,11 @@ RUN useradd --create-home appuser
 # The Bale SDK extra (pure Python) is included so the container runs the
 # full platform when BALE_BOT_TOKEN is provided.
 COPY --from=builder /app/dist/*.whl .
-RUN pip install --no-cache-dir "*.whl[bale]" && rm -f ./*.whl \
+# Install the wheel first, then the pure-Python Bale extra — a glob cannot
+# carry an extras marker in pip.
+RUN pip install --no-cache-dir ./*.whl \
+    && pip install --no-cache-dir "python-bale-bot>=2.4.5" \
+    && rm -f ./*.whl \
     && mkdir -p /app/data /app/web && chown -R appuser:appuser /app
 
 # Static SPA bundle built in stage 1; served by the FastAPI app.
