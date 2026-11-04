@@ -121,6 +121,27 @@ async def run_platform() -> int:
     configure_observability()
     bind_context(component="platform")
 
+    if os.environ.get("SMOKE_TEST"):
+        # CI smoke mode: serve the health endpoint without contacting any bot
+        # network (mirrors bot/process.py's smoke run for the full platform).
+        from .health import start_health_server, stop_health_server
+        from .bot.lifecycle import _readiness_probe
+        from .bot.integration import start_subsystems, shutdown_subsystems
+
+        database.initialize_database()
+        from .services.migrations import run_migrations
+
+        run_migrations()
+        await start_subsystems()
+        server = await start_health_server(readiness=_readiness_probe)
+        try:
+            await asyncio.sleep(float(os.environ.get("SMOKE_TEST_SECONDS", "15")))
+        finally:
+            await stop_health_server(server)
+            await shutdown_subsystems()
+            database.close_db_connection()
+        return 0
+
     token = _telegram_token()
     bale_token = _bale_token()
     if not token and not bale_token and not _web_enabled():
