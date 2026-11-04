@@ -164,6 +164,14 @@ async def run_platform() -> int:
         with contextlib.suppress(NotImplementedError, AttributeError):
             loop.add_signal_handler(getattr(signal, sig), stop.set)
 
+    # Legacy health endpoint (/healthz, /readyz, /metrics on TLA_HEALTH_PORT).
+    # tla-bot always served this; the platform must too, otherwise a Docker
+    # healthcheck configured for the legacy port never goes healthy.
+    from .bot.lifecycle import _readiness_probe
+    from .health import start_health_server, stop_health_server
+
+    health_server = await start_health_server(readiness=_readiness_probe)
+
     tasks: dict[str, asyncio.Task] = {}
     if _web_enabled():
         tasks["web"] = asyncio.create_task(_run_web(stop), name="adapter-web")
@@ -207,6 +215,8 @@ async def run_platform() -> int:
                 results[name] = True
     finally:
         stop.set()
+        if health_server is not None:
+            await stop_health_server(health_server)
         if watchdog is not None:
             await watchdog.stop()
         for task in tasks.values():
