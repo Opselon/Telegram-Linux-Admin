@@ -37,6 +37,11 @@ var/
 *.db-wal
 bot.lock
 
+# --- Web build artifacts (built in the image's own stage) ---
+web/node_modules/
+web/dist/
+web/.vite/
+
 # --- Docs / editor ---
 *.md
 !README.md

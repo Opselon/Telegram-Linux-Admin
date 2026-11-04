@@ -1,5 +1,37 @@
 # Changelog
 
+## 4.0.0 — Platform
+
+### Added
+- **Web management application**: React 18 + TypeScript + Vite + Tailwind SPA served by the
+  backend (`/api/v1` FastAPI, OpenAPI at `/api/docs`). Dashboard, servers, command console with
+  SAFE/CONFIRM/BLOCKED policy, services/processes/docker/firewall/packages, secure file manager,
+  backups, security center. English + Persian (RTL), dark/light, mobile-first.
+- **Web authentication**: Argon2id password hashing, HttpOnly SameSite=Strict session cookies,
+  CSRF double-submit, per-IP lockout, optional TOTP MFA, one-time owner bootstrap.
+- **RBAC**: accounts (telegram/bale/web) with `owner|admin|operator|read_only` roles and granular
+  server-side permission checks on every operation.
+- **Bale bot adapter** (`src/adapters/bale`, optional `[bale]` extra): interactive menus, command
+  flow with one-shot confirmations, notifications with cooldown/dedup, account linking via
+  single-use codes, "Open Management App" URL button.
+- **Shared management core** (`src/services`): server/command/monitoring/operations/files/backup/
+  notification services — every interface (Telegram, Bale, Web) calls the same authorization,
+  command policy, audit, and job engine.
+- **Schema migrations runner** (`schema_migrations`, v3) with automatic pre-migration snapshot;
+  additive-only DDL, existing records preserved.
+- **Server watchdog**: periodic reachability probes emitting offline/recovery alerts.
+- **Deployment**: platform Dockerfile (web build stage), nginx TLS example, compose shape,
+  `deploy/README.md`; new `tla-platform` entry point running web + Bale + Telegram in one process.
+
+### Fixed
+- `TLA_ENCRYPTION_KEY` environment variable is now actually honored (was documented but unread).
+- Unknown-user web login failures are now audited (previously silent).
+
+### Changed
+- `POST /api/v1/commands` returns the queued job handle immediately (`submit_nowait` on the job
+  queue); results are polled via `/api/v1/jobs/{id}`.
+- Docker image entrypoint is `tla-platform` (web + bots); `tla-bot` remains Telegram-only.
+
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 semantic versioning.

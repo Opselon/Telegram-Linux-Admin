@@ -161,13 +161,11 @@ class JobQueue:
         logger.debug("job queue stopped; stats=%s", self.stats())
 
     # -- submission ------------------------------------------------------
-    async def submit(self, spec: JobSpec, runner: Runner) -> JobResult:
-        """Queues one job and resolves to its result (never raises runner errors).
+    async def _enqueue(self, spec: JobSpec, runner: Runner) -> tuple[Job, asyncio.Future]:
+        """Shared submission path; returns ``(job, result_future)``.
 
-        Raises :class:`QueueFull` when a cap would be exceeded and
-        ``RuntimeError`` when the queue has been stopped. A duplicate
-        ``dedupe_key`` for the same user joins the existing job's future, so the
-        command is executed once and both callers see the same result.
+        A duplicate ``dedupe_key`` joins the existing job and returns its
+        live future, so both callers observe the same result.
         """
         if not callable(runner):
             raise TypeError("runner must be callable")
@@ -181,10 +179,11 @@ class JobQueue:
             existing = self._dedupe.get(dedupe_key)
             if existing is not None:
                 pending_future = self._futures.get(existing)
-                if pending_future is not None:
+                existing_job = self._pending.get(existing) or self._running.get(existing)
+                if pending_future is not None and existing_job is not None:
                     self._deduped += 1
                     self._emit("jobs_deduped", priority=spec.priority)
-                    return await asyncio.shield(pending_future)
+                    return existing_job, pending_future
 
         outstanding = self._outstanding_by_user.get(spec.user_id, 0)
         if outstanding >= self._max_pending_per_user:
@@ -230,6 +229,27 @@ class JobQueue:
         logger.debug("job %s queued (user=%s, priority=%d)", job.id, spec.user_id, spec.priority)
 
         self._wake.set()
+        return job, future
+
+    async def submit_nowait(self, spec: JobSpec, runner: Runner) -> Job:
+        """Queues one job and returns its handle without awaiting the result.
+
+        HTTP adapters that report state by polling use this so a long-running
+        SSH command never holds a request open. Raises :class:`QueueFull` /
+        ``RuntimeError`` under exactly the same conditions as :meth:`submit`.
+        """
+        job, _future = await self._enqueue(spec, runner)
+        return job
+
+    async def submit(self, spec: JobSpec, runner: Runner) -> JobResult:
+        """Queues one job and resolves to its result (never raises runner errors).
+
+        Raises :class:`QueueFull` when a cap would be exceeded and
+        ``RuntimeError`` when the queue has been stopped. A duplicate
+        ``dedupe_key`` for the same user joins the existing job's future, so the
+        command is executed once and both callers see the same result.
+        """
+        _job, future = await self._enqueue(spec, runner)
         return await asyncio.shield(future)
 
     # -- inspection ------------------------------------------------------

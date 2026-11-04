@@ -240,6 +240,20 @@ Restart=always
 RestartSec=10
 TimeoutStopSec=5
 
+# Hardening (4.0): the bot only needs its working directory, the network and
+# (optionally) a health socket — nothing that justifies ambient privileges.
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+ProtectClock=true
+
 [Install]
 WantedBy=multi-user.target
 """

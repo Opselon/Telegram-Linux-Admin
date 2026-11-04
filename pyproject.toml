@@ -30,11 +30,20 @@ dependencies = [
     "async-timeout>=4.0",
     "requests>=2.31",
     "cryptography>=42.0",
+    # 4.0 platform: web API + password hashing (Bale SDK is an extra, see below)
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "argon2-cffi>=23.1",
+    "python-multipart>=0.0.9",
 ]
 
 [project.optional-dependencies]
 monitoring = [
     "psutil>=5.9",
+]
+
+bale = [
+    "python-bale-bot>=2.4.5",
 ]
 
 dev = [
@@ -54,11 +63,12 @@ dev = [
 # console scripts and the container died with "No module named 'src'").
 # Declared explicitly, and 3.2's src.bot / src.runtime / src.observability /
 # src.jobs / src.policy and 3.3's src.ops subpackages are included with them.
-packages = ["src", "src.bot", "src.runtime", "src.observability", "src.jobs", "src.policy", "src.ops"]
+packages = ["src", "src.bot", "src.runtime", "src.observability", "src.jobs", "src.policy", "src.ops", "src.services", "src.api", "src.adapters", "src.adapters.bale"]
 
 [project.scripts]
 tla-bot = "src.main:main"
 tla-bot-update = "src.updater:main"
+tla-platform = "src.runtime_app:main"
 
 # ----------------------------------------------------------------------------
 # CI tool configuration (owned by the CI lane, feature/3.2-ci).
@@ -97,6 +107,11 @@ select = [
 # Entries here name the exact findings each file already produces on the base
 # commit 2c0aa07, nothing more - a new finding in these files still fails.
 [tool.ruff.lint.per-file-ignores]
+# 4.0 web API: Depends(...) in argument defaults is the FastAPI idiom.
+"src/api/*" = ["B008"]
+# The bale test suites re-export the shared `services` fixture from their
+# helpers module (pytest resolves fixtures from the module namespace).
+"tests/test_bale_*" = ["F401", "F811"]
 "src/main.py" = ["F401", "B007", "B904", "ASYNC109", "ASYNC220", "ASYNC230", "ASYNC240"]
 "src/updater.py" = ["F401", "B904"]
 "src/parse_mode.py" = ["F401"]

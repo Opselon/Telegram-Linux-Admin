@@ -1,0 +1,52 @@
+# Nginx TLS reverse proxy for the Linux Admin Platform (4.0)
+#
+# Place at /etc/nginx/sites-available/tla-platform, symlink into sites-enabled,
+# then: certbot --nginx -d admin.example.com
+#
+# The web backend binds to 127.0.0.1:8080 on the host (compose default) —
+# only nginx is exposed publicly.
+
+server {
+    listen 80;
+    server_name admin.example.com;
+    # certbot manages the redirect to HTTPS
+    location / { return 301 https://$host$request_uri; }
+}
+
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name admin.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/admin.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/admin.example.com/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    # Static SPA assets get long cache; the shell must revalidate.
+    location /assets/ {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_cache_valid 200 7d;
+        add_header Cache-Control "public, max-age=604800, immutable";
+    }
+
+    # Server-Sent Events: disable buffering/proxy cache so alerts stream.
+    location /api/v1/events/ {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_buffering off;
+        proxy_read_timeout 1h;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header Host $host;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Host $host;
+        client_max_body_size 64m;   # file uploads (50MB app cap + headroom)
+        proxy_read_timeout 75s;
+    }
+}

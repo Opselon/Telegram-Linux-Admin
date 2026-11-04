@@ -149,7 +149,7 @@ jobs:
       - name: Install package + dev extras
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
+          python -m pip install -e ".[dev,monitoring,bale]"
 
       # Same command the gate runs locally, so a ratio that fails here fails
       # before the commit too. Floor is 50 because the base tree measures
@@ -347,12 +347,38 @@ jobs:
           /tmp/audit/bin/pip freeze > /tmp/audit/requirements.txt
           pip-audit -r /tmp/audit/requirements.txt
 
+  web-build:
+    name: Web frontend build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install
+        working-directory: web
+        run: npm install --no-audit --no-fund
+
+      - name: Typecheck
+        working-directory: web
+        run: npx tsc --noEmit
+
+      - name: Build
+        working-directory: web
+        run: npm run build
+
   ci-summary:
     name: CI summary
     # `needs` with the full job list makes this job the single status the
     # branch protection rule should require. `if: always()` lets it run and
     # report even when an upstream gate failed.
-    needs: [lint, shellcheck, typecheck, validate-workflows, test, package, docker, security]
+    needs: [lint, shellcheck, typecheck, validate-workflows, test, package, docker, security, web-build]
     if: always()
     runs-on: ubuntu-latest
     steps:
