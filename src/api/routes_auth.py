@@ -88,7 +88,7 @@ async def login(payload: LoginRequest, request: Request, response: Response) -> 
 async def mfa(payload: MFARequest, response: Response) -> AccountOut:
     from ..services import get_services
     try:
-        token, info = get_services().auth.verify_mfa(payload.pending_token, payload.code)
+        token, info = get_services().auth.verify_second_factor(payload.pending_token, payload.code)
     except AuthError as exc:
         raise ApiError(401, exc.key, str(exc)) from exc
     _issue_session(response, token)

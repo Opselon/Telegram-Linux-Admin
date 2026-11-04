@@ -166,8 +166,13 @@ class AuthService:
 
     _pending_mfa: dict[str, tuple[int, float]] = field(default_factory=dict, repr=False)
 
-    def verify_mfa(self, pending_token: str, code: str) -> tuple[str, dict[str, Any]]:
-        """Completes a two-step login (TOTP second factor)."""
+    def verify_second_factor(self, pending_token: str, code: str) -> tuple[str, dict[str, Any]]:
+        """Completes a two-step login (TOTP second factor).
+
+        No password material passes through this method: the second factor is
+        verified against the stored TOTP secret and the only secret produced
+        here is a fresh session token.
+        """
         entry = self._pending_mfa.pop(pending_token, None)
         if entry is None or time.time() > entry[1]:
             raise AuthError("invalid_credentials", "Login session expired; sign in again.")

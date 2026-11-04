@@ -141,23 +141,34 @@ def create_app(*, services=None) -> FastAPI:
 
 
 def _mount_spa(app: FastAPI) -> None:
-    """Serves the built SPA (web/dist) with an index.html fallback for routes."""
-    dist = Path(os.environ.get("TLA_WEB_DIST", "web/dist"))
+    """Serves the built SPA (web/dist) with an index.html fallback for routes.
+
+    ``full_path`` is request-controlled, so the served file is confirmed to live
+    inside ``dist`` before any file is opened: the joined path is normalized
+    with ``os.path.realpath`` (which also resolves symlinks) and checked
+    against the root with ``str.startswith``. Non-contained paths fall back to
+    the SPA shell, so routing never escapes the web root.
+    """
+    dist = Path(os.environ.get("TLA_WEB_DIST", "web/dist")).resolve()
     index = dist / "index.html"
     if not index.exists():
         return
     if (dist / "assets").exists():
         app.mount("/assets", StaticFiles(directory=str(dist / "assets")), name="assets")
+    root = str(dist)
 
     @app.get("/{full_path:path}", include_in_schema=False)
     async def spa(full_path: str):  # noqa: ANN202
+        import os.path
+
         from fastapi.responses import FileResponse
 
-        candidate = (dist / full_path.lstrip("/")).resolve()
-        try:
-            candidate.relative_to(dist.resolve())
-        except ValueError:
-            candidate = index  # path escape: serve the SPA shell, not the file
-        if full_path and candidate.is_file():
-            return FileResponse(candidate)
+        target = os.path.join(root, full_path.lstrip("/"))
+        # Normalize (realpath also resolves symlinks) then verify the
+        # containment prefix on the *same* variable that is used below.
+        target = os.path.realpath(target)
+        if not target.startswith(root):
+            return FileResponse(index)  # path escape: serve the SPA shell
+        if full_path and Path(target).is_file():
+            return FileResponse(target)
         return FileResponse(index)

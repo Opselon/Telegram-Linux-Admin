@@ -297,3 +297,35 @@ def test_security_headers_present(client):
     response = client.get("/api/health")
     assert response.headers["X-Content-Type-Options"] == "nosniff"
     assert "default-src 'self'" in response.headers["Content-Security-Policy"]
+
+
+# --- SPA static serving ----------------------------------------------------------
+
+
+def test_spa_serves_index_and_blocks_path_escape(client, tmp_path, monkeypatch):
+    """The catch-all SPA route must never serve files outside web/dist.
+
+    Regression test for the CodeQL path-injection finding (py/path-injection):
+    ``full_path`` is request-controlled, so traversal like ``../../etc/passwd``
+    must fall back to the SPA shell instead of a file read.
+    """
+    from src.api import create_app
+
+    dist = tmp_path / "web" / "dist"
+    (dist / "assets").mkdir(parents=True)
+    (dist / "index.html").write_text("<html>spa</html>", encoding="utf-8")
+    (dist / "assets" / "app.js").write_text("// app", encoding="utf-8")
+    secret = tmp_path / "secret.txt"
+    secret.write_text("top-secret", encoding="utf-8")
+
+    monkeypatch.setenv("TLA_WEB_DIST", str(dist))
+    spa_client = TestClient(create_app())
+    # In-root asset and client route resolve to real files.
+    assert spa_client.get("/assets/app.js").status_code == 200
+    assert spa_client.get("/dashboard").status_code == 200
+    # Traversal attempts land on the SPA shell, never on the outside file.
+    escaped = spa_client.get("/../../secret.txt")
+    assert escaped.status_code == 200
+    assert b"top-secret" not in escaped.content
+    assert escaped.content == b"<html>spa</html>"
+

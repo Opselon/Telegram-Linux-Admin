@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import os
 import secrets
 import sqlite3
 import time
@@ -261,9 +262,24 @@ def web_user_count() -> int:
 SESSION_IDLE_TTL = 12 * 3600.0
 SESSION_ABSOLUTE_TTL = 7 * 24 * 3600.0
 
+# Process-local key for session-token hashing (see _hash_token). Regenerated
+# per process, so tokens from a previous run simply fail to resolve — which is
+# the safe direction: a restarted service drops its sessions rather than
+# honoring hashes an attacker could have computed from a stolen DB.
+_TOKEN_HMAC_KEY = os.urandom(32)
+
 
 def _hash_token(token: str) -> str:
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+    """Hashes a session token for storage.
+
+    Plain SHA-256 is the wrong shape for credential-like data: an attacker who
+    reads the DB can brute-force or rainbow-table low-entropy tokens offline.
+    Keying the digest with a process-local random key (HMAC) makes the stored
+    hashes useless outside this process without changing the lookup contract:
+    the token is still only ever compared as a hash, and only this process can
+    produce one that matches.
+    """
+    return hmac.new(_TOKEN_HMAC_KEY, token.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 def create_session(account_id: int, *, ttl: float = SESSION_IDLE_TTL) -> str:

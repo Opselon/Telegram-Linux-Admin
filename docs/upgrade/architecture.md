@@ -95,7 +95,7 @@ FastAPI, typed Pydantic schemas in `src/api/schemas.py`, OpenAPI at `/api/docs`.
 - `POST /auth/logout`, `GET /auth/me` → `{account, role, permissions}`.
 - Web admin enrollment: first-run bootstrap — when no web account exists, `GET /setup` status + `POST /setup` creates the initial OWNER with a one-time setup token printed by the CLI (`tla-platform setup-token`) or env `TLA_SETUP_TOKEN`. Setup endpoint is disabled once an owner exists.
 - CSRF: double-submit cookie (`tla_csrf`, non-HttpOnly) + `X-CSRF-Token` header required on all mutating methods; sessions rotate on login/privilege change; revocation = delete session row.
-- Session store: `web_sessions(token_hash PK, account_id, created_at, expires_at, last_seen, revoked)`; cookie holds random 256-bit token, DB stores SHA-256. Default idle expiry 12h, absolute 7d.
+- Session store: `web_sessions(token_hash PK, account_id, created_at, expires_at, last_seen, revoked)`; cookie holds random 256-bit token, DB stores an HMAC-SHA256 of it keyed with a process-local random key. Default idle expiry 12h, absolute 7d. Sessions do not survive a process restart (the key is regenerated), which is the safe direction: a restarted service drops its sessions rather than honoring hashes an attacker could have computed from a stolen DB.
 
 ### Endpoints (all under `/api/v1`, auth + CSRF + per-route permission)
 
