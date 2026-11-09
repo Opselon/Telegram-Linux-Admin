@@ -92,7 +92,7 @@ jobs:
       # tab via the SARIF upload below; flip exit-code to "1" to enforce once
       # the current findings are triaged.
       - name: Trivy vulnerability + config scan
-        uses: aquasecurity/trivy-action@0.35.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: tla-bot:security-scan
           format: sarif
